@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "tsx watch src/main.ts",
     "start": "tsx src/main.ts",
+    "migrate": "tsx src/migrate.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

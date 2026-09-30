@@ -7,14 +7,29 @@ services:
       DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL to the external PostgreSQL instance}
       JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET}
       PORT: 3000
-    ports:
-      - "3000:3000"
+    restart: unless-stopped
 
   web:
     build:
       context: .
       dockerfile: apps/web/Dockerfile
-    ports:
-      - "8080:80"
     depends_on:
       - api
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./docker/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - web
+    restart: unless-stopped
+
+volumes:
+  caddy_data:
+  caddy_config:

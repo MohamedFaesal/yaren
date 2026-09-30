@@ -15,6 +15,7 @@
     "typecheck": "pnpm -r --if-present typecheck",
     "test": "pnpm -r --if-present test",
     "docker:local": "docker compose up --build",
-    "docker:prod": "docker compose --env-file .env.production -f docker-compose.prod.yml up --build -d"
+    "docker:prod": "docker compose --env-file .env.production -f docker-compose.prod.yml up --build -d",
+    "docker:prod:migrate": "docker compose --env-file .env.production -f docker-compose.prod.yml run --rm --build --no-deps api pnpm --filter @yaren/api migrate"
   }
 }

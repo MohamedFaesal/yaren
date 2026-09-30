@@ -2,6 +2,7 @@ node_modules
 dist
 .pnpm-store
 .env
+.env.production
 *.log
 .DS_Store
 coverage
