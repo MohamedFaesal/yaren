@@ -1,0 +1,20 @@
+{
+  "name": "yaren",
+  "private": true,
+  "packageManager": "pnpm@10.18.2",
+  "engines": {
+    "node": ">=24"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": ["esbuild"]
+  },
+  "scripts": {
+    "dev": "pnpm --parallel --filter @yaren/api --filter @yaren/web dev",
+    "dev:db": "docker compose up postgres -d",
+    "build": "pnpm -r --if-present build",
+    "typecheck": "pnpm -r --if-present typecheck",
+    "test": "pnpm -r --if-present test",
+    "docker:local": "docker compose up --build",
+    "docker:prod": "docker compose --env-file .env.production -f docker-compose.prod.yml up --build -d"
+  }
+}
