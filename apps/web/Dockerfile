@@ -10,6 +10,7 @@ COPY packages/identity/package.json packages/identity/package.json
 COPY packages/organization/package.json packages/organization/package.json
 COPY packages/patient-registry/package.json packages/patient-registry/package.json
 COPY packages/scheduling/package.json packages/scheduling/package.json
+COPY packages/care-controls/package.json packages/care-controls/package.json
 RUN pnpm install --frozen-lockfile
 COPY . .
 RUN pnpm --filter @yaren/web build
