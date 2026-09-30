@@ -7,6 +7,8 @@ services:
       DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL to the external PostgreSQL instance}
       JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET}
       PORT: 3000
+    volumes:
+      - ./apps/api/seed/users.json:/app/apps/api/seed/users.json:ro
     restart: unless-stopped
 
   web:
