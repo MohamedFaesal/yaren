@@ -6,13 +6,10 @@
   "exports": {
     ".": "./src/index.ts"
   },
-  "devDependencies": {
-    "@types/node": "26.6.2",
-    "tsx": "catalog:",
-    "typescript": "catalog:"
-  },
   "scripts": {
-    "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "tsx --test src/**/*.test.ts"
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "catalog:"
   }
 }

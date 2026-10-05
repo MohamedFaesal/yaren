@@ -2,15 +2,18 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { BrowserRouter } from "react-router";
 import { App } from "./App";
-import { LanguageProvider } from "./i18n";
-import "./styles.css";
+import { initTheme } from "./theme";
+import { ToastProvider } from "./toast";
+import "./index.css";
+
+initTheme();
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
-    <LanguageProvider>
-      <BrowserRouter>
+    <BrowserRouter>
+      <ToastProvider>
         <App />
-      </BrowserRouter>
-    </LanguageProvider>
+      </ToastProvider>
+    </BrowserRouter>
   </StrictMode>,
 );

@@ -11,12 +11,9 @@
   "scripts": {
     "dev": "pnpm --parallel --filter @yaren/api --filter @yaren/web dev",
     "dev:db": "docker compose up postgres -d",
-    "build": "pnpm -r --if-present build",
-    "typecheck": "pnpm -r --if-present typecheck",
-    "test": "pnpm -r --if-present test",
-    "docker:local": "docker compose up --build",
-    "docker:prod": "docker compose --env-file .env.production -f docker-compose.prod.yml up --build -d",
-    "docker:prod:migrate": "docker compose --env-file .env.production -f docker-compose.prod.yml run --rm --build --no-deps api pnpm --filter @yaren/api migrate",
-    "docker:prod:seed": "docker compose --env-file .env.production -f docker-compose.prod.yml run --rm --build --no-deps api pnpm --filter @yaren/api seed"
+    "prod:build": "docker compose -f docker-compose.prod.yml build",
+    "prod:up": "docker compose -f docker-compose.prod.yml up -d --build",
+    "prod:down": "docker compose -f docker-compose.prod.yml down",
+    "typecheck": "pnpm -r --if-present typecheck"
   }
 }

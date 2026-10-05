@@ -1,59 +1,37 @@
-CREATE SCHEMA IF NOT EXISTS identity;
-CREATE SCHEMA IF NOT EXISTS organization;
-CREATE SCHEMA IF NOT EXISTS patient_registry;
-CREATE SCHEMA IF NOT EXISTS scheduling;
-
-CREATE TABLE identity.users (
-  id uuid PRIMARY KEY,
-  email text NOT NULL UNIQUE,
-  password_hash text NOT NULL,
-  display_name text NOT NULL,
-  role text NOT NULL,
-  center_id uuid,
-  status text NOT NULL,
-  created_at timestamptz NOT NULL
-);
-
-CREATE TABLE organization.medical_centers (
-  id uuid PRIMARY KEY,
+CREATE TABLE users (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   name text NOT NULL,
-  code text NOT NULL UNIQUE,
-  address_line text NOT NULL,
-  city text NOT NULL,
+  email text NOT NULL,
   phone text NOT NULL,
-  status text NOT NULL,
-  created_at timestamptz NOT NULL,
-  updated_at timestamptz NOT NULL
+  type text NOT NULL CHECK (type IN ('super-admin', 'admin', 'staff')),
+  role text NOT NULL CHECK (role IN ('Doctor', 'Nurse', 'Receptionist', 'Accountant', 'CEO', 'CTO')),
+  password_hash text NOT NULL,
+  is_active boolean NOT NULL DEFAULT true,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  deleted_at timestamptz
 );
 
-CREATE SEQUENCE patient_registry.mrn_seq;
+CREATE UNIQUE INDEX users_email_active_unique ON users (lower(email)) WHERE deleted_at IS NULL;
 
-CREATE TABLE patient_registry.patients (
-  id uuid PRIMARY KEY,
-  medical_record_number text NOT NULL UNIQUE,
-  given_name text NOT NULL,
-  family_name text NOT NULL,
-  date_of_birth date NOT NULL,
-  sex text NOT NULL,
-  phone text NOT NULL,
-  national_id text,
-  created_at timestamptz NOT NULL
+CREATE TABLE hotels (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  name text NOT NULL,
+  location jsonb NOT NULL,
+  added_by uuid NOT NULL REFERENCES users (id),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  deleted_at timestamptz
 );
 
-CREATE TABLE scheduling.appointments (
-  id uuid PRIMARY KEY,
-  patient_id uuid NOT NULL,
-  practitioner_id uuid NOT NULL,
-  center_id uuid NOT NULL,
-  scheduled_start timestamptz NOT NULL,
-  scheduled_end timestamptz NOT NULL,
-  duration_minutes integer NOT NULL,
-  reason text NOT NULL,
-  status text NOT NULL,
-  cancellation_reason text,
-  created_at timestamptz NOT NULL,
-  updated_at timestamptz NOT NULL
+CREATE TABLE clinics (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  name text NOT NULL,
+  hotel_id uuid NOT NULL REFERENCES hotels (id),
+  added_by uuid NOT NULL REFERENCES users (id),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  deleted_at timestamptz
 );
 
-CREATE INDEX appointments_practitioner_window_idx
-  ON scheduling.appointments (practitioner_id, scheduled_start, scheduled_end);
+CREATE INDEX clinics_hotel_id_idx ON clinics (hotel_id);

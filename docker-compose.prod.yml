@@ -2,36 +2,41 @@ services:
   api:
     build:
       context: .
-      dockerfile: apps/api/Dockerfile
+      dockerfile: Dockerfile
+      target: api
+    env_file:
+      - .env.production
     environment:
-      DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL to the external PostgreSQL instance}
-      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET}
+      HOST: 0.0.0.0
       PORT: 3000
+      NODE_ENV: production
     volumes:
-      - ./apps/api/seed/users.json:/app/apps/api/seed/users.json:ro
+      - yaren_uploads:/app/apps/uploads
     restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3000/api/health').then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
 
   web:
     build:
       context: .
-      dockerfile: apps/web/Dockerfile
-    depends_on:
-      - api
-    restart: unless-stopped
-
-  caddy:
-    image: caddy:2
+      dockerfile: Dockerfile
+      target: web
     ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - ./docker/Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy_data:/data
-      - caddy_config:/config
+      - "${WEB_PORT:-80}:80"
     depends_on:
-      - web
+      api:
+        condition: service_healthy
     restart: unless-stopped
 
 volumes:
-  caddy_data:
-  caddy_config:
+  yaren_uploads:

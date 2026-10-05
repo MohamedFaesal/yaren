@@ -1,3 +1,5 @@
+# Local development database only.
+# Production app stack (no Postgres image): docker-compose.prod.yml
 services:
   postgres:
     image: postgres:17-alpine
@@ -14,30 +16,6 @@ services:
       interval: 5s
       timeout: 5s
       retries: 12
-
-  api:
-    build:
-      context: .
-      dockerfile: apps/api/Dockerfile
-    environment:
-      DATABASE_URL: postgres://yaren:yaren@postgres:5432/yaren
-      JWT_SECRET: dev-only-change-this-secret
-      PORT: 3000
-      SEED_ADMIN_PASSWORD: ChangeMe!2026
-    ports:
-      - "3000:3000"
-    depends_on:
-      postgres:
-        condition: service_healthy
-
-  web:
-    build:
-      context: .
-      dockerfile: apps/web/Dockerfile
-    ports:
-      - "8080:80"
-    depends_on:
-      - api
 
 volumes:
   yaren_pg:
