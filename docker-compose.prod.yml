@@ -13,6 +13,8 @@ services:
     volumes:
       - yaren_uploads:/app/apps/uploads
     restart: unless-stopped
+    networks:
+      - yaren
     healthcheck:
       test:
         [
@@ -31,12 +33,22 @@ services:
       context: .
       dockerfile: Dockerfile
       target: web
-    ports:
-      - "${WEB_PORT:-80}:80"
+    # Do not bind host :80/:443 — Caddy already owns those.
+    # Caddy should reverse_proxy to http://web:80 on the shared network.
+    expose:
+      - "80"
     depends_on:
       api:
         condition: service_healthy
     restart: unless-stopped
+    networks:
+      - yaren
+
+networks:
+  yaren:
+    name: yaren
+    # Set true if Caddy already created this network:
+    # external: true
 
 volumes:
   yaren_uploads:
