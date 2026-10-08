@@ -40,6 +40,8 @@ const permissionAreas: Record<string, string> = {
   hotel: "hotels",
   clinic: "clinics",
   patient: "patients",
+  visit: "visits",
+  triage: "triage",
   activity: "activity",
   role: "roles",
 };
@@ -98,9 +100,13 @@ export function startActivityLog(app: FastifyInstance, pool: pg.Pool) {
     const pages = Math.max(1, Math.ceil(total / query.pageSize));
     const page = Math.min(query.page, pages);
     const rows = await pool.query(
-      `SELECT l.id, l.actor_id, COALESCE(u.name, l.actor_label) AS actor_name, l.action, l.entity, l.entity_id,
+      `SELECT l.id, l.actor_id, COALESCE(u.name, l.actor_label) AS actor_name, l.action, l.entity,
+              COALESCE(case_visit.patient_id, l.entity_id) AS entity_id,
               l.summary, l.changes, l.method, l.path, l.status_code, l.created_at
-       ${from}
+       FROM activity_logs l
+       LEFT JOIN users u ON u.id = l.actor_id
+       LEFT JOIN patient_visits case_visit ON l.path = '/api/doctor-cases/' || case_visit.id::text
+       ${where}
        ORDER BY l.created_at DESC
        LIMIT $${values.length + 1} OFFSET $${values.length + 2}`,
       [...values, query.pageSize, (page - 1) * query.pageSize],
@@ -112,7 +118,8 @@ export function startActivityLog(app: FastifyInstance, pool: pg.Pool) {
     if (reply.statusCode >= 200 && reply.statusCode < 300) {
       const path = request.url.split("?")[0] ?? request.url;
       const described = describe(request, path, reply.statusCode);
-      if (!described.entityId) {
+      const noted = notes.get(request);
+      if (!described.entityId && !noted?.entityId) {
         const id = extractEntityId(payload);
         if (id) noteActivity(request, { entityId: id });
       }
@@ -293,6 +300,9 @@ function describe(request: FastifyRequest, path: string, statusCode: number) {
 
   if (resource === "visits") {
     return { action: "view", entity: "patient", entityId: null, actorLabel: null, summary: "Opened the visits list" };
+  }
+  if (resource === "doctor-cases") {
+    return { action: "view", entity: "patient", entityId: null, actorLabel: null, summary: "Opened the doctor cases" };
   }
   const entity = resource === "users" ? "user" : resource === "hotels" ? "hotel" : resource === "clinics" ? "clinic" : resource === "patients" ? "patient" : resource === "roles" ? "role" : resource || null;
   const label = entity ?? "record";

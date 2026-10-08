@@ -1,11 +1,11 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router";
-import { api, type Patient, type PatientVisit, type User } from "../api";
+import { api, type Patient, type PatientVisit, type User, type VisitCareStatus } from "../api";
 import { canAct } from "../access";
 import { NationalityLabel } from "../nationalities";
 import { useToast } from "../toast";
 import { EntityActivityPanel } from "./EntityActivityPanel";
-import { AgeBadge, Card, ConfirmDialog, Detail, IconAction, Page, PlusIcon, Section, Summary, formatWhen, messageOf, primary, secondary } from "./ui";
+import { AgeBadge, Card, ConfirmDialog, Detail, IconAction, Page, PlusIcon, SecretValue, Section, Summary, formatWhen, messageOf, primary, secondary } from "./ui";
 
 export function PatientViewPage({ token, actor }: { token: string; actor: User }) {
   const { id } = useParams();
@@ -92,8 +92,8 @@ export function PatientViewPage({ token, actor }: { token: string; actor: User }
                 <div className="mt-6"><Section index="2" title="Contact" /></div>
                 <Detail items={[
                   { label: "Email", value: patient.email || "—" },
-                  { label: "Phone", value: patient.phone_number || "—" },
-                  { label: "Alternative phone", value: patient.alternative_phone_number || "—" },
+                  { label: "Phone", value: <SecretValue value={patient.phone_number} mono /> },
+                  { label: "Alternative phone", value: <SecretValue value={patient.alternative_phone_number} mono /> },
                   { label: "Home address", value: patient.home_address || "—" },
                   { label: "Added by", value: patient.added_by_name },
                   { label: "Created", value: formatWhen(patient.created_at) },
@@ -222,6 +222,7 @@ function PatientVisitsPanel({
                       <div className="flex flex-wrap items-center gap-2">
                         <p className="truncate text-base font-semibold text-ink group-hover:text-blue">{visit.clinic_name}</p>
                         {visit.patient_age_at_visit != null ? <AgeBadge age={visit.patient_age_at_visit} /> : null}
+                        <CareStatus status={visit.status} />
                         <span className={`rounded-md px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide ${status.badge}`}>
                           {status.label}
                         </span>
@@ -231,15 +232,15 @@ function PatientVisitsPanel({
                           </span>
                         ) : null}
                       </div>
-                      <p className="mt-1 text-sm text-muted-strong">
+                      <p className="mt-1 flex flex-wrap items-center gap-1.5 text-sm text-muted-strong">
                         {visit.hotel_name}
-                        <span className="mx-1.5 text-muted-soft">·</span>
-                        {visit.hotel_room_no ? `Room ${visit.hotel_room_no}` : "Room not set"}
+                        <span className="text-muted-soft">·</span>
+                        {visit.hotel_room_no ? <SecretValue value={`Room ${visit.hotel_room_no}`} /> : "Room not set"}
                       </p>
                       <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
                         <VisitMeta label="Age at visit" value={visit.patient_age_at_visit != null ? `${visit.patient_age_at_visit} years` : "—"} />
-                        <VisitMeta label="Stay" value={formatStay(visit.hotel_checkin_date, visit.hotel_checkout_date)} />
-                        <VisitMeta label="Passport / ID" value={visit.passport_number || "—"} mono />
+                        <VisitMeta label="Stay" value={<SecretValue value={formatStay(visit.hotel_checkin_date, visit.hotel_checkout_date)} />} />
+                        <VisitMeta label="Passport / ID" value={<SecretValue value={visit.passport_number} mono />} />
                         <VisitMeta label="Contact" value={visit.preferred_contact_method ? titleCase(visit.preferred_contact_method) : "—"} />
                       </div>
                     </Link>
@@ -258,13 +259,23 @@ function PatientVisitsPanel({
   );
 }
 
-function VisitMeta({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
+function VisitMeta({ label, value, mono }: { label: string; value: ReactNode; mono?: boolean }) {
   return (
     <div>
       <p className="text-[11px] font-semibold uppercase tracking-wide text-muted">{label}</p>
-      <p className={`mt-0.5 text-sm font-semibold text-ink ${mono ? "font-mono" : ""}`}>{value}</p>
+      <div className={`mt-0.5 text-sm font-semibold text-ink ${mono ? "font-mono" : ""}`}>{value}</div>
     </div>
   );
+}
+
+function CareStatus({ status }: { status?: VisitCareStatus }) {
+  if (status === "to_doctor") {
+    return <span className="inline-flex rounded-full bg-success-soft px-2.5 py-1 text-xs font-semibold text-success">To see the doctor</span>;
+  }
+  if (status === "waiting_for_triage") {
+    return <span className="inline-flex rounded-full bg-danger-soft px-2.5 py-1 text-xs font-semibold text-danger">Waiting for triage</span>;
+  }
+  return null;
 }
 
 function visitStatus(visit: PatientVisit) {

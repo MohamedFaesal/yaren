@@ -11,6 +11,7 @@ const resources = [
   { id: "clinic", label: "Clinics" },
   { id: "patient", label: "Patients" },
   { id: "visit", label: "Visits" },
+  { id: "triage", label: "Triage" },
   { id: "activity", label: "Activity" },
   { id: "role", label: "Roles" },
 ];
@@ -114,7 +115,7 @@ export function RoleFormPage({ token }: { token: string }) {
                   >
                     <span>
                       <span className="block text-sm font-semibold text-ink">{resource.label}</span>
-                      <span className="mt-0.5 block text-xs text-muted">{summary(chosen, manageOn, resource.id === "clinic" || resource.id === "patient" || resource.id === "visit")}</span>
+                      <span className="mt-0.5 block text-xs text-muted">{summary(chosen, manageOn, resource.id === "clinic" || resource.id === "patient" || resource.id === "visit" || resource.id === "triage")}</span>
                     </span>
                     <span className="text-sm text-muted">{expanded ? "Hide" : "Show"}</span>
                   </button>
@@ -144,7 +145,7 @@ export function RoleFormPage({ token }: { token: string }) {
                       })}
                     </div>
                   )}
-                  {resource.id === "clinic" || resource.id === "patient" || resource.id === "visit" ? (
+                  {resource.id === "clinic" || resource.id === "patient" || resource.id === "visit" || resource.id === "triage" ? (
                     <div className="mt-2 flex flex-wrap items-center gap-2">
                       <span className="text-xs text-muted">Clinics</span>
                       {clinics.length === 0 ? <span className="text-sm text-muted">No clinics yet</span> : clinics.map((clinic) => (

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Navigate, NavLink, Route, Routes, useLocation, useNavigate } from "react-router";
-import { api, loadSession, saveSession, type Session, type User } from "./api";
-import { canAct } from "./access";
+import { api, loadSession, saveSession, type DoctorCasePage, type Session, type TriageQueueResult, type User } from "./api";
+import { canAct, canSeeDoctorCases } from "./access";
 import { RoleIcon } from "./pages/ui";
 import { ClinicFormPage } from "./pages/ClinicFormPage";
 import { ClinicsPage } from "./pages/ClinicsPage";
@@ -20,6 +20,8 @@ import { PatientFormPage } from "./pages/PatientFormPage";
 import { PatientViewPage } from "./pages/PatientViewPage";
 import { RegisterPage } from "./pages/RegisterPage";
 import { VisitsPage } from "./pages/VisitsPage";
+import { TriagePage } from "./pages/TriagePage";
+import { DoctorCasesPage } from "./pages/DoctorCasesPage";
 import { VisitFormPage } from "./pages/VisitFormPage";
 import { VisitViewPage } from "./pages/VisitViewPage";
 import { ProfileAvatar, ProfilePage } from "./pages/ProfilePage";
@@ -27,9 +29,7 @@ import { UserFormPage } from "./pages/UserFormPage";
 import { UserPermissionsPage } from "./pages/UserPermissionsPage";
 import { UsersPage } from "./pages/UsersPage";
 import { UserViewPage } from "./pages/UserViewPage";
-import { ActiveClinicProvider, ClinicSwitcher } from "./ClinicWorkspace";
-import { ThemeToggle } from "./ThemeToggle";
-
+import { ActiveClinicProvider, ClinicSwitcher, useActiveClinic } from "./ClinicWorkspace";
 export function App() {
   const navigate = useNavigate();
   const location = useLocation();
@@ -76,107 +76,187 @@ export function App() {
 
   return (
     <ActiveClinicProvider token={session.token}>
-    <div className="min-h-screen grid grid-cols-[248px_1fr] bg-canvas">
-      <aside className="bg-shell text-white flex flex-col px-3 py-5">
-        <div className="px-2 pb-6">
+      <AppShell
+        token={session.token}
+        user={session.user}
+        pathname={location.pathname}
+        onSignOut={() => void signOut()}
+      >
+        <Routes>
+          <Route path="/" element={<DashboardPage token={session.token} actor={session.user} />} />
+          <Route
+            path="/profile"
+            element={(
+              <ProfilePage
+                token={session.token}
+                user={session.user}
+                onUser={(user) => {
+                  const next = { ...session, user: { ...session.user, ...user } };
+                  saveSession(next);
+                  setSession(next);
+                }}
+              />
+            )}
+          />
+          <Route path="/users" element={<UsersPage token={session.token} actor={session.user} />} />
+          <Route path="/users/new" element={<UserFormPage token={session.token} actor={session.user} />} />
+          <Route path="/users/:id/edit" element={<UserFormPage token={session.token} actor={session.user} />} />
+          <Route path="/users/:id/permissions/edit" element={<UserPermissionsPage token={session.token} actor={session.user} />} />
+          <Route path="/users/:id" element={<UserViewPage token={session.token} actor={session.user} />} />
+          <Route path="/hotels" element={<HotelsPage token={session.token} actor={session.user} />} />
+          <Route path="/hotels/new" element={<HotelFormPage token={session.token} actor={session.user} />} />
+          <Route path="/hotels/:id/edit" element={<HotelFormPage token={session.token} actor={session.user} />} />
+          <Route path="/hotels/:id" element={<HotelViewPage token={session.token} actor={session.user} />} />
+          <Route path="/clinics" element={<ClinicsPage token={session.token} actor={session.user} />} />
+          <Route path="/clinics/new" element={<ClinicFormPage token={session.token} actor={session.user} />} />
+          <Route path="/clinics/:id/edit" element={<ClinicFormPage token={session.token} actor={session.user} />} />
+          <Route path="/clinics/:id" element={<ClinicViewPage token={session.token} actor={session.user} />} />
+          <Route path="/patients" element={<PatientsPage token={session.token} actor={session.user} />} />
+          <Route path="/patients/triage" element={<TriagePage token={session.token} actor={session.user} />} />
+          <Route path="/patients/to-doctor" element={<DoctorCasesPage token={session.token} actor={session.user} />} />
+          <Route path="/patients/visits" element={<VisitsPage token={session.token} actor={session.user} />} />
+          <Route path="/patients/register" element={<RegisterPage token={session.token} actor={session.user} />} />
+          <Route path="/patients/new" element={<PatientFormPage token={session.token} actor={session.user} />} />
+          <Route path="/patients/:id/edit" element={<PatientFormPage token={session.token} actor={session.user} />} />
+          <Route path="/patients/:patientId/visits/new" element={<VisitFormPage token={session.token} actor={session.user} />} />
+          <Route path="/patients/:patientId/visits/:id/edit" element={<VisitFormPage token={session.token} actor={session.user} />} />
+          <Route path="/patients/:patientId/visits/:id" element={<VisitViewPage token={session.token} actor={session.user} />} />
+          <Route path="/patients/:id" element={<PatientViewPage token={session.token} actor={session.user} />} />
+          <Route path="/activity" element={<ActivityPage token={session.token} />} />
+          <Route path="/roles" element={<RolesPage token={session.token} actor={session.user} />} />
+          <Route path="/roles/new" element={<RoleFormPage token={session.token} />} />
+          <Route path="/roles/:id/edit" element={<RoleFormPage token={session.token} />} />
+          <Route path="/roles/:id" element={<RoleViewPage token={session.token} actor={session.user} />} />
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </AppShell>
+    </ActiveClinicProvider>
+  );
+}
+
+function AppShell({
+  token,
+  user,
+  pathname,
+  onSignOut,
+  children,
+}: {
+  token: string;
+  user: User;
+  pathname: string;
+  onSignOut: () => void;
+  children: ReactNode;
+}) {
+  const [navOpen, setNavOpen] = useState(false);
+
+  useEffect(() => {
+    setNavOpen(false);
+  }, [pathname]);
+
+  useEffect(() => {
+    if (!navOpen) return;
+    const previous = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") setNavOpen(false);
+    }
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.body.style.overflow = previous;
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [navOpen]);
+
+  return (
+    <div className="min-h-screen bg-canvas lg:grid lg:grid-cols-[248px_1fr]">
+      {navOpen ? (
+        <button
+          type="button"
+          className="fixed inset-0 z-40 bg-ink/40 backdrop-blur-[1px] lg:hidden"
+          aria-label="Close navigation"
+          onClick={() => setNavOpen(false)}
+        />
+      ) : null}
+
+      <aside
+        className={`fixed inset-y-0 left-0 z-50 flex w-[min(18rem,85vw)] flex-col bg-shell px-3 py-5 text-white transition-transform duration-200 ease-out lg:static lg:z-auto lg:w-auto lg:translate-x-0 ${
+          navOpen ? "translate-x-0 shadow-2xl" : "-translate-x-full lg:translate-x-0"
+        }`}
+        aria-label="Main navigation"
+      >
+        <div className="flex items-center justify-between gap-3 px-2 pb-6">
           <img src="/yaren-logo.png" alt="Yaren Healthcare" className="h-12 w-auto max-w-full rounded-lg bg-surface px-2 py-1.5" />
+          <button
+            type="button"
+            className="grid h-9 w-9 place-items-center rounded-lg text-slate-300 hover:bg-white/10 hover:text-white lg:hidden"
+            aria-label="Close menu"
+            onClick={() => setNavOpen(false)}
+          >
+            <CloseIcon />
+          </button>
         </div>
-        <nav className="flex flex-col gap-1">
+        <nav className="flex flex-1 flex-col gap-1 overflow-y-auto">
           <NavSection title="Overview">
             <NavLink to="/" end className={navClass}><DashboardIcon />Dashboard</NavLink>
           </NavSection>
           <NavSection
             title="Care"
-            show={canAct(session.user, "visit", "create") || canAct(session.user, "visit", "view") || canAct(session.user, "patient", "view")}
+            show={canAct(user, "visit", "create") || canAct(user, "visit", "view") || canAct(user, "triage", "view") || canSeeDoctorCases(user) || canAct(user, "patient", "view")}
           >
-            {canAct(session.user, "visit", "create") ? <NavLink to="/patients/register" className={navClass}><RegisterIcon />Register</NavLink> : null}
-            {canAct(session.user, "visit", "view") ? <NavLink to="/patients/visits" className={navClass}><VisitsIcon />Visits</NavLink> : null}
-            {canAct(session.user, "patient", "view") ? <NavLink to="/patients" end className={navClass}><PatientsIcon />Patients</NavLink> : null}
+            {canAct(user, "visit", "create") ? <NavLink to="/patients/register" className={navClass}><RegisterIcon />Register</NavLink> : null}
+            {canAct(user, "triage", "view") ? <TriageNavLink token={token} pathname={pathname} /> : null}
+            {canSeeDoctorCases(user) ? <DoctorCasesNavLink token={token} pathname={pathname} /> : null}
+            {canAct(user, "visit", "view") ? <NavLink to="/patients/visits" className={navClass}><VisitsIcon />Visits</NavLink> : null}
+            {canAct(user, "patient", "view") ? <NavLink to="/patients" end className={navClass}><PatientsIcon />Patients</NavLink> : null}
           </NavSection>
           <NavSection
             title="Network"
-            show={canAct(session.user, "hotel", "view") || canAct(session.user, "clinic", "view")}
+            show={canAct(user, "hotel", "view") || canAct(user, "clinic", "view")}
           >
-            {canAct(session.user, "hotel", "view") ? <NavLink to="/hotels" className={navClass}><HotelIcon />Hotels</NavLink> : null}
-            {canAct(session.user, "clinic", "view") ? <NavLink to="/clinics" className={navClass}><ClinicIcon />Clinics</NavLink> : null}
+            {canAct(user, "hotel", "view") ? <NavLink to="/hotels" className={navClass}><HotelIcon />Hotels</NavLink> : null}
+            {canAct(user, "clinic", "view") ? <NavLink to="/clinics" className={navClass}><ClinicIcon />Clinics</NavLink> : null}
           </NavSection>
           <NavSection
             title="People & access"
-            show={canAct(session.user, "user", "view") || canAct(session.user, "role", "view")}
+            show={canAct(user, "user", "view") || canAct(user, "role", "view")}
           >
-            {canAct(session.user, "user", "view") ? <NavLink to="/users" className={navClass}><UsersIcon />Users</NavLink> : null}
-            {canAct(session.user, "role", "view") ? <NavLink to="/roles" className={navClass}><RolesIcon />Roles</NavLink> : null}
+            {canAct(user, "user", "view") ? <NavLink to="/users" className={navClass}><UsersIcon />Users</NavLink> : null}
+            {canAct(user, "role", "view") ? <NavLink to="/roles" className={navClass}><RolesIcon />Roles</NavLink> : null}
           </NavSection>
-          <NavSection title="System" show={canAct(session.user, "activity", "view")}>
-            {canAct(session.user, "activity", "view") ? <NavLink to="/activity" className={navClass}><ActivityIcon />Activity</NavLink> : null}
+          <NavSection title="System" show={canAct(user, "activity", "view")}>
+            {canAct(user, "activity", "view") ? <NavLink to="/activity" className={navClass}><ActivityIcon />Activity</NavLink> : null}
           </NavSection>
         </nav>
       </aside>
+
       <div className="min-w-0">
-        <header className="sticky top-0 z-30 flex items-center justify-between gap-4 border-b border-line bg-header px-7 py-3.5 backdrop-blur">
-          <div className="min-w-0">
-            <HeaderGreeting />
-            <p className="truncate text-lg font-semibold text-ink">{heading(location.pathname)}</p>
+        <header className="sticky top-0 z-30 flex items-center justify-between gap-3 border-b border-line bg-header px-4 py-3 backdrop-blur sm:px-5 lg:gap-4 lg:px-7 lg:py-3.5">
+          <div className="flex min-w-0 items-center gap-2.5">
+            <button
+              type="button"
+              className="grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-line bg-surface text-ink hover:bg-surface-2 lg:hidden"
+              aria-label="Open menu"
+              aria-expanded={navOpen}
+              onClick={() => setNavOpen(true)}
+            >
+              <MenuIcon />
+            </button>
+            <div className="min-w-0">
+              <HeaderGreeting />
+              <p className="truncate text-base font-semibold text-ink sm:text-lg">{heading(pathname)}</p>
+            </div>
           </div>
-          <div className="flex items-center gap-4">
+          <div className="flex shrink-0 items-center gap-2 sm:gap-3 lg:gap-4">
             <HeaderClock />
-            <div className="flex items-center gap-1.5 border-l border-line pl-4">
+            <div className="flex items-center gap-1.5 border-l border-line pl-2 sm:pl-3 lg:pl-4">
               <ClinicSwitcher />
-              <ThemeToggle />
-              <AccountMenu user={session.user} onSignOut={() => void signOut()} />
+              <AccountMenu user={user} onSignOut={onSignOut} />
             </div>
           </div>
         </header>
-        <main className="px-7 py-6">
-          <Routes>
-            <Route path="/" element={<DashboardPage token={session.token} actor={session.user} />} />
-            <Route
-              path="/profile"
-              element={(
-                <ProfilePage
-                  token={session.token}
-                  user={session.user}
-                  onUser={(user) => {
-                    const next = { ...session, user: { ...session.user, ...user } };
-                    saveSession(next);
-                    setSession(next);
-                  }}
-                />
-              )}
-            />
-            <Route path="/users" element={<UsersPage token={session.token} actor={session.user} />} />
-            <Route path="/users/new" element={<UserFormPage token={session.token} actor={session.user} />} />
-            <Route path="/users/:id/edit" element={<UserFormPage token={session.token} actor={session.user} />} />
-            <Route path="/users/:id/permissions/edit" element={<UserPermissionsPage token={session.token} actor={session.user} />} />
-            <Route path="/users/:id" element={<UserViewPage token={session.token} actor={session.user} />} />
-            <Route path="/hotels" element={<HotelsPage token={session.token} actor={session.user} />} />
-            <Route path="/hotels/new" element={<HotelFormPage token={session.token} actor={session.user} />} />
-            <Route path="/hotels/:id/edit" element={<HotelFormPage token={session.token} actor={session.user} />} />
-            <Route path="/hotels/:id" element={<HotelViewPage token={session.token} actor={session.user} />} />
-            <Route path="/clinics" element={<ClinicsPage token={session.token} actor={session.user} />} />
-            <Route path="/clinics/new" element={<ClinicFormPage token={session.token} actor={session.user} />} />
-            <Route path="/clinics/:id/edit" element={<ClinicFormPage token={session.token} actor={session.user} />} />
-            <Route path="/clinics/:id" element={<ClinicViewPage token={session.token} actor={session.user} />} />
-            <Route path="/patients" element={<PatientsPage token={session.token} actor={session.user} />} />
-            <Route path="/patients/visits" element={<VisitsPage token={session.token} actor={session.user} />} />
-            <Route path="/patients/register" element={<RegisterPage token={session.token} actor={session.user} />} />
-            <Route path="/patients/new" element={<PatientFormPage token={session.token} actor={session.user} />} />
-            <Route path="/patients/:id/edit" element={<PatientFormPage token={session.token} actor={session.user} />} />
-            <Route path="/patients/:patientId/visits/new" element={<VisitFormPage token={session.token} actor={session.user} />} />
-            <Route path="/patients/:patientId/visits/:id/edit" element={<VisitFormPage token={session.token} actor={session.user} />} />
-            <Route path="/patients/:patientId/visits/:id" element={<VisitViewPage token={session.token} actor={session.user} />} />
-            <Route path="/patients/:id" element={<PatientViewPage token={session.token} actor={session.user} />} />
-            <Route path="/activity" element={<ActivityPage token={session.token} />} />
-            <Route path="/roles" element={<RolesPage token={session.token} actor={session.user} />} />
-            <Route path="/roles/new" element={<RoleFormPage token={session.token} />} />
-            <Route path="/roles/:id/edit" element={<RoleFormPage token={session.token} />} />
-            <Route path="/roles/:id" element={<RoleViewPage token={session.token} actor={session.user} />} />
-            <Route path="*" element={<Navigate to="/" replace />} />
-          </Routes>
-        </main>
+        <main className="px-4 py-4 sm:px-5 sm:py-5 lg:px-7 lg:py-6">{children}</main>
       </div>
     </div>
-    </ActiveClinicProvider>
   );
 }
 
@@ -230,17 +310,17 @@ function AccountMenu({ user, onSignOut }: { user: User; onSignOut: () => void })
     <div ref={root} className="relative">
       <button
         type="button"
-        className="flex items-center gap-3 rounded-full border border-line py-1 pl-1 pr-2.5 hover:bg-surface-2"
+        className="flex items-center gap-2 rounded-full border border-line py-1 pl-1 pr-1.5 hover:bg-surface-2 sm:gap-3 sm:pr-2.5"
         aria-haspopup="menu"
         aria-expanded={open}
         onClick={() => setOpen((current) => !current)}
       >
         <ProfileAvatar name={user.name} photoUrl={user.photo_url} />
-        <span className="min-w-0 text-left">
-          <span className="block truncate text-sm font-semibold leading-tight">{user.name}</span>
+        <span className="hidden min-w-0 text-left sm:block">
+          <span className="block max-w-[8rem] truncate text-sm font-semibold leading-tight lg:max-w-[12rem]">{user.name}</span>
           <span className="flex items-center gap-1 text-[11px] text-muted"><RoleIcon role={user.role} boxed={false} />{user.role}</span>
         </span>
-        <svg viewBox="0 0 20 20" className={`h-4 w-4 shrink-0 text-muted transition-transform ${open ? "rotate-180" : ""}`} fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+        <svg viewBox="0 0 20 20" className={`hidden h-4 w-4 shrink-0 text-muted transition-transform sm:block ${open ? "rotate-180" : ""}`} fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
           <path d="M5 7.5l5 5 5-5" strokeLinecap="round" strokeLinejoin="round" />
         </svg>
       </button>
@@ -326,6 +406,112 @@ function HeaderClock() {
   );
 }
 
+function TriageNavLink({ token, pathname }: { token: string; pathname: string }) {
+  const { clinicId } = useActiveClinic();
+  const [waiting, setWaiting] = useState(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    function load() {
+      const params = new URLSearchParams({ page: "1", page_size: "1" });
+      if (clinicId) params.set("clinic_id", clinicId);
+      api<TriageQueueResult>(`/api/triage/queue?${params}`, {}, token)
+        .then((data) => {
+          if (!cancelled) setWaiting(data.summary.waiting_for_triage);
+        })
+        .catch(() => {
+          if (!cancelled) setWaiting(0);
+        });
+    }
+    load();
+    const timer = window.setInterval(load, 30000);
+    function onFocus() {
+      load();
+    }
+    window.addEventListener("focus", onFocus);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+      window.removeEventListener("focus", onFocus);
+    };
+  }, [token, clinicId, pathname]);
+
+  return (
+    <NavLink
+      to="/patients/triage"
+      className={({ isActive }) => `${navClass({ isActive })} justify-between gap-2`}
+    >
+      <span className="flex min-w-0 items-center gap-3">
+        <TriageIcon />
+        <span className="leading-snug">Patient Queue & Triage</span>
+      </span>
+      {waiting > 0 ? (
+        <span
+          className="shrink-0 rounded-full bg-danger px-2 py-0.5 text-[11px] font-bold tabular-nums text-white"
+          aria-label={`${waiting} waiting for triage`}
+        >
+          {waiting > 99 ? "99+" : waiting}
+        </span>
+      ) : null}
+    </NavLink>
+  );
+}
+
+function DoctorCasesNavLink({ token, pathname }: { token: string; pathname: string }) {
+  const { clinicId } = useActiveClinic();
+  const [count, setCount] = useState(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    function load() {
+      const params = new URLSearchParams({ page: "1", page_size: "1" });
+      if (clinicId) params.set("clinic_id", clinicId);
+      api<DoctorCasePage>(`/api/doctor-cases?${params}`, {}, token)
+        .then((data) => {
+          if (!cancelled) setCount(data.total);
+        })
+        .catch(() => {
+          if (!cancelled) setCount(0);
+        });
+    }
+    load();
+    const timer = window.setInterval(load, 30000);
+    function onFocus() {
+      load();
+    }
+    window.addEventListener("focus", onFocus);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+      window.removeEventListener("focus", onFocus);
+    };
+  }, [token, clinicId, pathname]);
+
+  return (
+    <NavLink
+      to="/patients/to-doctor"
+      className={({ isActive }) => `${navClass({ isActive })} justify-between gap-2`}
+    >
+      {({ isActive }) => (
+        <>
+          <span className="flex min-w-0 items-center gap-3">
+            <ToDoctorIcon />
+            <span className="leading-snug">To doctor</span>
+          </span>
+          {count > 0 ? (
+            <span
+              className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] font-bold tabular-nums ${isActive ? "bg-white text-blue" : "bg-blue text-white"}`}
+              aria-label={`${count} sent to a doctor`}
+            >
+              {count > 99 ? "99+" : count}
+            </span>
+          ) : null}
+        </>
+      )}
+    </NavLink>
+  );
+}
+
 function NavSection({ title, show = true, children }: { title: string; show?: boolean; children: ReactNode }) {
   if (!show) return null;
   return (
@@ -362,6 +548,8 @@ function heading(pathname: string) {
   if (section === "patients") {
     if (!id) return "Patients";
     if (id === "visits") return "Visits";
+    if (id === "triage") return "Triage";
+    if (id === "to-doctor") return "To doctor";
     if (id === "register") return "Register";
     if (id === "new") return "New patient";
     if (action === "edit") return "Edit patient";
@@ -379,6 +567,14 @@ function heading(pathname: string) {
   if (id === "new") return `New ${name.slice(0, -1).toLowerCase()}`;
   if (action === "edit") return `Edit ${name.slice(0, -1).toLowerCase()}`;
   return name.slice(0, -1);
+}
+
+function MenuIcon() {
+  return <Icon><path d="M4 7h16" /><path d="M4 12h16" /><path d="M4 17h16" /></Icon>;
+}
+
+function CloseIcon() {
+  return <Icon><path d="M6 6l12 12" /><path d="M18 6l-12 12" /></Icon>;
 }
 
 function RolesIcon() {
@@ -411,6 +607,14 @@ function PatientsIcon() {
 
 function VisitsIcon() {
   return <Icon><rect x="4" y="5" width="16" height="15" rx="2" /><path d="M8 3v4" /><path d="M16 3v4" /><path d="M4 10h16" /><path d="M9 14h6" /></Icon>;
+}
+
+function ToDoctorIcon() {
+  return <Icon><path d="M16 19v-1a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v1" /><circle cx="10" cy="8" r="3" /><path d="M18 7v6" /><path d="M15 10h6" /></Icon>;
+}
+
+function TriageIcon() {
+  return <Icon><path d="M12 4v16" /><path d="M4 12h16" /><circle cx="12" cy="12" r="8" /></Icon>;
 }
 
 function RegisterIcon() {

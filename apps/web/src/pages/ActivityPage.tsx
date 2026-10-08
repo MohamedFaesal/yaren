@@ -127,7 +127,7 @@ export function ActivityPage({ token }: { token: string }) {
               <td className="px-4 py-3 font-semibold">{row.actor_name ?? "Unknown"}</td>
               <td className="px-4 py-3"><ActionLabel action={row.action} /></td>
               <td className="px-4 py-3">
-                <SummaryLine summary={row.summary} entity={row.entity} entityId={row.entity_id} action={row.action} />
+                <SummaryLine summary={row.summary} entity={row.entity} entityId={row.entity_id} action={row.action} status={row.status_code} />
                 <Changes changes={row.changes} />
               </td>
               <td className="px-4 py-3"><Result status={row.status_code} /></td>
@@ -188,16 +188,18 @@ export function SummaryLine({
   entity,
   entityId,
   action,
+  status = 200,
   linkEntity = true,
 }: {
   summary: string;
   entity: string | null;
   entityId: string | null;
   action: string;
+  status?: number;
   linkEntity?: boolean;
 }) {
   const path = entityPath(entity, entityId);
-  const canOpen = linkEntity && Boolean(path) && (action === "create" || action === "update" || action === "view");
+  const canOpen = linkEntity && status < 400 && Boolean(path) && (action === "create" || action === "update" || action === "view");
   if (!canOpen || !path) return <p>{summary}</p>;
   return (
     <div className="flex flex-wrap items-start justify-between gap-2">

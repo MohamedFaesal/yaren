@@ -63,12 +63,12 @@ export function RoleViewPage({ token, actor }: { token: string; actor: User }) {
                 { label: "Clinics", value: role.scopes_clinics ? "Chosen on each person" : "Same for every clinic" },
               ]} />
               <div className="mt-5 space-y-4">
-                {["user", "hotel", "clinic", "patient", "visit", "activity", "role"].map((resource) => {
+                {["user", "hotel", "clinic", "patient", "visit", "triage", "activity", "role"].map((resource) => {
                   const items = role.permission_ids.map((permissionId) => catalogById.get(permissionId)).filter((item) => item?.resource === resource);
                   if (items.length === 0) return null;
                   const manage = items.find((item) => item?.action === "manage");
                   const shown = manage ? [manage] : items;
-                  const title = resource === "user" ? "Users" : resource === "hotel" ? "Hotels" : resource === "clinic" ? "Clinics" : resource === "patient" ? "Patients" : resource === "visit" ? "Visits" : resource === "activity" ? "Activity" : "Roles";
+                  const title = resource === "user" ? "Users" : resource === "hotel" ? "Hotels" : resource === "clinic" ? "Clinics" : resource === "patient" ? "Patients" : resource === "visit" ? "Visits" : resource === "triage" ? "Triage" : resource === "activity" ? "Activity" : "Roles";
                   return (
                     <div key={resource}>
                       <p className="text-xs font-semibold uppercase tracking-wide text-muted">{title}</p>

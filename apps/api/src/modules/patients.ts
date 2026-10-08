@@ -19,6 +19,8 @@ import { nationalities } from "./nationalities.js";
 import { fileUrl, removeUpload, saveVisitDocument } from "../uploads.js";
 
 const genders = ["male", "female"] as const;
+const visitStatuses = ["waiting_for_triage", "to_doctor"] as const;
+const visitSorts = ["created_at", "updated_at"] as const;
 const contactMethods = ["phone", "email", "whatsapp"] as const;
 const relationships = ["spouse", "son", "daughter", "father", "mother", "cousin", "grandfather", "grandmother", "girlfriend", "boyfriend"] as const;
 const visitDocumentTypes = [
@@ -89,6 +91,7 @@ const visitColumns = `v.id, v.patient_id, v.passport_number, v.preferred_contact
   v.emergency_contact_name, v.emergency_contact_phone, v.emergency_contact_relationship,
   v.hotel_checkin_date::text AS hotel_checkin_date, v.hotel_checkout_date::text AS hotel_checkout_date,
   v.hotel_room_no, v.clinic_id, c.name AS clinic_name, h.name AS hotel_name,
+  v.status, v.status_changed_at, v.assigned_doctor_id, d.name AS assigned_doctor_name,
   EXTRACT(YEAR FROM age((v.created_at AT TIME ZONE 'UTC')::date, p.birthdate))::int AS patient_age_at_visit,
   v.created_at, v.updated_at, v.deleted_at`;
 
@@ -135,6 +138,10 @@ export function registerPatients(app: FastifyInstance, pool: pg.Pool) {
       values.push(query.clinicId);
       clauses.push(`v.clinic_id = $${values.length}`);
     }
+    if (query.status) {
+      values.push(query.status);
+      clauses.push(`v.status = $${values.length}`);
+    }
     if (query.q) {
       const pattern = `%${query.q.replace(/[\\%_]/g, (char) => `\\${char}`)}%`;
       values.push(pattern, pattern, pattern, pattern, pattern, pattern);
@@ -155,6 +162,7 @@ export function registerPatients(app: FastifyInstance, pool: pg.Pool) {
       JOIN hotels h ON h.id = c.hotel_id
       JOIN patients p ON p.id = v.patient_id
       JOIN users u ON u.id = p.added_by
+      LEFT JOIN users d ON d.id = v.assigned_doctor_id
       ${where}`;
     const counted = await pool.query<{ total: number }>(`SELECT count(*)::int AS total ${from}`, values);
     const total = counted.rows[0]?.total ?? 0;
@@ -163,7 +171,7 @@ export function registerPatients(app: FastifyInstance, pool: pg.Pool) {
     const result = await pool.query(
       `SELECT ${visitColumns}, p.name AS patient_name, p.mrn AS patient_mrn, p.added_by AS patient_added_by
        ${from}
-       ORDER BY v.hotel_checkin_date DESC, v.created_at DESC
+       ORDER BY v.${query.sort} ${query.dir}
        LIMIT $${values.length + 1} OFFSET $${values.length + 2}`,
       [...values, query.pageSize, (page - 1) * query.pageSize],
     );
@@ -189,7 +197,7 @@ export function registerPatients(app: FastifyInstance, pool: pg.Pool) {
         );
       }
       const { passport_number, ...visitBody } = body.visit;
-      const visitId = await insertVisit(pool, patient.id, passport_number, visitBody);
+      const visitId = await insertVisit(pool, patient.id, passport_number, visitBody, request.user.sub);
       const visit = await findVisit(pool, patient.id, visitId);
       const refreshed = await findPatient(pool, patient.id);
       const visits = canList(access, "visit") ? await listVisits(pool, patient.id, visitViewWhere(access, request.user.sub)) : [];
@@ -220,7 +228,7 @@ export function registerPatients(app: FastifyInstance, pool: pg.Pool) {
       );
       const patientId = created.rows[0]?.id as string;
       const { passport_number, ...visitBody } = body.visit;
-      const visitId = await insertVisit(client, patientId, passport_number, visitBody);
+      const visitId = await insertVisit(client, patientId, passport_number, visitBody, request.user.sub);
       await client.query("COMMIT");
       const patient = await findPatient(pool, patientId);
       const visit = await findVisit(pool, patientId, visitId);
@@ -495,18 +503,8 @@ export function registerPatients(app: FastifyInstance, pool: pg.Pool) {
     await assertClinicExists(pool, body.clinic_id);
     const access = await loadAccess(pool, request.user);
     await assertVisitClinic(access, request.user.sub, ["create"], body.clinic_id, patient.added_by);
-    const result = await pool.query(
-      `INSERT INTO patient_visits (
-         patient_id, passport_number, preferred_contact_method, emergency_contact_name, emergency_contact_phone,
-         emergency_contact_relationship, hotel_checkin_date, hotel_checkout_date, hotel_room_no, clinic_id
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7::date, $8::date, $9, $10)
-       RETURNING id`,
-      [
-        id, body.passport_number, body.preferred_contact_method, body.emergency_contact_name, body.emergency_contact_phone,
-        body.emergency_contact_relationship, body.hotel_checkin_date, body.hotel_checkout_date, body.hotel_room_no, body.clinic_id,
-      ],
-    );
-    const createdId = result.rows[0]?.id as string;
+    const { passport_number, ...visitBody } = body;
+    const createdId = await insertVisit(pool, id, passport_number, visitBody, request.user.sub);
     return reply.status(201).send(await findVisit(pool, id, createdId));
   });
 
@@ -865,19 +863,27 @@ async function insertVisit(
   patientId: string,
   passportNumber: string,
   visit: z.infer<typeof visitBodySchema>,
+  actorId: string,
 ) {
   const result = await db.query(
     `INSERT INTO patient_visits (
        patient_id, passport_number, preferred_contact_method, emergency_contact_name, emergency_contact_phone,
-       emergency_contact_relationship, hotel_checkin_date, hotel_checkout_date, hotel_room_no, clinic_id
-     ) VALUES ($1, $2, $3, $4, $5, $6, $7::date, $8::date, $9, $10)
+       emergency_contact_relationship, hotel_checkin_date, hotel_checkout_date, hotel_room_no, clinic_id,
+       status, status_changed_at
+     ) VALUES ($1, $2, $3, $4, $5, $6, $7::date, $8::date, $9, $10, 'waiting_for_triage', now())
      RETURNING id`,
     [
       patientId, passportNumber, visit.preferred_contact_method, visit.emergency_contact_name, visit.emergency_contact_phone,
       visit.emergency_contact_relationship, visit.hotel_checkin_date, visit.hotel_checkout_date, visit.hotel_room_no, visit.clinic_id,
     ],
   );
-  return result.rows[0]?.id as string;
+  const visitId = result.rows[0]?.id as string;
+  await db.query(
+    `INSERT INTO patient_visit_status_history (visit_id, from_status, to_status, changed_by)
+     VALUES ($1, NULL, 'waiting_for_triage', $2)`,
+    [visitId, actorId],
+  );
+  return visitId;
 }
 
 function isUnique(error: unknown) {
@@ -893,6 +899,7 @@ async function listVisits(pool: Db, patientId: string, where?: { sql: string; pa
      JOIN clinics c ON c.id = v.clinic_id
      JOIN hotels h ON h.id = c.hotel_id
      JOIN patients p ON p.id = v.patient_id
+     LEFT JOIN users d ON d.id = v.assigned_doctor_id
      WHERE v.patient_id = $1 AND v.deleted_at IS NULL AND ${shifted}
      ORDER BY v.hotel_checkin_date DESC, v.created_at DESC`,
     [patientId, ...filter.params],
@@ -907,6 +914,7 @@ async function findVisit(pool: pg.Pool, patientId: string, id: string) {
      JOIN clinics c ON c.id = v.clinic_id
      JOIN hotels h ON h.id = c.hotel_id
      JOIN patients p ON p.id = v.patient_id
+     LEFT JOIN users d ON d.id = v.assigned_doctor_id
      WHERE v.id = $1 AND v.patient_id = $2 AND v.deleted_at IS NULL AND p.deleted_at IS NULL`,
     [id, patientId],
   );
@@ -925,7 +933,20 @@ async function findVisit(pool: pg.Pool, patientId: string, id: string) {
     patient_added_by: string;
   } | undefined;
   if (!visit) return undefined;
-  return { ...visit, documents: await listVisitDocuments(pool, id) };
+  const history = await pool.query<{
+    from_status: string | null;
+    to_status: string;
+    changed_by_name: string | null;
+    created_at: string;
+  }>(
+    `SELECT h.from_status, h.to_status, h.created_at, u.name AS changed_by_name
+     FROM patient_visit_status_history h
+     LEFT JOIN users u ON u.id = h.changed_by
+     WHERE h.visit_id = $1
+     ORDER BY h.created_at ASC`,
+    [id],
+  );
+  return { ...visit, documents: await listVisitDocuments(pool, id), status_history: history.rows };
 }
 
 async function listVisitDocuments(pool: Db, visitId: string) {
@@ -1005,13 +1026,31 @@ function readVisitListQuery(query: unknown) {
   const pageSize = Number(text("page_size") || "20");
   const q = text("q");
   const clinicId = text("clinic_id");
+  const status = text("status");
+  const sort = text("sort") || "updated_at";
+  const dir = (text("dir") || "desc").toLowerCase();
   if (!Number.isInteger(page) || page < 1) throw new ApplicationError(422, "invalid_query", "Page must be 1 or greater");
   if (!Number.isInteger(pageSize) || pageSize < 1 || pageSize > 100) throw new ApplicationError(422, "invalid_query", "Page size must be between 1 and 100");
   if (q.length > 200) throw new ApplicationError(422, "invalid_query", "Search is too long");
   if (clinicId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(clinicId)) {
     throw new ApplicationError(422, "invalid_query", "Unknown clinic");
   }
-  return { page, pageSize, q, clinicId: clinicId || null };
+  if (status && !visitStatuses.includes(status as (typeof visitStatuses)[number])) {
+    throw new ApplicationError(422, "invalid_query", "Unknown status");
+  }
+  if (!visitSorts.includes(sort as (typeof visitSorts)[number])) {
+    throw new ApplicationError(422, "invalid_query", "Unknown sort");
+  }
+  if (dir !== "asc" && dir !== "desc") throw new ApplicationError(422, "invalid_query", "Unknown sort direction");
+  return {
+    page,
+    pageSize,
+    q,
+    clinicId: clinicId || null,
+    status: (status || null) as (typeof visitStatuses)[number] | null,
+    sort: sort as (typeof visitSorts)[number],
+    dir: dir === "asc" ? "ASC" : "DESC",
+  };
 }
 
 async function assertClinicExists(pool: pg.Pool, id: string) {

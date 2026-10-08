@@ -9,6 +9,7 @@ const groups = [
   { id: "clinic", label: "Clinics" },
   { id: "patient", label: "Patients" },
   { id: "visit", label: "Visits" },
+  { id: "triage", label: "Triage" },
   { id: "activity", label: "Activity" },
   { id: "role", label: "Roles" },
 ];

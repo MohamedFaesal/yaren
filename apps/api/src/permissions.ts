@@ -2,7 +2,7 @@ import type { FastifyRequest } from "fastify";
 import type pg from "pg";
 import { ApplicationError } from "@yaren/shared-kernel";
 
-export const resources = ["user", "hotel", "clinic", "patient", "visit", "activity", "role"] as const;
+export const resources = ["user", "hotel", "clinic", "patient", "visit", "triage", "activity", "role"] as const;
 export const verbs = ["view", "create", "update", "delete"] as const;
 
 export type ResourceName = (typeof resources)[number];
@@ -97,6 +97,8 @@ export function workspaceClinicOptionsWhere(access: Access) {
     access.summary.visit.update,
     access.summary.patient.create,
     access.summary.patient.view,
+    access.summary.triage.view,
+    access.summary.triage.update,
   ].filter((entry) => entry.level !== "none");
   if (actions.length === 0) return null;
   if (actions.some((entry) => entry.allClinics)) {
@@ -501,6 +503,7 @@ function emptySummary(): Access["summary"] {
     clinic: { view: emptyAction(), create: emptyAction(), update: emptyAction(), delete: emptyAction() },
     patient: { view: emptyAction(), create: emptyAction(), update: emptyAction(), delete: emptyAction() },
     visit: { view: emptyAction(), create: emptyAction(), update: emptyAction(), delete: emptyAction() },
+    triage: { view: emptyAction(), create: emptyAction(), update: emptyAction(), delete: emptyAction() },
     activity: { view: emptyAction(), create: emptyAction(), update: emptyAction(), delete: emptyAction() },
     role: { view: emptyAction(), create: emptyAction(), update: emptyAction(), delete: emptyAction() },
   };

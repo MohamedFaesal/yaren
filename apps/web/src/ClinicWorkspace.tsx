@@ -138,7 +138,7 @@ export function ClinicSwitcher() {
     <div ref={root} className="relative">
       <button
         type="button"
-        className="flex min-w-[12rem] max-w-[16rem] items-center gap-2.5 rounded-xl border border-panel-strong bg-panel px-3 py-1.5 text-left text-blue shadow-sm transition-colors hover:bg-panel-strong hover:text-blue-strong"
+        className="flex max-w-[10rem] items-center gap-2 rounded-xl border border-panel-strong bg-panel px-2 py-1.5 text-left text-blue shadow-sm transition-colors hover:bg-panel-strong hover:text-blue-strong sm:max-w-[14rem] sm:gap-2.5 sm:px-3 md:min-w-[12rem] md:max-w-[16rem]"
         aria-haspopup="menu"
         aria-expanded={open}
         aria-label="Switch clinic"
@@ -147,7 +147,7 @@ export function ClinicSwitcher() {
         <ClinicGlyph />
         <span className="min-w-0 flex-1">
           <span className="block truncate text-sm font-semibold leading-tight text-ink">{label}</span>
-          <span className="block truncate text-[11px] text-muted">{detail}</span>
+          <span className="hidden truncate text-[11px] text-muted sm:block">{detail}</span>
         </span>
         <svg viewBox="0 0 20 20" className={`h-4 w-4 shrink-0 text-muted transition-transform ${open ? "rotate-180" : ""}`} fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
           <path d="M5 7.5l5 5 5-5" strokeLinecap="round" strokeLinejoin="round" />
@@ -156,7 +156,7 @@ export function ClinicSwitcher() {
       {open ? (
         <div
           role="menu"
-          className="absolute right-0 z-40 mt-2 max-h-80 w-72 overflow-auto rounded-xl border border-line bg-surface py-1 shadow-[var(--menu-shadow)]"
+          className="absolute right-0 z-40 mt-2 max-h-80 w-[min(18rem,calc(100vw-2rem))] overflow-auto rounded-xl border border-line bg-surface py-1 shadow-[var(--menu-shadow)]"
         >
           {showAllOption ? (
             <button

@@ -580,7 +580,7 @@ function MatchDialog({
   return (
     <div className="fixed inset-0 z-50 grid place-items-center bg-shell/45 px-4 py-6" role="presentation" onMouseDown={() => { if (!pending) onClose(); }}>
       <div
-        className="flex max-h-full w-full max-w-2xl flex-col rounded-2xl bg-surface p-6 shadow-[0_24px_60px_rgba(11,28,46,0.28)]"
+        className="flex max-h-full w-full max-w-2xl flex-col rounded-2xl bg-surface p-4 shadow-[0_24px_60px_rgba(11,28,46,0.28)] sm:p-6"
         role="dialog"
         aria-modal="true"
         aria-labelledby="match-title"
@@ -642,12 +642,12 @@ function MatchDialog({
             </article>
           ))}
         </div>
-        <div className="mt-5 flex justify-end gap-2">
-          <button type="button" className={secondary} disabled={pending} onClick={onClose}>
+        <div className="mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+          <button type="button" className={`${secondary} w-full sm:w-auto`} disabled={pending} onClick={onClose}>
             {mode === "confirm" ? "Back" : "Close"}
           </button>
           {mode === "confirm" ? (
-            <button type="button" className={primary} disabled={pending} onClick={onCreateNew}>
+            <button type="button" className={`${primary} w-full sm:w-auto`} disabled={pending} onClick={onCreateNew}>
               {pending ? "Saving" : "Register as a new patient"}
             </button>
           ) : null}

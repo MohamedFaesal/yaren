@@ -22,7 +22,7 @@ export type User = {
 
 export type ActionGrant = { level: "all" | "own" | "none"; allClinics: boolean; clinicIds: string[] };
 export type ResourceGrants = Record<"view" | "create" | "update" | "delete", ActionGrant>;
-export type Access = { bypass: boolean } & Record<"user" | "hotel" | "clinic" | "patient" | "visit" | "activity" | "role", ResourceGrants>;
+export type Access = { bypass: boolean } & Record<"user" | "hotel" | "clinic" | "patient" | "visit" | "triage" | "activity" | "role", ResourceGrants>;
 
 export type Permission = { id: string; resource: string; action: string; ownership: string; clinic_scoped: boolean; description: string };
 export type AccessRole = {
@@ -129,14 +129,151 @@ export type PatientVisit = {
   clinic_id: string;
   clinic_name: string;
   hotel_name: string;
+  status?: VisitCareStatus;
+  status_changed_at?: string;
+  assigned_doctor_id?: string | null;
+  assigned_doctor_name?: string | null;
   patient_age_at_visit?: number | null;
   patient_added_by?: string;
   patient_name?: string;
   patient_mrn?: string;
   documents?: VisitDocument[];
+  status_history?: VisitStatusEvent[];
   created_at: string;
   updated_at: string;
   deleted_at: string | null;
+};
+
+export type VisitCareStatus = "waiting_for_triage" | "to_doctor";
+
+export type VisitStatusEvent = {
+  from_status: string | null;
+  to_status: string;
+  changed_by_name: string | null;
+  created_at: string;
+};
+
+export type TriageCategory = "emergency" | "urgent" | "normal";
+
+export type TriageAllergy = { name: string; reaction?: string };
+export type TriageMedication = { name: string };
+
+export type VisitTriage = {
+  id: string;
+  visit_id: string;
+  chief_complaint: string | null;
+  temperature_c: number | string | null;
+  pulse: number | null;
+  respiratory_rate: number | null;
+  spo2: number | null;
+  allergies: TriageAllergy[];
+  medications: TriageMedication[];
+  relevant_history: string[];
+  relevant_history_other: string | null;
+  initial_assessment: string | null;
+  triage_category: TriageCategory | null;
+  assigned_doctor_id: string | null;
+  assigned_doctor_name?: string | null;
+  started_by: string | null;
+  started_by_name?: string | null;
+  started_at: string | null;
+  completed_by: string | null;
+  completed_by_name?: string | null;
+  completed_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type VisitStatusHistory = {
+  id: string;
+  visit_id: string;
+  from_status: VisitCareStatus | null;
+  to_status: VisitCareStatus;
+  changed_by: string | null;
+  changed_by_name?: string | null;
+  note: string | null;
+  created_at: string;
+};
+
+export type TriageQueueItem = {
+  id: string;
+  patient_id: string;
+  status: VisitCareStatus;
+  status_changed_at: string;
+  assigned_doctor_id: string | null;
+  assigned_doctor_name: string | null;
+  hotel_room_no: string | null;
+  clinic_id: string;
+  clinic_name: string;
+  hotel_name: string;
+  patient_name: string;
+  patient_mrn: string;
+  patient_added_by: string;
+  triage_id: string | null;
+  triage_category: TriageCategory | null;
+  triage_completed_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type DoctorCase = {
+  id: string;
+  patient_id: string;
+  status: VisitCareStatus;
+  status_changed_at: string;
+  assigned_doctor_id: string | null;
+  assigned_doctor_name: string | null;
+  hotel_room_no: string | null;
+  clinic_id: string;
+  clinic_name: string;
+  hotel_name: string;
+  patient_name: string;
+  patient_mrn: string;
+  triage_category: TriageCategory | null;
+  chief_complaint: string | null;
+  triage_completed_at: string | null;
+};
+
+export type DoctorCaseDetail = DoctorCase & {
+  patient_gender: "male" | "female" | null;
+  patient_nationality: string | null;
+  patient_age_at_visit: number | null;
+  temperature_c: number | string | null;
+  pulse: number | null;
+  respiratory_rate: number | null;
+  spo2: number | null;
+  allergies: TriageAllergy[];
+  medications: TriageMedication[];
+  relevant_history: string[];
+  relevant_history_other: string | null;
+  initial_assessment: string | null;
+  completed_by_name: string | null;
+};
+
+export type DoctorCasePage = {
+  items: DoctorCase[];
+  total: number;
+  page: number;
+  page_size: number;
+};
+
+export type TriageQueueResult = {
+  items: TriageQueueItem[];
+  total: number;
+  page: number;
+  page_size: number;
+  summary: { waiting_for_triage: number; to_doctor: number };
+};
+
+export type TriageDetail = {
+  visit: TriageQueueItem & {
+    patient_gender?: string;
+    patient_birthdate?: string;
+    patient_nationality?: string;
+    patient_age_at_visit?: number | null;
+  };
+  triage: VisitTriage | null;
+  history: VisitStatusHistory[];
 };
 
 export type DashboardStats = {

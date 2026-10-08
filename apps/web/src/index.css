@@ -27,33 +27,6 @@
   --menu-shadow: 0 12px 30px rgb(22 50 79 / 0.12);
 }
 
-html.dark {
-  color-scheme: dark;
-  --ink: #e8eef6;
-  --shell: #07111c;
-  --blue: #5b8fff;
-  --blue-strong: #7aa4ff;
-  --canvas: #0a1420;
-  --surface: #122033;
-  --surface-2: #18263a;
-  --surface-3: #1c2c42;
-  --line: #24374f;
-  --line-strong: #2f4661;
-  --line-soft: #1c2d42;
-  --muted: #8fa1b5;
-  --muted-strong: #a8b7c8;
-  --muted-soft: #7d8fa3;
-  --panel: #1a2f4d;
-  --panel-strong: #243b5c;
-  --danger: #f97066;
-  --danger-soft: #3a1d1d;
-  --danger-line: #6b3030;
-  --success: #3ecf8e;
-  --success-soft: #163528;
-  --header: rgb(18 32 51 / 0.94);
-  --menu-shadow: 0 16px 36px rgb(0 0 0 / 0.45);
-}
-
 @theme {
   --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
   --color-ink: var(--ink);
@@ -183,10 +156,83 @@ input, select, button, textarea {
   animation: greeting-swap 420ms cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
+@keyframes triage-dialog-backdrop {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes triage-dialog-panel {
+  from {
+    opacity: 0;
+    transform: translateY(18px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes triage-rise {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.triage-dialog-backdrop {
+  animation: triage-dialog-backdrop 180ms ease-out both;
+}
+
+.triage-dialog-panel {
+  animation: triage-dialog-panel 320ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.triage-rise {
+  animation: triage-rise 420ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes triage-badge {
+  from {
+    opacity: 0;
+    transform: scale(0.35);
+  }
+  70% {
+    opacity: 1;
+    transform: scale(1.12);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.triage-badge {
+  animation: triage-badge 460ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes care-pulse {
+  0% { box-shadow: 0 0 0 0 rgb(47 111 237 / 0.38); }
+  70% { box-shadow: 0 0 0 12px rgb(47 111 237 / 0); }
+  100% { box-shadow: 0 0 0 0 rgb(47 111 237 / 0); }
+}
+
+.care-pulse {
+  animation: care-pulse 1.8s ease-out infinite;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .header-clock,
   .clock-flip,
-  .greeting-swap {
+  .greeting-swap,
+  .triage-dialog-backdrop,
+  .triage-dialog-panel,
+  .triage-rise,
+  .triage-badge,
+  .care-pulse {
     animation: none !important;
   }
 }

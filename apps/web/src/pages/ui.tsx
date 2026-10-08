@@ -1,4 +1,4 @@
-import { Children, cloneElement, useEffect, useRef, useState, type ReactElement, type ReactNode } from "react";
+import { Children, cloneElement, useEffect, useId, useRef, useState, type ReactElement, type ReactNode } from "react";
 import { Link } from "react-router";
 
 export const field = "mt-1 w-full rounded-lg border border-line-strong bg-surface px-3 py-2.5 text-sm text-ink outline-none focus:border-blue disabled:bg-surface-3";
@@ -35,6 +35,43 @@ function EyeIcon() {
     <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12Z" />
       <circle cx="12" cy="12" r="2.5" />
+    </svg>
+  );
+}
+
+export function SecretValue({ value, mono = false }: { value: string | null | undefined; mono?: boolean }) {
+  const [open, setOpen] = useState(false);
+  const text = value?.trim() ? value : "";
+  if (!text || text === "—") return <span className="text-muted">—</span>;
+  return (
+    <span className="inline-flex max-w-full items-center gap-1.5">
+      <span className={`min-w-0 truncate ${mono ? "font-mono" : ""} ${open ? "" : "select-none blur-[5px]"}`} aria-hidden={!open}>
+        {text}
+      </span>
+      <button
+        type="button"
+        className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-muted hover:bg-surface-3 hover:text-ink"
+        aria-label={open ? "Hide value" : "View value"}
+        aria-pressed={open}
+        onClick={(event) => {
+          event.stopPropagation();
+          event.preventDefault();
+          setOpen((current) => !current);
+        }}
+      >
+        {open ? <EyeOffIcon /> : <EyeIcon />}
+      </button>
+    </span>
+  );
+}
+
+function EyeOffIcon() {
+  return (
+    <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M3 3l18 18" />
+      <path d="M10.6 10.6a2.5 2.5 0 0 0 3.5 3.5" />
+      <path d="M9.9 5.2A10.8 10.8 0 0 1 12 5c6.5 0 10 7 10 7a18 18 0 0 1-4.1 4.8" />
+      <path d="M6.1 6.1C3.5 7.8 2 12 2 12s3.5 7 10 7c1.6 0 3-.3 4.2-.9" />
     </svg>
   );
 }
@@ -298,7 +335,7 @@ export function Page({
 }) {
   return (
     <section>
-      <header className="border-b border-line pb-5">
+      <header className="border-b border-line pb-4 sm:pb-5">
         <nav className="flex flex-wrap items-center gap-1.5 text-xs font-medium text-muted">
           {crumbs.map((crumb, index) => (
             <span key={`${crumb.label}-${index}`} className="flex items-center gap-1.5">
@@ -307,21 +344,21 @@ export function Page({
             </span>
           ))}
         </nav>
-        <div className="mt-3 flex flex-wrap items-end justify-between gap-4">
+        <div className="mt-3 flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-end sm:justify-between sm:gap-4">
           <div className="min-w-0">
-            <h1 className="text-[28px] font-bold tracking-tight text-ink">{title}</h1>
+            <h1 className="text-2xl font-bold tracking-tight text-ink sm:text-[28px]">{title}</h1>
             {description ? <p className="mt-1 max-w-2xl text-sm text-muted-strong">{description}</p> : null}
           </div>
           {action ? <div className="flex flex-wrap items-center gap-2">{action}</div> : null}
         </div>
       </header>
-      <div className="mt-5">{children}</div>
+      <div className="mt-4 sm:mt-5">{children}</div>
     </section>
   );
 }
 
 export function Card({ children }: { children: ReactNode }) {
-  return <div className="rounded-2xl bg-surface p-5 shadow-[0_8px_24px_rgba(16,42,67,0.06)]">{children}</div>;
+  return <div className="rounded-2xl bg-surface p-4 shadow-[0_8px_24px_rgba(16,42,67,0.06)] sm:p-5">{children}</div>;
 }
 
 export function Section({ index, title }: { index: string; title: string }) {
@@ -470,9 +507,9 @@ export function ConfirmDialog({
         <h2 id="confirm-title" className="mt-2 text-xl font-bold text-ink">{title}</h2>
         <p className="mt-2 text-sm leading-6 text-muted-strong">{body}</p>
         {error ? <p className="mt-3 text-sm text-danger">{error}</p> : null}
-        <div className="mt-6 flex justify-end gap-2">
-          <button type="button" className={secondary} onClick={onCancel} disabled={pending}>Keep</button>
-          <button type="button" className={danger} onClick={onConfirm} disabled={pending}>{pending ? "Deleting" : confirmLabel}</button>
+        <div className="mt-6 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+          <button type="button" className={`${secondary} w-full sm:w-auto`} onClick={onCancel} disabled={pending}>Keep</button>
+          <button type="button" className={`${danger} w-full sm:w-auto`} onClick={onConfirm} disabled={pending}>{pending ? "Deleting" : confirmLabel}</button>
         </div>
       </div>
     </div>
@@ -496,7 +533,40 @@ export function Status({ active }: { active: boolean }) {
 }
 
 export function Filters({ children }: { children: ReactNode }) {
-  return <div className="mb-4 grid gap-3 rounded-2xl bg-surface p-4 shadow-[0_8px_24px_rgba(16,42,67,0.06)] md:grid-cols-2 xl:grid-cols-4">{children}</div>;
+  const [open, setOpen] = useState(false);
+  const panelId = useId();
+
+  return (
+    <div className="mb-4 rounded-2xl bg-surface shadow-[0_8px_24px_rgba(16,42,67,0.06)]">
+      <button
+        type="button"
+        className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left"
+        aria-expanded={open}
+        aria-controls={panelId}
+        onClick={() => setOpen((current) => !current)}
+      >
+        <span className="text-sm font-semibold text-ink">Filters</span>
+        <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-muted">
+          {open ? "Collapse" : "Expand"}
+          <svg
+            viewBox="0 0 20 20"
+            className={`h-4 w-4 transition-transform ${open ? "rotate-180" : ""}`}
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.8"
+            aria-hidden="true"
+          >
+            <path d="M5 7.5l5 5 5-5" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+        </span>
+      </button>
+      {open ? (
+        <div id={panelId} className="grid gap-3 border-t border-line-soft px-4 pb-4 pt-3 md:grid-cols-2 xl:grid-cols-4">
+          {children}
+        </div>
+      ) : null}
+    </div>
+  );
 }
 
 export function SearchSelect({

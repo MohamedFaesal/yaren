@@ -11,6 +11,7 @@ import { registerUsers } from "./modules/users.js";
 import { registerHotels } from "./modules/hotels.js";
 import { registerClinics } from "./modules/clinics.js";
 import { registerPatients } from "./modules/patients.js";
+import { registerTriage } from "./modules/triage.js";
 import { registerTourism } from "./modules/tourism.js";
 import { registerDashboard } from "./modules/dashboard.js";
 import { registerRoles } from "./modules/roles.js";
@@ -47,6 +48,7 @@ export async function buildServer() {
   registerHotels(app, pool);
   registerClinics(app, pool);
   registerPatients(app, pool);
+  registerTriage(app, pool);
   registerTourism(app);
   registerDashboard(app, pool);
   registerRoles(app, pool);
