@@ -4,9 +4,9 @@
   color-scheme: light;
   --ink: #16324f;
   --shell: #0b1c2e;
-  --blue: #2f6fed;
-  --blue-strong: #245fe0;
-  --canvas: #eef4fb;
+  --blue: #005eb8;
+  --blue-strong: #004b93;
+  --canvas: #f4f7fa;
   --surface: #ffffff;
   --surface-2: #f7fafc;
   --surface-3: #f4f7fa;
@@ -16,8 +16,8 @@
   --muted: #7b8da0;
   --muted-strong: #5c6f82;
   --muted-soft: #8a9aab;
-  --panel: #eaf2ff;
-  --panel-strong: #d9e7ff;
+  --panel: #e8f2fa;
+  --panel-strong: #d4e6f4;
   --danger: #b42318;
   --danger-soft: #fdecec;
   --danger-line: #f3c7c3;

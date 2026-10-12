@@ -43,6 +43,7 @@ export function VisitFormPage({ token, actor }: { token: string; actor: User }) 
   const [checkin, setCheckin] = useState("");
   const [checkout, setCheckout] = useState("");
   const [room, setRoom] = useState("");
+  const [visitType, setVisitType] = useState("");
   const [clinicId, setClinicId] = useState("");
   const [documents, setDocuments] = useState<Partial<Record<VisitDocumentType, File | null>>>({});
   const [error, setError] = useState<string | null>(null);
@@ -80,6 +81,7 @@ export function VisitFormPage({ token, actor }: { token: string; actor: User }) 
       setCheckin(visit.hotel_checkin_date ?? "");
       setCheckout(visit.hotel_checkout_date ?? "");
       setRoom(visit.hotel_room_no ?? "");
+      setVisitType(visit.visit_type ?? "");
       setClinicId(visit.clinic_id);
     }).catch((caught) => setError(messageOf(caught)));
   }, [id, patientId, token]);
@@ -122,6 +124,7 @@ export function VisitFormPage({ token, actor }: { token: string; actor: User }) 
                 hotel_checkin_date: checkin,
                 hotel_checkout_date: checkout,
                 hotel_room_no: room,
+                visit_type: visitType,
                 clinic_id: clinicId,
               };
               try {
@@ -164,6 +167,20 @@ export function VisitFormPage({ token, actor }: { token: string; actor: User }) 
                   onChange={(value) => { setClinicId(value); fields.clearField("clinic_id"); }}
                   options={clinics.map((clinic) => ({ value: clinic.id, label: `${clinic.name} · ${clinic.hotel_name}` }))}
                   placeholder="Choose clinic"
+                  disabled={!canWrite}
+                  required
+                />
+              </Field>
+              <Field label="Visit type" error={fields.errorOf("visit_type")}>
+                <SearchSelect
+                  name="visit_type"
+                  value={visitType}
+                  onChange={(value) => { setVisitType(value); fields.clearField("visit_type"); }}
+                  options={[
+                    { value: "new", label: "New" },
+                    { value: "follow-up", label: "Follow-up" },
+                  ]}
+                  placeholder="New or follow-up"
                   disabled={!canWrite}
                   required
                 />

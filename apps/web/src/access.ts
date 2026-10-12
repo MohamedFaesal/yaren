@@ -3,6 +3,10 @@ import type { User } from "./api";
 type ResourceName = "user" | "hotel" | "clinic" | "patient" | "visit" | "triage" | "activity" | "role";
 type ActionName = "view" | "create" | "update" | "delete";
 
+export function canManageSettings(actor: User) {
+  return actor.type === "super-admin" || actor.type === "admin";
+}
+
 export function canSeeDoctorCases(actor: User) {
   return actor.type === "super-admin" || actor.type === "admin" || actor.role === "Doctor";
 }

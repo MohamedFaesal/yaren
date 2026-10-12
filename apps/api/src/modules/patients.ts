@@ -19,7 +19,8 @@ import { nationalities } from "./nationalities.js";
 import { fileUrl, removeUpload, saveVisitDocument } from "../uploads.js";
 
 const genders = ["male", "female"] as const;
-const visitStatuses = ["waiting_for_triage", "to_doctor"] as const;
+const visitStatuses = ["waiting_for_triage", "to_doctor", "seen"] as const;
+const visitTypes = ["new", "follow-up"] as const;
 const visitSorts = ["created_at", "updated_at"] as const;
 const contactMethods = ["phone", "email", "whatsapp"] as const;
 const relationships = ["spouse", "son", "daughter", "father", "mother", "cousin", "grandfather", "grandmother", "girlfriend", "boyfriend"] as const;
@@ -55,6 +56,7 @@ const visitBodySchema = z.object({
   hotel_checkout_date: z.string().trim().optional().transform((value) => (value ? value : null)),
   hotel_room_no: z.string().trim().min(1, "Enter the hotel room number"),
   clinic_id: z.string().uuid(),
+  visit_type: z.enum(visitTypes, { error: "Choose a visit type" }),
 }).superRefine((value, context) => {
   if (value.hotel_checkout_date && !/^\d{4}-\d{2}-\d{2}$/.test(value.hotel_checkout_date)) {
     context.addIssue({ code: "custom", message: "Choose a check-out date", path: ["hotel_checkout_date"] });
@@ -90,7 +92,7 @@ const patientColumns = `p.id, p.name, p.mrn, p.birthdate::text AS birthdate, p.n
 const visitColumns = `v.id, v.patient_id, v.passport_number, v.preferred_contact_method,
   v.emergency_contact_name, v.emergency_contact_phone, v.emergency_contact_relationship,
   v.hotel_checkin_date::text AS hotel_checkin_date, v.hotel_checkout_date::text AS hotel_checkout_date,
-  v.hotel_room_no, v.clinic_id, c.name AS clinic_name, h.name AS hotel_name,
+  v.hotel_room_no, v.visit_type, v.clinic_id, c.name AS clinic_name, h.name AS hotel_name,
   v.status, v.status_changed_at, v.assigned_doctor_id, d.name AS assigned_doctor_name,
   EXTRACT(YEAR FROM age((v.created_at AT TIME ZONE 'UTC')::date, p.birthdate))::int AS patient_age_at_visit,
   v.created_at, v.updated_at, v.deleted_at`;
@@ -141,6 +143,10 @@ export function registerPatients(app: FastifyInstance, pool: pg.Pool) {
     if (query.status) {
       values.push(query.status);
       clauses.push(`v.status = $${values.length}`);
+    }
+    if (query.visitType) {
+      values.push(query.visitType);
+      clauses.push(`v.visit_type = $${values.length}`);
     }
     if (query.q) {
       const pattern = `%${query.q.replace(/[\\%_]/g, (char) => `\\${char}`)}%`;
@@ -532,11 +538,11 @@ export function registerPatients(app: FastifyInstance, pool: pg.Pool) {
       `UPDATE patient_visits
        SET passport_number = $3, preferred_contact_method = $4, emergency_contact_name = $5, emergency_contact_phone = $6,
            emergency_contact_relationship = $7, hotel_checkin_date = $8::date, hotel_checkout_date = $9::date,
-           hotel_room_no = $10, clinic_id = $11, updated_at = now()
+           hotel_room_no = $10, clinic_id = $11, visit_type = $12, updated_at = now()
        WHERE id = $1 AND patient_id = $2 AND deleted_at IS NULL`,
       [
         id, patientId, body.passport_number, body.preferred_contact_method, body.emergency_contact_name, body.emergency_contact_phone,
-        body.emergency_contact_relationship, body.hotel_checkin_date, body.hotel_checkout_date, body.hotel_room_no, body.clinic_id,
+        body.emergency_contact_relationship, body.hotel_checkin_date, body.hotel_checkout_date, body.hotel_room_no, body.clinic_id, body.visit_type,
       ],
     );
     const next = await findVisit(pool, patientId, id);
@@ -551,6 +557,7 @@ export function registerPatients(app: FastifyInstance, pool: pg.Pool) {
         changed("Hotel check-in", previous.hotel_checkin_date, body.hotel_checkin_date),
         changed("Hotel check-out", previous.hotel_checkout_date, body.hotel_checkout_date),
         changed("Hotel room", previous.hotel_room_no, body.hotel_room_no),
+        changed("Visit type", visitTypeLabel(previous.visit_type), visitTypeLabel(body.visit_type)),
         changed("Clinic", previous.clinic_name, next.clinic_name),
       ].filter((item) => item !== null),
     });
@@ -869,12 +876,13 @@ async function insertVisit(
     `INSERT INTO patient_visits (
        patient_id, passport_number, preferred_contact_method, emergency_contact_name, emergency_contact_phone,
        emergency_contact_relationship, hotel_checkin_date, hotel_checkout_date, hotel_room_no, clinic_id,
-       status, status_changed_at
-     ) VALUES ($1, $2, $3, $4, $5, $6, $7::date, $8::date, $9, $10, 'waiting_for_triage', now())
+       visit_type, status, status_changed_at
+     ) VALUES ($1, $2, $3, $4, $5, $6, $7::date, $8::date, $9, $10, $11, 'waiting_for_triage', now())
      RETURNING id`,
     [
       patientId, passportNumber, visit.preferred_contact_method, visit.emergency_contact_name, visit.emergency_contact_phone,
       visit.emergency_contact_relationship, visit.hotel_checkin_date, visit.hotel_checkout_date, visit.hotel_room_no, visit.clinic_id,
+      visit.visit_type,
     ],
   );
   const visitId = result.rows[0]?.id as string;
@@ -930,6 +938,7 @@ async function findVisit(pool: pg.Pool, patientId: string, id: string) {
     hotel_checkin_date: string | null;
     hotel_checkout_date: string | null;
     hotel_room_no: string | null;
+    visit_type: string;
     patient_added_by: string;
   } | undefined;
   if (!visit) return undefined;
@@ -1027,6 +1036,7 @@ function readVisitListQuery(query: unknown) {
   const q = text("q");
   const clinicId = text("clinic_id");
   const status = text("status");
+  const visitType = text("visit_type");
   const sort = text("sort") || "updated_at";
   const dir = (text("dir") || "desc").toLowerCase();
   if (!Number.isInteger(page) || page < 1) throw new ApplicationError(422, "invalid_query", "Page must be 1 or greater");
@@ -1038,6 +1048,9 @@ function readVisitListQuery(query: unknown) {
   if (status && !visitStatuses.includes(status as (typeof visitStatuses)[number])) {
     throw new ApplicationError(422, "invalid_query", "Unknown status");
   }
+  if (visitType && !visitTypes.includes(visitType as (typeof visitTypes)[number])) {
+    throw new ApplicationError(422, "invalid_query", "Unknown visit type");
+  }
   if (!visitSorts.includes(sort as (typeof visitSorts)[number])) {
     throw new ApplicationError(422, "invalid_query", "Unknown sort");
   }
@@ -1048,6 +1061,7 @@ function readVisitListQuery(query: unknown) {
     q,
     clinicId: clinicId || null,
     status: (status || null) as (typeof visitStatuses)[number] | null,
+    visitType: (visitType || null) as (typeof visitTypes)[number] | null,
     sort: sort as (typeof visitSorts)[number],
     dir: dir === "asc" ? "ASC" : "DESC",
   };
@@ -1061,6 +1075,12 @@ async function assertClinicExists(pool: pg.Pool, id: string) {
 async function actorName(pool: pg.Pool, id: string) {
   const result = await pool.query("SELECT name FROM users WHERE id = $1", [id]);
   return result.rows[0]?.name ?? "";
+}
+
+function visitTypeLabel(value: string | null | undefined) {
+  if (value === "follow-up") return "Follow-up";
+  if (value === "new") return "New";
+  return null;
 }
 
 function titleCase(value: string) {

@@ -69,7 +69,7 @@ export function noteActivity(request: FastifyRequest, note: ActivityNote) {
 }
 
 const actions = ["login", "logout", "create", "update", "delete", "view"] as const;
-const entities = ["user", "hotel", "clinic", "patient", "session", "dashboard", "tourism", "activity", "role"] as const;
+const entities = ["user", "hotel", "clinic", "patient", "session", "dashboard", "tourism", "activity", "role", "settings", "service", "medication", "procedure"] as const;
 
 export function startActivityLog(app: FastifyInstance, pool: pg.Pool) {
   app.get("/api/activity", { preHandler: authenticate }, async (request) => {
@@ -130,7 +130,7 @@ export function startActivityLog(app: FastifyInstance, pool: pg.Pool) {
   app.addHook("onResponse", (request, reply, done) => {
     const path = request.url.split("?")[0] ?? request.url;
     const listingTheLog = request.method === "GET" && path === "/api/activity";
-    if (!listingTheLog && path !== "/api/health" && path.startsWith("/api/")) {
+    if (!listingTheLog && path !== "/api/health" && !path.startsWith("/api/notifications") && path.startsWith("/api/")) {
       const entry = entryFrom(request, reply.statusCode, path);
       if (entry.action !== "view" || entry.entityId) enqueue(entry);
     }
@@ -297,11 +297,75 @@ function describe(request: FastifyRequest, path: string, statusCode: number) {
   if (resource === "activity") {
     return { action: "view", entity: "activity", entityId: null, actorLabel: null, summary: "Opened the activity log" };
   }
+  if (resource === "services") {
+    if (request.method === "POST") {
+      return { action: "create", entity: "service", entityId: null, actorLabel: null, summary: name ? `Added medical service ${name}` : "Added a medical service" };
+    }
+    if (request.method === "PATCH") {
+      return { action: "update", entity: "service", entityId, actorLabel: null, summary: name ? `Updated medical service ${name}` : "Updated a medical service" };
+    }
+    if (request.method === "DELETE" && extra === "clinics") {
+      return { action: "update", entity: "service", entityId, actorLabel: null, summary: "A clinic now uses the shared service price" };
+    }
+    if (request.method === "DELETE") {
+      return { action: "delete", entity: "service", entityId, actorLabel: null, summary: "Removed a medical service" };
+    }
+    return { action: "view", entity: "service", entityId: null, actorLabel: null, summary: "Opened the service price list" };
+  }
+  if (resource === "medications") {
+    if (request.method === "POST") {
+      return { action: "create", entity: "medication", entityId: null, actorLabel: null, summary: name ? `Added medication ${name}` : "Added a medication" };
+    }
+    if (request.method === "PATCH") {
+      return { action: "update", entity: "medication", entityId, actorLabel: null, summary: name ? `Updated medication ${name}` : "Updated a medication" };
+    }
+    if (request.method === "DELETE") {
+      return { action: "delete", entity: "medication", entityId, actorLabel: null, summary: "Removed a medication" };
+    }
+    return { action: "view", entity: "medication", entityId: null, actorLabel: null, summary: "Opened the medication list" };
+  }
+  if (resource === "surgical-procedures") {
+    if (request.method === "POST") {
+      return { action: "create", entity: "procedure", entityId: null, actorLabel: null, summary: name ? `Added surgical procedure ${name}` : "Added a surgical procedure" };
+    }
+    if (request.method === "PATCH") {
+      return { action: "update", entity: "procedure", entityId, actorLabel: null, summary: name ? `Updated surgical procedure ${name}` : "Updated a surgical procedure" };
+    }
+    if (request.method === "DELETE") {
+      return { action: "delete", entity: "procedure", entityId, actorLabel: null, summary: "Removed a surgical procedure" };
+    }
+    return { action: "view", entity: "procedure", entityId: null, actorLabel: null, summary: "Opened the surgical procedures" };
+  }
+  if (resource === "settings") {
+    if (request.method === "PATCH") {
+      return { action: "update", entity: "settings", entityId: null, actorLabel: null, summary: "Updated general settings" };
+    }
+    return { action: "view", entity: "settings", entityId: null, actorLabel: null, summary: "Opened general settings" };
+  }
 
   if (resource === "visits") {
     return { action: "view", entity: "patient", entityId: null, actorLabel: null, summary: "Opened the visits list" };
   }
   if (resource === "doctor-cases") {
+    if (extra === "encounter") {
+      const visitId = target && uuidPattern.test(target) ? target : null;
+      if (request.method === "DELETE") {
+        return { action: "delete", entity: "patient", entityId: visitId, actorLabel: null, summary: "Removed a file from a clinical encounter" };
+      }
+      if (request.method === "POST" && parts[4] === "finish") {
+        return { action: "update", entity: "patient", entityId: visitId, actorLabel: null, summary: "Finished a clinical encounter" };
+      }
+      if (request.method === "POST") {
+        return { action: "create", entity: "patient", entityId: visitId, actorLabel: null, summary: "Added a file to a clinical encounter" };
+      }
+      if (request.method === "PUT") {
+        return { action: "update", entity: "patient", entityId: visitId, actorLabel: null, summary: "Saved a clinical encounter" };
+      }
+      return { action: "view", entity: "patient", entityId: visitId, actorLabel: null, summary: "Opened a clinical encounter" };
+    }
+    if (target && uuidPattern.test(target)) {
+      return { action: "view", entity: "patient", entityId: null, actorLabel: null, summary: "Opened a doctor case" };
+    }
     return { action: "view", entity: "patient", entityId: null, actorLabel: null, summary: "Opened the doctor cases" };
   }
   const entity = resource === "users" ? "user" : resource === "hotels" ? "hotel" : resource === "clinics" ? "clinic" : resource === "patients" ? "patient" : resource === "roles" ? "role" : resource || null;

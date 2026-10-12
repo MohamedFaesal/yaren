@@ -126,6 +126,7 @@ export type PatientVisit = {
   hotel_checkin_date: string | null;
   hotel_checkout_date: string | null;
   hotel_room_no: string | null;
+  visit_type?: VisitType;
   clinic_id: string;
   clinic_name: string;
   hotel_name: string;
@@ -144,7 +145,14 @@ export type PatientVisit = {
   deleted_at: string | null;
 };
 
-export type VisitCareStatus = "waiting_for_triage" | "to_doctor";
+export type VisitCareStatus = "waiting_for_triage" | "to_doctor" | "seen";
+export type VisitType = "new" | "follow-up";
+
+export function visitTypeLabel(value: VisitType | null | undefined) {
+  if (value === "follow-up") return "Follow-up";
+  if (value === "new") return "New";
+  return "—";
+}
 
 export type VisitStatusEvent = {
   from_status: string | null;
@@ -169,6 +177,7 @@ export type VisitTriage = {
   allergies: TriageAllergy[];
   medications: TriageMedication[];
   relevant_history: string[];
+  relevant_history_items?: TriageMedication[];
   relevant_history_other: string | null;
   initial_assessment: string | null;
   triage_category: TriageCategory | null;
@@ -209,6 +218,7 @@ export type TriageQueueItem = {
   patient_name: string;
   patient_mrn: string;
   patient_added_by: string;
+  visit_type?: VisitType;
   triage_id: string | null;
   triage_category: TriageCategory | null;
   triage_completed_at: string | null;
@@ -229,9 +239,105 @@ export type DoctorCase = {
   hotel_name: string;
   patient_name: string;
   patient_mrn: string;
+  visit_type?: VisitType;
   triage_category: TriageCategory | null;
   chief_complaint: string | null;
   triage_completed_at: string | null;
+};
+
+export type EncounterSystem = "general" | "heent" | "respiratory" | "cardiovascular" | "abdomen" | "cns" | "musculoskeletal" | "skin" | "other";
+
+export type ClinicalEncounter = {
+  chief_complaint: string;
+  history_of_present_illness: string;
+  past_history: string;
+  temperature_c: number | null;
+  pulse: number | null;
+  respiratory_rate: number | null;
+  blood_pressure: string;
+  spo2: number | null;
+  pain_score: number | null;
+  vitals_recorded_at: string | null;
+  examination: {
+    general_appearance: string;
+    consciousness: string;
+    nutrition: string;
+    hydration: string;
+    findings: string;
+    notes: Partial<Record<EncounterSystem, string>>;
+  };
+  provisional_diagnosis: string;
+  investigations: EncounterInvestigation[];
+  management_plan: string;
+  allergies: TriageAllergy[];
+  medications: TriageMedication[];
+  medication_orders: MedicationOrder[];
+  procedure_orders: ProcedureOrder[];
+  patient_advices: PatientAdvice[];
+};
+
+export type EncounterInvestigation = {
+  id: string;
+  service_id: string | null;
+  name: string;
+  code: string;
+  unit: string;
+  price: number | null;
+};
+
+export type CatalogMedication = {
+  id: string;
+  name: string;
+  strength: string;
+  dosage_form: string;
+  route: string;
+};
+
+export type MedicationOrder = {
+  id: string;
+  medication_id: string | null;
+  route: string;
+  medication: string;
+  strength: string;
+  dosage_form: string;
+  dose: string;
+  frequency: string;
+  duration: string;
+  instructions: string;
+};
+
+export type CatalogProcedure = {
+  id: string;
+  name: string;
+  category: string;
+};
+
+export type ProcedureOrder = {
+  id: string;
+  procedure_id: string | null;
+  name: string;
+  notes: string;
+};
+
+export type PatientAdvice = {
+  id: string;
+  text: string;
+};
+
+export type EncounterFile = {
+  id: string;
+  original_name: string;
+  mime_type: string;
+  file_url: string | null;
+  created_at: string;
+};
+
+export type EncounterRecord = {
+  visit: DoctorCaseDetail;
+  encounter: ClinicalEncounter;
+  files: EncounterFile[];
+  saved: boolean;
+  finished: boolean;
 };
 
 export type DoctorCaseDetail = DoctorCase & {
@@ -245,9 +351,55 @@ export type DoctorCaseDetail = DoctorCase & {
   allergies: TriageAllergy[];
   medications: TriageMedication[];
   relevant_history: string[];
+  relevant_history_items?: TriageMedication[];
   relevant_history_other: string | null;
   initial_assessment: string | null;
   completed_by_name: string | null;
+};
+
+export type ClinicWaitSetting = {
+  clinic_id: string;
+  triage_wait_minutes: number;
+  doctor_wait_minutes: number;
+};
+
+export type MedicalService = {
+  id: string;
+  name: string;
+  description: string | null;
+  category: string;
+  subcategory: string;
+  unit: string;
+  code: string;
+  shared_price: number;
+  clinic_price: number | null;
+  price: number;
+};
+
+export function formatPrice(value: number) {
+  return value.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+export type GeneralSettings = {
+  triage_wait_minutes: number;
+  doctor_wait_minutes: number;
+  clinics: ClinicWaitSetting[];
+};
+
+export function waitMinutes(settings: GeneralSettings, clinicId: string, kind: "triage" | "doctor") {
+  const clinic = settings.clinics.find((item) => item.clinic_id === clinicId);
+  if (kind === "triage") return clinic?.triage_wait_minutes ?? settings.triage_wait_minutes;
+  return clinic?.doctor_wait_minutes ?? settings.doctor_wait_minutes;
+}
+
+export type DoctorCaseSummary = {
+  waiting: number;
+  today: number;
+  to_see_now: number;
+  emergency: number;
+  urgent: number;
+  normal: number;
+  average_wait_minutes: number;
 };
 
 export type DoctorCasePage = {
@@ -255,6 +407,7 @@ export type DoctorCasePage = {
   total: number;
   page: number;
   page_size: number;
+  summary?: DoctorCaseSummary;
 };
 
 export type TriageQueueResult = {
@@ -323,6 +476,24 @@ export type VisitPageResult = {
   total: number;
   page: number;
   page_size: number;
+};
+
+export type AppNotification = {
+  visit_id: string;
+  patient_id: string;
+  kind: "waiting_for_triage" | "to_doctor";
+  title: string;
+  body: string;
+  clinic_name: string;
+  created_at: string;
+  read: boolean;
+  href: string;
+};
+
+export type NotificationList = {
+  items: AppNotification[];
+  unread: number;
+  filters: AppNotification["kind"][];
 };
 
 export type Session = { token: string; user: User };

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
-import { Link } from "react-router";
+import { Link, useSearchParams } from "react-router";
 import {
   api,
   type TriageAllergy,
@@ -7,6 +7,9 @@ import {
   type TriageDetail,
   type TriageMedication,
   type TriageQueueItem,
+  visitTypeLabel,
+  waitMinutes,
+  type GeneralSettings,
   type TriageQueueResult,
   type User,
   type VisitCareStatus,
@@ -24,7 +27,6 @@ const historyOptions = [
   { value: "asthma", label: "Asthma" },
   { value: "hypothyroidism", label: "Hypothyroidism" },
   { value: "cardiac_disease", label: "Cardiac disease" },
-  { value: "other", label: "Other" },
 ] as const;
 
 const pageSize = 10;
@@ -38,7 +40,7 @@ type FormState = {
   allergies: TriageAllergy[];
   medications: TriageMedication[];
   relevant_history: string[];
-  relevant_history_other: string;
+  relevant_history_items: TriageMedication[];
   initial_assessment: string;
   triage_category: TriageCategory | "";
   assigned_doctor_id: string;
@@ -53,7 +55,7 @@ const emptyForm = (): FormState => ({
   allergies: [],
   medications: [],
   relevant_history: [],
-  relevant_history_other: "",
+  relevant_history_items: [],
   initial_assessment: "",
   triage_category: "",
   assigned_doctor_id: "",
@@ -62,6 +64,7 @@ const emptyForm = (): FormState => ({
 export function TriagePage({ token, actor }: { token: string; actor: User }) {
   const toast = useToast();
   const { clinicId } = useActiveClinic();
+  const [params, setParams] = useSearchParams();
   const [queue, setQueue] = useState<TriageQueueResult>({
     items: [],
     total: 0,
@@ -79,8 +82,11 @@ export function TriagePage({ token, actor }: { token: string; actor: User }) {
   const [doctors, setDoctors] = useState<{ id: string; name: string }[]>([]);
   const [allergyDraft, setAllergyDraft] = useState({ name: "", reaction: "" });
   const [medicationDraft, setMedicationDraft] = useState("");
+  const [historyDraft, setHistoryDraft] = useState("");
+  const [now, setNow] = useState(() => Date.now());
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [waitSettings, setWaitSettings] = useState<GeneralSettings>({ triage_wait_minutes: 20, doctor_wait_minutes: 20, clinics: [] });
   const [saving, setSaving] = useState(false);
   const [detailLoading, setDetailLoading] = useState(false);
   const requestId = useRef(0);
@@ -90,6 +96,23 @@ export function TriagePage({ token, actor }: { token: string; actor: User }) {
   const pages = Math.max(1, Math.ceil(queue.total / pageSize));
   const start = queue.total === 0 ? 0 : (queue.page - 1) * pageSize + 1;
   const end = Math.min(queue.page * pageSize, queue.total);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  function addHistoryItem() {
+    const name = historyDraft.trim();
+    if (!name) return;
+    const known = historyOptions.some((option) => option.label.toLowerCase() === name.toLowerCase());
+    setForm((current) => {
+      const duplicate = current.relevant_history_items.some((item) => item.name.toLowerCase() === name.toLowerCase());
+      if (known || duplicate) return current;
+      return { ...current, relevant_history_items: [...current.relevant_history_items, { name }] };
+    });
+    setHistoryDraft("");
+  }
 
   useEffect(() => {
     if (query === search) return;
@@ -103,6 +126,12 @@ export function TriagePage({ token, actor }: { token: string; actor: User }) {
   useEffect(() => {
     setPage(1);
   }, [clinicId, statusFilter]);
+
+  useEffect(() => {
+    api<GeneralSettings>("/api/settings", {}, token)
+      .then(setWaitSettings)
+      .catch(() => undefined);
+  }, [token]);
 
   useEffect(() => {
     const id = ++requestId.current;
@@ -125,6 +154,12 @@ export function TriagePage({ token, actor }: { token: string; actor: User }) {
         if (id === requestId.current) setLoading(false);
       });
   }, [token, clinicId, statusFilter, search, page]);
+
+  useEffect(() => {
+    const patientId = params.get("patient");
+    const visitId = params.get("visit");
+    if (patientId && visitId) setSelectedKey(`${patientId}:${visitId}`);
+  }, [params]);
 
   useEffect(() => {
     if (!selectedKey) {
@@ -194,6 +229,29 @@ export function TriagePage({ token, actor }: { token: string; actor: User }) {
     setQueue(data);
   }
 
+  async function changeDoctor() {
+    if (!selected || selected.status !== "to_doctor" || !form.assigned_doctor_id) return;
+    if (form.assigned_doctor_id === selected.assigned_doctor_id) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const data = await api<TriageDetail>(
+        `/api/patients/${selected.patient_id}/visits/${selected.id}/triage/doctor`,
+        { method: "PATCH", body: JSON.stringify({ assigned_doctor_id: form.assigned_doctor_id }) },
+        token,
+      );
+      setDetail(data);
+      setForm(formFromTriage(data));
+      const doctor = doctors.find((item) => item.id === form.assigned_doctor_id)?.name ?? "the new doctor";
+      toast.success("Doctor changed", `${selected.patient_name} is now assigned to ${doctor}.`);
+      await refreshQueue();
+    } catch (caught) {
+      setError(messageOf(caught));
+    } finally {
+      setSaving(false);
+    }
+  }
+
   async function sendToDoctor(event: FormEvent) {
     event.preventDefault();
     if (!selected || readonly) return;
@@ -231,6 +289,7 @@ export function TriagePage({ token, actor }: { token: string; actor: User }) {
     setDetail(null);
     setForm(emptyForm());
     setError(null);
+    if (params.get("patient") || params.get("visit")) setParams({}, { replace: true });
     window.scrollTo({ top: 0, behavior: "auto" });
   }
 
@@ -273,7 +332,7 @@ export function TriagePage({ token, actor }: { token: string; actor: User }) {
         />
       </div>
 
-      <div className={`grid items-start gap-5 ${selectedKey ? "lg:grid-cols-[20rem_minmax(0,1fr)] xl:grid-cols-[22rem_minmax(0,1fr)_16rem]" : ""}`}>
+      <div className={`grid items-start gap-5 ${selectedKey ? "lg:grid-cols-[40rem_minmax(0,1fr)] xl:grid-cols-[40rem_minmax(0,1fr)_16rem]" : ""}`}>
         <div className={`min-w-0 rounded-2xl bg-surface p-4 shadow-[0_8px_24px_rgba(16,42,67,0.06)] ${selectedKey ? "max-lg:hidden" : ""}`}>
           <div className="mb-3 flex items-center gap-2">
             <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-panel text-blue"><QueueIcon /></span>
@@ -296,37 +355,46 @@ export function TriagePage({ token, actor }: { token: string; actor: User }) {
             />
           </label>
 
-          <div className="space-y-2">
+          <div>
             {queue.items.length === 0 ? (
               <p className="px-2 py-8 text-center text-sm text-muted">{loading ? "Loading queue…" : "No patients match this queue."}</p>
             ) : (
-              queue.items.map((item) => {
-                const active = selectedKey === itemKey(item);
-                const elapsed = elapsedMinutes(item.created_at);
-                const waiting = item.status === "waiting_for_triage" && !item.triage_id;
-                return (
-                  <button
-                    key={item.id}
-                    type="button"
-                    onClick={() => selectVisit(item)}
-                    className={`w-full rounded-xl border px-3 py-3 text-left transition ${active ? "border-blue bg-panel" : "border-line-soft bg-surface hover:border-line hover:bg-surface-2"}`}
-                  >
-                    <div className="flex items-start justify-between gap-2">
-                      <div className="min-w-0">
-                        <p className="truncate font-semibold text-ink">{item.patient_name}</p>
-                        <p className="mt-0.5 truncate text-xs text-muted">{item.patient_mrn} · Room {item.hotel_room_no || "—"}</p>
-                      </div>
-                      <StatusBadge status={item.status} compact />
-                    </div>
-                    <div className="mt-2 flex items-center justify-between gap-2 text-xs">
-                      <span className={`font-semibold ${elapsed >= 20 ? "text-danger" : "text-muted"}`}>
-                        {formatTime(item.created_at)} · {elapsedLabel(elapsed)}
-                      </span>
-                      <span className="font-semibold text-blue">{waiting ? "Start" : "View"}</span>
-                    </div>
-                  </button>
-                );
-              })
+              <>
+                <div className="grid grid-cols-[minmax(0,1fr)_7.5rem_6.75rem_13.5rem] gap-x-3 px-3 pb-2 text-[11px] font-semibold uppercase tracking-wide text-muted">
+                  <span>Name, MRN, room</span>
+                  <span>Registration</span>
+                  <span>Elapsed</span>
+                  <span>Status</span>
+                </div>
+                <div className="space-y-2">
+                  {queue.items.map((item) => {
+                    const active = selectedKey === itemKey(item);
+                    const elapsed = Math.max(0, now - new Date(item.created_at).getTime());
+                    const waiting = item.status === "waiting_for_triage" && !item.triage_id;
+                    return (
+                      <button
+                        key={item.id}
+                        type="button"
+                        onClick={() => selectVisit(item)}
+                        className={`grid w-full grid-cols-[minmax(0,1fr)_7.5rem_6.75rem_13.5rem] items-center gap-x-3 rounded-xl border px-3 py-2.5 text-left transition ${active ? "border-blue bg-panel" : "border-line-soft bg-surface hover:border-line hover:bg-surface-2"}`}
+                      >
+                        <span className="min-w-0">
+                          <span className="block truncate font-semibold text-ink">{item.patient_name}</span>
+                          <span className="mt-0.5 block truncate text-xs text-muted">{item.patient_mrn} · {visitTypeLabel(item.visit_type)} · Room {item.hotel_room_no || "—"}</span>
+                        </span>
+                        <span className="text-xs font-medium text-muted-strong">{formatRegistered(item.created_at)}</span>
+                        <span>
+                          <span className={`block font-mono text-sm font-semibold tabular-nums ${elapsed >= waitMinutes(waitSettings, item.clinic_id, "triage") * 60_000 ? "text-danger" : "text-ink"}`}>{clockLabel(elapsed)}</span>
+                          <span className="mt-0.5 block text-xs font-semibold text-blue">{waiting ? "Start" : "View"}</span>
+                        </span>
+                        <span className="justify-self-start">
+                          <StatusBadge status={item.status} compact />
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </>
             )}
           </div>
 
@@ -482,12 +550,40 @@ export function TriagePage({ token, actor }: { token: string; actor: User }) {
                           </label>
                         );
                       })}
+                      {form.relevant_history_items.map((item, index) => (
+                        <label key={`${item.name}-${index}`} className="flex items-center gap-2 rounded-lg border border-line-soft px-3 py-2 text-sm text-ink">
+                          <input
+                            type="checkbox"
+                            className="accent-[var(--blue)]"
+                            checked
+                            disabled={readonly}
+                            onChange={() => {
+                              setForm((current) => ({
+                                ...current,
+                                relevant_history_items: current.relevant_history_items.filter((_, i) => i !== index),
+                              }));
+                            }}
+                          />
+                          {item.name}
+                        </label>
+                      ))}
+                      {readonly ? null : (
+                        <label className="flex items-center gap-2 rounded-lg border border-dashed border-line-strong px-3 py-2 text-sm text-ink">
+                          <input
+                            className="min-w-0 flex-1 border-0 bg-transparent p-0 text-sm outline-none placeholder:text-muted"
+                            value={historyDraft}
+                            placeholder="Add relevant history"
+                            onChange={(event) => setHistoryDraft(event.target.value)}
+                            onKeyDown={(event) => {
+                              if (event.key !== "Enter") return;
+                              event.preventDefault();
+                              addHistoryItem();
+                            }}
+                          />
+                          <button type="button" className="shrink-0 text-xs font-semibold text-blue" onClick={addHistoryItem}>Add</button>
+                        </label>
+                      )}
                     </div>
-                    {form.relevant_history.includes("other") ? (
-                      <label className={`${label} mt-3`}>Other history
-                        <input className={field} value={form.relevant_history_other} disabled={readonly} onChange={(event) => setForm((current) => ({ ...current, relevant_history_other: event.target.value }))} />
-                      </label>
-                    ) : null}
                   </Panel>
 
                   <Panel index="6" title="Initial Assessment (Nurse)" icon={<NotesIcon />} required>
@@ -530,7 +626,7 @@ export function TriagePage({ token, actor }: { token: string; actor: User }) {
                       <select
                         className={field}
                         value={form.assigned_doctor_id}
-                        disabled={readonly}
+                        disabled={!canEdit}
                         required
                         onChange={(event) => setForm((current) => ({ ...current, assigned_doctor_id: event.target.value }))}
                       >
@@ -541,19 +637,18 @@ export function TriagePage({ token, actor }: { token: string; actor: User }) {
                     </label>
                     {doctors.length === 0 ? (
                       <p className="mt-2 text-xs text-muted">No doctors found for this clinic. Assign clinic access to a Doctor user.</p>
+                    ) : selected?.status === "to_doctor" ? (
+                      <p className="mt-2 text-xs text-muted">The visit is still waiting to be seen, so you can assign a different doctor.</p>
                     ) : null}
                   </Panel>
 
-                  <div className="flex flex-col gap-2 xl:hidden">
-                    {!readonly ? (
-                      <button type="submit" className={`${primary} w-full`} disabled={saving}>
-                        <SendIcon />{saving ? "Sending…" : "Save Triage & Send to Doctor"}
-                      </button>
-                    ) : null}
-                    <button type="button" className={`${secondary} w-full`} onClick={() => window.print()}>
-                      <PrintIcon />Print Triage Note
-                    </button>
-                  </div>
+                  <TriageActions
+                    readonly={readonly}
+                    saving={saving}
+                    missing={missingFields(form)}
+                    doctorChanged={selected?.status === "to_doctor" && form.assigned_doctor_id !== (selected.assigned_doctor_id ?? "")}
+                    onChangeDoctor={() => void changeDoctor()}
+                  />
                 </form>
               )}
             </div>
@@ -580,16 +675,6 @@ export function TriagePage({ token, actor }: { token: string; actor: User }) {
                     )}
                   </div>
                 </div>
-                <div className="space-y-2">
-                  {!readonly ? (
-                    <button type="submit" form="triage-assessment-form" className={`${primary} w-full`} disabled={saving || detailLoading}>
-                      <SendIcon />{saving ? "Sending…" : "Save Triage & Send to Doctor"}
-                    </button>
-                  ) : null}
-                  <button type="button" className={`${secondary} w-full`} onClick={() => window.print()}>
-                    <PrintIcon />Print Triage Note
-                  </button>
-                </div>
               </div>
             </aside>
           </>
@@ -601,6 +686,62 @@ export function TriagePage({ token, actor }: { token: string; actor: User }) {
 
 function itemKey(item: { patient_id: string; id: string }) {
   return `${item.patient_id}:${item.id}`;
+}
+
+function missingFields(form: FormState) {
+  const missing: string[] = [];
+  if (!form.chief_complaint.trim()) missing.push("Chief complaint");
+  if (!form.temperature_c.trim() || !form.pulse.trim() || !form.respiratory_rate.trim() || !form.spo2.trim()) missing.push("Vital signs");
+  if (!form.initial_assessment.trim()) missing.push("Nurse assessment");
+  if (!form.triage_category) missing.push("Triage category");
+  if (!form.assigned_doctor_id) missing.push("Doctor");
+  return missing;
+}
+
+function TriageActions({
+  readonly,
+  saving,
+  missing,
+  doctorChanged,
+  onChangeDoctor,
+}: {
+  readonly: boolean;
+  saving: boolean;
+  missing: string[];
+  doctorChanged: boolean;
+  onChangeDoctor: () => void;
+}) {
+  const ready = missing.length === 0;
+  return (
+    <div className="sticky bottom-3 z-20 rounded-2xl border border-line bg-surface p-3 shadow-[0_12px_32px_rgba(16,42,67,0.12)]">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <p className="min-w-0 text-sm text-muted-strong">
+          {readonly
+            ? doctorChanged
+              ? "This visit is still waiting to be seen. Save to assign the new doctor."
+              : "This triage has been sent to the doctor."
+            : ready
+              ? "Ready to save and send this patient to the doctor."
+              : <span>Still needed: <span className="font-semibold text-ink">{missing.join(", ")}</span></span>}
+        </p>
+        <div className="flex shrink-0 flex-col gap-2 sm:flex-row">
+          <button type="button" className={`${secondary} gap-1.5`} onClick={() => window.print()}>
+            <PrintIcon />Print note
+          </button>
+          {readonly && doctorChanged ? (
+            <button type="button" className={`${primary} whitespace-nowrap`} disabled={saving} onClick={onChangeDoctor}>
+              {saving ? "Saving…" : "Change doctor"}
+            </button>
+          ) : null}
+          {readonly ? null : (
+            <button type="submit" className={`${primary} whitespace-nowrap`} disabled={saving || !ready}>
+              <SendIcon />{saving ? "Sending…" : "Save triage & send to doctor"}
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function validateRequired(form: FormState) {
@@ -634,8 +775,8 @@ function formFromTriage(detail: TriageDetail): FormState {
     spo2: triage.spo2 == null ? "" : String(triage.spo2),
     allergies: Array.isArray(triage.allergies) ? triage.allergies : [],
     medications: Array.isArray(triage.medications) ? triage.medications : [],
-    relevant_history: triage.relevant_history ?? [],
-    relevant_history_other: triage.relevant_history_other ?? "",
+    relevant_history: (triage.relevant_history ?? []).filter((item) => item !== "other"),
+    relevant_history_items: historyItemsFromTriage(triage),
     initial_assessment: triage.initial_assessment ?? "",
     triage_category: triage.triage_category ?? "",
     assigned_doctor_id: triage.assigned_doctor_id ?? detail.visit.assigned_doctor_id ?? "",
@@ -657,12 +798,22 @@ function payloadFromForm(form: FormState) {
     spo2: numberOrNull(form.spo2) === null ? null : Math.round(numberOrNull(form.spo2)!),
     allergies: form.allergies,
     medications: form.medications,
-    relevant_history: form.relevant_history,
-    relevant_history_other: form.relevant_history.includes("other") ? (form.relevant_history_other.trim() || null) : null,
+    relevant_history: form.relevant_history.filter((item) => item !== "other"),
+    relevant_history_items: form.relevant_history_items,
+    relevant_history_other: null,
     initial_assessment: form.initial_assessment.trim() || null,
     triage_category: form.triage_category || null,
     assigned_doctor_id: form.assigned_doctor_id || null,
   };
+}
+
+function historyItemsFromTriage(triage: { relevant_history_items?: TriageMedication[]; relevant_history_other?: string | null }) {
+  const items = Array.isArray(triage.relevant_history_items) ? triage.relevant_history_items.filter((item) => item.name?.trim()) : [];
+  const other = triage.relevant_history_other?.trim();
+  if (other && !items.some((item) => item.name.trim().toLowerCase() === other.toLowerCase())) {
+    items.push({ name: other });
+  }
+  return items;
 }
 
 function buildKeyPoints(form: FormState) {
@@ -677,19 +828,17 @@ function buildKeyPoints(form: FormState) {
   return points.slice(0, 5);
 }
 
-function formatTime(value: string) {
-  return new Date(value).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+function formatRegistered(value: string) {
+  return new Date(value).toLocaleString("en-GB", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
 }
 
-function elapsedMinutes(value: string) {
-  return Math.max(0, Math.floor((Date.now() - new Date(value).getTime()) / 60000));
-}
-
-function elapsedLabel(minutes: number) {
-  if (minutes < 60) return `${minutes} min`;
-  const hours = Math.floor(minutes / 60);
-  const rest = minutes % 60;
-  return `${hours}h ${rest}m`;
+function clockLabel(ms: number) {
+  const total = Math.floor(ms / 1000);
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const seconds = total % 60;
+  const clock = `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+  return hours > 0 ? `${hours}:${clock}` : clock;
 }
 
 function titleCase(value: string) {
@@ -703,9 +852,9 @@ function statusLabel(status: VisitCareStatus) {
 function StatusBadge({ status, compact = false }: { status: VisitCareStatus; compact?: boolean }) {
   const waiting = status === "waiting_for_triage";
   return (
-    <span className={`inline-flex shrink-0 items-center gap-1 rounded-full px-2 py-1 text-[11px] font-semibold ${waiting ? "bg-danger-soft text-danger" : "bg-success-soft text-success"}`}>
+    <span className={`inline-flex w-max shrink-0 items-center gap-1 whitespace-nowrap rounded-full px-2.5 py-1 text-[11px] font-semibold leading-none ${waiting ? "bg-danger-soft text-danger" : "bg-success-soft text-success"}`}>
       {waiting ? <WaitingIcon /> : <DoctorIcon />}
-      {compact ? (waiting ? "Waiting" : "To doctor") : statusLabel(status)}
+      {compact ? (waiting ? "Waiting for Triage" : "To doctor") : statusLabel(status)}
     </span>
   );
 }

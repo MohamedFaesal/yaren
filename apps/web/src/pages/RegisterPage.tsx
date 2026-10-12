@@ -6,7 +6,7 @@ import { useActiveClinic } from "../ClinicWorkspace";
 import { nationalityOption } from "../nationalities";
 import { useToast } from "../toast";
 import { type VisitDocumentMeta, type VisitDocumentType, visitDocumentAccept, visitDocumentIssue, visitDocumentMeta, visitDocumentSizeLabel } from "../visitDocuments";
-import { Card, CollapsibleSection, Field, Page, PlusIcon, SearchSelect, SectionSummaryItem, Summary, field, messageOf, primary, secondary, useFieldErrors } from "./ui";
+import { Card, CollapsibleSection, Field, Page, PlusIcon, SearchSelect, SectionSummaryItem, Summary, field, label, messageOf, primary, secondary, useFieldErrors } from "./ui";
 
 type RegisterSection = "patient" | "contact" | "hotel" | "consent";
 
@@ -22,7 +22,7 @@ const sectionFields: Record<RegisterSection, string[]> = {
     "emergency_contact_phone",
     "emergency_contact_relationship",
   ],
-  hotel: ["clinic_id", "hotel_room_no", "hotel_checkin_date", "hotel_checkout_date"],
+  hotel: ["clinic_id", "visit_type", "hotel_room_no", "hotel_checkin_date", "hotel_checkout_date"],
   consent: visitDocumentMeta.map((item) => `document_${item.type}`),
 };
 
@@ -74,6 +74,7 @@ export function RegisterPage({ token, actor }: { token: string; actor: User }) {
   const [checkin, setCheckin] = useState("");
   const [checkout, setCheckout] = useState("");
   const [room, setRoom] = useState("");
+  const [visitType, setVisitType] = useState("");
   const [clinicId, setClinicId] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
@@ -206,6 +207,7 @@ export function RegisterPage({ token, actor }: { token: string; actor: User }) {
       hotel_checkin_date: checkin,
       hotel_checkout_date: checkout,
       hotel_room_no: room,
+      visit_type: visitType,
       clinic_id: clinicId,
     };
     try {
@@ -425,6 +427,7 @@ export function RegisterPage({ token, actor }: { token: string; actor: User }) {
                       label="Clinic"
                       value={selectedClinic ? `${selectedClinic.name} · ${selectedClinic.hotel_name}` : ""}
                     />
+                    <SectionSummaryItem label="Type" value={visitType === "follow-up" ? "Follow-up" : visitType === "new" ? "New" : ""} />
                     <SectionSummaryItem label="Room" value={room} />
                     <SectionSummaryItem label="Check-in" value={checkin} />
                     <SectionSummaryItem label="Check-out" value={checkout} />
@@ -443,6 +446,33 @@ export function RegisterPage({ token, actor }: { token: string; actor: User }) {
                       required
                     />
                   </Field>
+                  <div className="relative md:col-span-2">
+                    <p className={label} id="visit-type-label">Visit type</p>
+                    <div className="mt-1 grid grid-cols-2 gap-2" role="radiogroup" aria-labelledby="visit-type-label">
+                      {([
+                        { value: "new", title: "New", detail: "First visit for this stay" },
+                        { value: "follow-up", title: "Follow-up", detail: "Returning for the same care" },
+                      ] as const).map((option) => {
+                        const selected = visitType === option.value;
+                        return (
+                          <button
+                            key={option.value}
+                            type="button"
+                            role="radio"
+                            aria-checked={selected}
+                            disabled={!canRegister}
+                            className={`rounded-xl border px-3 py-3 text-left transition disabled:opacity-60 ${selected ? "border-blue bg-panel ring-2 ring-blue" : "border-line-strong bg-surface hover:border-blue hover:bg-surface-2"} ${fields.errorOf("visit_type") && !selected ? "border-danger" : ""}`}
+                            onClick={() => { setVisitType(option.value); fields.clearField("visit_type"); }}
+                          >
+                            <span className="block text-sm font-semibold text-ink">{option.title}</span>
+                            <span className="mt-0.5 block text-xs text-muted">{option.detail}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                    <input name="visit_type" className="pointer-events-none absolute h-0 w-0 opacity-0" value={visitType} required tabIndex={-1} onChange={() => undefined} />
+                    {fields.errorOf("visit_type") ? <p className="mt-1 text-xs font-medium text-danger">{fields.errorOf("visit_type")}</p> : null}
+                  </div>
                   <Field label="Hotel room" error={fields.errorOf("hotel_room_no")}>
                     <input className={field} name="hotel_room_no" value={room} onChange={(event) => { setRoom(event.target.value); fields.clearField("hotel_room_no"); }} required disabled={!canRegister} />
                   </Field>

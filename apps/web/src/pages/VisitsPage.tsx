@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router";
-import { api, type User, type VisitCareStatus, type VisitPageResult } from "../api";
+import { api, type User, type VisitCareStatus, type VisitPageResult, type VisitType, visitTypeLabel } from "../api";
 import { canAct } from "../access";
 import { useActiveClinic } from "../ClinicWorkspace";
 import { DataTable, Filters, IconAction, Page, PlusIcon, SearchSelect, field, label, messageOf, primary, secondary, th } from "./ui";
@@ -14,6 +14,7 @@ export function VisitsPage({ token, actor }: { token: string; actor: User }) {
   const [query, setQuery] = useState("");
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState<"" | VisitCareStatus>("");
+  const [visitType, setVisitType] = useState<"" | VisitType>("");
   const [sort, setSort] = useState<"created_at" | "updated_at">("updated_at");
   const [dir, setDir] = useState<"asc" | "desc">("desc");
   const [page, setPage] = useState(1);
@@ -43,6 +44,7 @@ export function VisitsPage({ token, actor }: { token: string; actor: User }) {
     const params = new URLSearchParams({ page: String(page), page_size: String(pageSize) });
     if (search) params.set("q", search);
     if (status) params.set("status", status);
+    if (visitType) params.set("visit_type", visitType);
     params.set("sort", sort);
     params.set("dir", dir);
     if (clinicId) params.set("clinic_id", clinicId);
@@ -60,7 +62,7 @@ export function VisitsPage({ token, actor }: { token: string; actor: User }) {
       .finally(() => {
         if (id === requestId.current) setLoading(false);
       });
-  }, [token, page, search, status, sort, dir, clinicId]);
+  }, [token, page, search, status, visitType, sort, dir, clinicId]);
 
   return (
     <Page
@@ -80,8 +82,21 @@ export function VisitsPage({ token, actor }: { token: string; actor: User }) {
               { value: "", label: "Any status" },
               { value: "waiting_for_triage", label: "Waiting for triage" },
               { value: "to_doctor", label: "To see the doctor" },
+              { value: "seen", label: "Seen by the doctor" },
             ]}
             placeholder="Any status"
+          />
+        </label>
+        <label className={label}>Type
+          <SearchSelect
+            value={visitType}
+            onChange={(value) => { setVisitType(value as "" | VisitType); setPage(1); }}
+            options={[
+              { value: "", label: "Any type" },
+              { value: "new", label: "New" },
+              { value: "follow-up", label: "Follow-up" },
+            ]}
+            placeholder="Any type"
           />
         </label>
         <label className={label}>Sort
@@ -110,6 +125,7 @@ export function VisitsPage({ token, actor }: { token: string; actor: User }) {
         <thead className="bg-surface-2">
           <tr>
             <th className={th}>Patient</th>
+            <th className={th}>Type</th>
             <th className={th}>Status</th>
             <th className={th}>Age at visit</th>
             <th className={th}>MRN</th>
@@ -120,7 +136,7 @@ export function VisitsPage({ token, actor }: { token: string; actor: User }) {
         </thead>
         <tbody>
           {result.items.length === 0 ? (
-            <tr><td className="px-4 py-8 text-muted" colSpan={7}>{search || status ? "No visits match these filters." : "No visits yet."}</td></tr>
+            <tr><td className="px-4 py-8 text-muted" colSpan={8}>{search || status || visitType ? "No visits match these filters." : "No visits yet."}</td></tr>
           ) : result.items.map((row) => (
             <tr
               key={row.id}
@@ -128,6 +144,7 @@ export function VisitsPage({ token, actor }: { token: string; actor: User }) {
               onClick={() => navigate(`/patients/${row.patient_id}/visits/${row.id}`)}
             >
               <td className="px-4 py-3 font-semibold">{row.patient_name}</td>
+              <td className="px-4 py-3"><VisitTypeBadge type={row.visit_type} /></td>
               <td className="px-4 py-3"><VisitStatus status={row.status} /></td>
               <td className="px-4 py-3 tabular-nums">{row.patient_age_at_visit != null ? `${row.patient_age_at_visit} yrs` : "—"}</td>
               <td className="px-4 py-3 font-mono text-sm">{row.patient_mrn}</td>
@@ -175,7 +192,16 @@ function formatWhen(value: string) {
   return new Date(value).toLocaleString("en-GB", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
+function VisitTypeBadge({ type }: { type?: VisitType }) {
+  if (type === "follow-up") return <span className="inline-flex rounded-full bg-panel px-2.5 py-1 text-xs font-semibold text-blue">Follow-up</span>;
+  if (type === "new") return <span className="inline-flex rounded-full bg-surface-2 px-2.5 py-1 text-xs font-semibold text-ink">New</span>;
+  return <span className="text-muted">{visitTypeLabel(type)}</span>;
+}
+
 function VisitStatus({ status }: { status?: VisitCareStatus }) {
+  if (status === "seen") {
+    return <span className="inline-flex rounded-full bg-panel px-2.5 py-1 text-xs font-semibold text-blue">Seen by the doctor</span>;
+  }
   if (status === "to_doctor") {
     return <span className="inline-flex rounded-full bg-success-soft px-2.5 py-1 text-xs font-semibold text-success">To see the doctor</span>;
   }

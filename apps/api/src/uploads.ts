@@ -72,6 +72,28 @@ export async function saveVisitDocument(
   };
 }
 
+export async function saveEncounterFile(
+  visitId: string,
+  fileId: string,
+  file: { mimetype: string; filename?: string; toBuffer: () => Promise<Buffer> },
+) {
+  const extension = documentTypes.get(file.mimetype);
+  if (!extension) throw new ApplicationError(422, "invalid_document", "Use a PDF, JPEG, PNG, or WebP file");
+  const buffer = await file.toBuffer();
+  if (buffer.byteLength === 0) throw new ApplicationError(422, "invalid_document", "Choose a file to upload");
+  if (buffer.byteLength > maxVisitDocumentBytes) throw new ApplicationError(422, "document_too_large", "File must be 10 MB or smaller");
+  await ensureUploadDirs();
+  const folder = path.join(root, "visit-docs", visitId);
+  await mkdir(folder, { recursive: true });
+  const relative = `visit-docs/${visitId}/encounter-${fileId}.${extension}`;
+  await writeFile(path.join(root, relative), buffer);
+  return {
+    path: relative,
+    originalName: file.filename?.trim() || `encounter.${extension}`,
+    mimeType: file.mimetype,
+  };
+}
+
 export async function removeUpload(photoPath: string | null | undefined) {
   if (!photoPath) return;
   await unlink(path.join(root, photoPath)).catch(() => undefined);

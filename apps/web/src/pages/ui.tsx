@@ -578,6 +578,7 @@ export function SearchSelect({
   required,
   name,
   invalid,
+  fixedMenu,
 }: {
   value: string;
   onChange: (value: string) => void;
@@ -587,10 +588,13 @@ export function SearchSelect({
   required?: boolean;
   name?: string;
   invalid?: boolean;
+  fixedMenu?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
+  const [menuBox, setMenuBox] = useState<{ top?: number; bottom?: number; left: number; width: number } | null>(null);
   const root = useRef<HTMLDivElement>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
   const selected = options.find((option) => option.value === value);
   const needle = query.trim().toLowerCase();
   const matches = options.filter((option) => `${option.group ?? ""} ${option.label} ${option.hint ?? ""}`.toLowerCase().includes(needle));
@@ -607,17 +611,36 @@ export function SearchSelect({
     <div className="relative mt-1" ref={root}>
       {required ? <input name={name} className="pointer-events-none absolute h-0 w-0 opacity-0" value={value} required onChange={() => undefined} tabIndex={-1} /> : null}
       <button
+        ref={buttonRef}
         type="button"
         disabled={disabled}
         aria-invalid={invalid || undefined}
         className={`flex w-full items-center justify-between rounded-lg border bg-surface px-3 py-2.5 text-left text-sm disabled:bg-surface-3 ${invalid ? "border-danger" : "border-line-strong"}`}
-        onClick={() => setOpen((current) => !current)}
+        onClick={() => {
+          if (!open && fixedMenu) {
+            const rect = buttonRef.current?.getBoundingClientRect();
+            if (rect) {
+              const spaceBelow = window.innerHeight - rect.bottom;
+              const openUp = spaceBelow < 280 && rect.top > spaceBelow;
+              setMenuBox({
+                left: rect.left,
+                width: Math.max(rect.width, 240),
+                top: openUp ? undefined : rect.bottom + 4,
+                bottom: openUp ? window.innerHeight - rect.top + 4 : undefined,
+              });
+            }
+          }
+          setOpen((current) => !current);
+        }}
       >
         <span className={`inline-flex min-w-0 items-center gap-2 ${selected ? "text-ink" : "text-muted-soft"}`}>{selected?.icon}{selected?.label ?? placeholder}</span>
         <span className="text-muted-soft">▾</span>
       </button>
       {open && !disabled ? (
-        <div className="absolute z-20 mt-1 w-full overflow-hidden rounded-lg border border-line-strong bg-surface shadow-lg">
+        <div
+          className={`${fixedMenu ? "fixed z-50" : "absolute z-20 mt-1 w-full"} overflow-hidden rounded-lg border border-line-strong bg-surface shadow-lg`}
+          style={fixedMenu && menuBox ? { top: menuBox.top, bottom: menuBox.bottom, left: menuBox.left, width: menuBox.width } : undefined}
+        >
           <input
             autoFocus
             className="w-full border-b border-line-soft px-3 py-2 text-sm outline-none"

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Navigate, NavLink, Route, Routes, useLocation, useNavigate } from "react-router";
 import { api, loadSession, saveSession, type DoctorCasePage, type Session, type TriageQueueResult, type User } from "./api";
-import { canAct, canSeeDoctorCases } from "./access";
+import { canAct, canManageSettings, canSeeDoctorCases } from "./access";
 import { RoleIcon } from "./pages/ui";
 import { ClinicFormPage } from "./pages/ClinicFormPage";
 import { ClinicsPage } from "./pages/ClinicsPage";
@@ -22,6 +22,11 @@ import { RegisterPage } from "./pages/RegisterPage";
 import { VisitsPage } from "./pages/VisitsPage";
 import { TriagePage } from "./pages/TriagePage";
 import { DoctorCasesPage } from "./pages/DoctorCasesPage";
+import { EncounterPage } from "./pages/EncounterPage";
+import { SettingsPage } from "./pages/SettingsPage";
+import { ServicesPage } from "./pages/ServicesPage";
+import { MedicationsPage } from "./pages/MedicationsPage";
+import { ProceduresPage } from "./pages/ProceduresPage";
 import { VisitFormPage } from "./pages/VisitFormPage";
 import { VisitViewPage } from "./pages/VisitViewPage";
 import { ProfileAvatar, ProfilePage } from "./pages/ProfilePage";
@@ -30,6 +35,7 @@ import { UserPermissionsPage } from "./pages/UserPermissionsPage";
 import { UsersPage } from "./pages/UsersPage";
 import { UserViewPage } from "./pages/UserViewPage";
 import { ActiveClinicProvider, ClinicSwitcher, useActiveClinic } from "./ClinicWorkspace";
+import { NotificationsMenu } from "./NotificationsMenu";
 export function App() {
   const navigate = useNavigate();
   const location = useLocation();
@@ -114,6 +120,7 @@ export function App() {
           <Route path="/patients" element={<PatientsPage token={session.token} actor={session.user} />} />
           <Route path="/patients/triage" element={<TriagePage token={session.token} actor={session.user} />} />
           <Route path="/patients/to-doctor" element={<DoctorCasesPage token={session.token} actor={session.user} />} />
+          <Route path="/patients/to-doctor/:id/encounter" element={<EncounterPage token={session.token} />} />
           <Route path="/patients/visits" element={<VisitsPage token={session.token} actor={session.user} />} />
           <Route path="/patients/register" element={<RegisterPage token={session.token} actor={session.user} />} />
           <Route path="/patients/new" element={<PatientFormPage token={session.token} actor={session.user} />} />
@@ -123,6 +130,10 @@ export function App() {
           <Route path="/patients/:patientId/visits/:id" element={<VisitViewPage token={session.token} actor={session.user} />} />
           <Route path="/patients/:id" element={<PatientViewPage token={session.token} actor={session.user} />} />
           <Route path="/activity" element={<ActivityPage token={session.token} />} />
+          <Route path="/settings" element={<SettingsPage token={session.token} />} />
+          <Route path="/services" element={<ServicesPage token={session.token} actor={session.user} />} />
+          <Route path="/medications" element={<MedicationsPage token={session.token} actor={session.user} />} />
+          <Route path="/procedures" element={<ProceduresPage token={session.token} actor={session.user} />} />
           <Route path="/roles" element={<RolesPage token={session.token} actor={session.user} />} />
           <Route path="/roles/new" element={<RoleFormPage token={session.token} />} />
           <Route path="/roles/:id/edit" element={<RoleFormPage token={session.token} />} />
@@ -199,15 +210,15 @@ function AppShell({
           <NavSection title="Overview">
             <NavLink to="/" end className={navClass}><DashboardIcon />Dashboard</NavLink>
           </NavSection>
-          <NavSection
-            title="Care"
-            show={canAct(user, "visit", "create") || canAct(user, "visit", "view") || canAct(user, "triage", "view") || canSeeDoctorCases(user) || canAct(user, "patient", "view")}
-          >
+          <NavSection title="Care">
             {canAct(user, "visit", "create") ? <NavLink to="/patients/register" className={navClass}><RegisterIcon />Register</NavLink> : null}
             {canAct(user, "triage", "view") ? <TriageNavLink token={token} pathname={pathname} /> : null}
             {canSeeDoctorCases(user) ? <DoctorCasesNavLink token={token} pathname={pathname} /> : null}
             {canAct(user, "visit", "view") ? <NavLink to="/patients/visits" className={navClass}><VisitsIcon />Visits</NavLink> : null}
             {canAct(user, "patient", "view") ? <NavLink to="/patients" end className={navClass}><PatientsIcon />Patients</NavLink> : null}
+            <NavLink to="/services" className={navClass}><PriceIcon />Service Price List</NavLink>
+            <NavLink to="/medications" className={navClass}><MedicationIcon />Medications</NavLink>
+            <NavLink to="/procedures" className={navClass}><ProcedureIcon />Surgical Procedures</NavLink>
           </NavSection>
           <NavSection
             title="Network"
@@ -223,8 +234,9 @@ function AppShell({
             {canAct(user, "user", "view") ? <NavLink to="/users" className={navClass}><UsersIcon />Users</NavLink> : null}
             {canAct(user, "role", "view") ? <NavLink to="/roles" className={navClass}><RolesIcon />Roles</NavLink> : null}
           </NavSection>
-          <NavSection title="System" show={canAct(user, "activity", "view")}>
+          <NavSection title="System" show={canAct(user, "activity", "view") || canManageSettings(user)}>
             {canAct(user, "activity", "view") ? <NavLink to="/activity" className={navClass}><ActivityIcon />Activity</NavLink> : null}
+            {canManageSettings(user) ? <NavLink to="/settings" className={navClass}><SettingsIcon />General settings</NavLink> : null}
           </NavSection>
         </nav>
       </aside>
@@ -248,6 +260,7 @@ function AppShell({
           </div>
           <div className="flex shrink-0 items-center gap-2 sm:gap-3 lg:gap-4">
             <HeaderClock />
+            <NotificationsMenu token={token} />
             <div className="flex items-center gap-1.5 border-l border-line pl-2 sm:pl-3 lg:pl-4">
               <ClinicSwitcher />
               <AccountMenu user={user} onSignOut={onSignOut} />
@@ -496,7 +509,7 @@ function DoctorCasesNavLink({ token, pathname }: { token: string; pathname: stri
         <>
           <span className="flex min-w-0 items-center gap-3">
             <ToDoctorIcon />
-            <span className="leading-snug">To doctor</span>
+            <span className="leading-snug">Doctor Dashboard</span>
           </span>
           {count > 0 ? (
             <span
@@ -538,6 +551,10 @@ function heading(pathname: string) {
   if (!section) return "Dashboard";
   if (section === "profile") return "My profile";
   if (section === "activity") return "Activity";
+  if (section === "settings") return "General settings";
+  if (section === "services") return "Service Price List";
+  if (section === "medications") return "Medications";
+  if (section === "procedures") return "Surgical Procedures";
   if (section === "roles") {
     if (!id) return "Roles";
     if (id === "new") return "New role";
@@ -546,10 +563,12 @@ function heading(pathname: string) {
   }
   if (section === "users" && action === "permissions") return "Edit permissions";
   if (section === "patients") {
+    const parts = pathname.split("/").filter(Boolean);
+    if (parts[1] === "to-doctor" && parts[3] === "encounter") return "Clinical Encounter";
     if (!id) return "Patients";
     if (id === "visits") return "Visits";
     if (id === "triage") return "Triage";
-    if (id === "to-doctor") return "To doctor";
+    if (id === "to-doctor") return "Doctor Dashboard";
     if (id === "register") return "Register";
     if (id === "new") return "New patient";
     if (action === "edit") return "Edit patient";
@@ -581,6 +600,10 @@ function RolesIcon() {
   return <Icon><path d="M8 11V8a4 4 0 0 1 8 0v3" /><rect x="6" y="11" width="12" height="9" rx="2" /></Icon>;
 }
 
+function SettingsIcon() {
+  return <Icon><circle cx="12" cy="12" r="3" /><path d="M12 3v2" /><path d="M12 19v2" /><path d="M3 12h2" /><path d="M19 12h2" /><path d="m5.6 5.6 1.5 1.5" /><path d="m16.9 16.9 1.5 1.5" /><path d="m18.4 5.6-1.5 1.5" /><path d="m7.1 16.9-1.5 1.5" /></Icon>;
+}
+
 function ActivityIcon() {
   return <Icon><circle cx="12" cy="12" r="8" /><path d="M12 8v5l3 2" /></Icon>;
 }
@@ -603,6 +626,18 @@ function ClinicIcon() {
 
 function PatientsIcon() {
   return <Icon><path d="M8 19v-1a4 4 0 0 1 4-4h0a4 4 0 0 1 4 4v1" /><circle cx="12" cy="8" r="3" /><path d="M4 19v-1a3 3 0 0 1 2-2.8" /><path d="M20 19v-1a3 3 0 0 0-2-2.8" /><path d="M6.5 8.5a2.5 2.5 0 1 1 0-0.01" /><path d="M17.5 8.5a2.5 2.5 0 1 1 0-0.01" /></Icon>;
+}
+
+function ProcedureIcon() {
+  return <Icon><path d="M5 19 19 5" /><path d="M14 5h5v5" /><path d="M8 16l-3 3" /></Icon>;
+}
+
+function MedicationIcon() {
+  return <Icon><path d="M9 15 15 9" /><rect x="4" y="8" width="16" height="8" rx="4" transform="rotate(-45 12 12)" /></Icon>;
+}
+
+function PriceIcon() {
+  return <Icon><path d="M7 7h.01" /><path d="M4 12.5 12.5 4H18v5.5L9.5 18 4 12.5Z" /><path d="M14 8h.01" /></Icon>;
 }
 
 function VisitsIcon() {

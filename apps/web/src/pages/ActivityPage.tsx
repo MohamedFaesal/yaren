@@ -24,6 +24,10 @@ const entityOptions = [
   { value: "patient", label: "Patients" },
   { value: "session", label: "Sign-in" },
   { value: "role", label: "Roles" },
+  { value: "settings", label: "Settings" },
+  { value: "service", label: "Service Price List" },
+  { value: "medication", label: "Medications" },
+  { value: "procedure", label: "Surgical Procedures" },
 ];
 
 export function ActivityPage({ token }: { token: string }) {

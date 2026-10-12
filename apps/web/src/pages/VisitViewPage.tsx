@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router";
-import { api, type PatientVisit, type User, type VisitCareStatus } from "../api";
+import { api, type PatientVisit, type User, type VisitCareStatus, visitTypeLabel } from "../api";
 import { canAct } from "../access";
 import { useToast } from "../toast";
 import { visitDocumentAccept, visitDocumentIssue, visitDocumentMeta, visitDocumentSizeLabel } from "../visitDocuments";
@@ -60,6 +60,7 @@ export function VisitViewPage({ token, actor }: { token: string; actor: User }) 
         <span className="inline-flex flex-wrap items-center gap-3">
           {visit.clinic_name} visit
           <VisitStatus status={visit.status} />
+          <span className="rounded-full bg-surface-2 px-2.5 py-1 text-xs font-semibold text-ink">{visitTypeLabel(visit.visit_type)}</span>
         </span>
       ) : "Visit"}
       description={visit
@@ -99,12 +100,16 @@ export function VisitViewPage({ token, actor }: { token: string; actor: User }) 
             lines={[
               visit.patient_mrn ?? "MRN",
               <VisitStatus status={visit.status} />,
+              visitTypeLabel(visit.visit_type),
               visit.assigned_doctor_name ? `Doctor: ${visit.assigned_doctor_name}` : null,
               visit.patient_age_at_visit != null ? <AgeBadge age={visit.patient_age_at_visit} /> : "Age unknown",
               visit.clinic_name,
               visit.hotel_room_no ? <SecretValue value={`Room ${visit.hotel_room_no}`} /> : "Room not set",
               canAct(actor, "triage", "view", { ownerId: visit.patient_added_by, clinicId: visit.clinic_id })
                 ? <Link className="font-semibold text-blue hover:underline" to="/patients/triage">Open triage queue</Link>
+                : null,
+              (visit.status === "to_doctor" || visit.status === "seen") && (actor.type === "super-admin" || actor.type === "admin" || actor.role === "Doctor")
+                ? <Link className="font-semibold text-blue hover:underline" to={`/patients/to-doctor/${visit.id}/encounter`}>{visit.status === "seen" ? "View encounter" : "Start encounter"}</Link>
                 : null,
             ].filter((line) => line !== null)}
           />
@@ -139,6 +144,9 @@ export function VisitViewPage({ token, actor }: { token: string; actor: User }) 
 }
 
 function VisitStatus({ status }: { status?: VisitCareStatus }) {
+  if (status === "seen") {
+    return <span className="inline-flex rounded-full bg-panel px-2.5 py-1 text-xs font-semibold text-blue">Seen by the doctor</span>;
+  }
   if (status === "to_doctor") {
     return <span className="inline-flex rounded-full bg-success-soft px-2.5 py-1 text-xs font-semibold text-success">To see the doctor</span>;
   }
@@ -192,6 +200,7 @@ function VisitDetails({
             </span>
           ),
         },
+        { label: "Type", value: visitTypeLabel(visit.visit_type) },
         { label: "Clinic", value: visit.clinic_name },
         { label: "Hotel", value: visit.hotel_name },
         { label: "Room", value: <SecretValue value={visit.hotel_room_no} /> },
@@ -273,23 +282,29 @@ const workflowSteps: { status: VisitCareStatus; title: string; body: string }[] 
     title: "To see the doctor",
     body: "Triage is complete and the visit is sent to the assigned doctor.",
   },
+  {
+    status: "seen",
+    title: "Seen by the doctor",
+    body: "The doctor has finished the clinical encounter.",
+  },
 ];
 
 function VisitWorkflow({ visit }: { visit: PatientVisit }) {
-  const current = visit.status === "to_doctor" ? 1 : 0;
+  const current = visit.status === "seen" ? 3 : visit.status === "to_doctor" ? 1 : 0;
   return (
     <Card>
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <p className="text-xs font-semibold uppercase tracking-[0.16em] text-blue">Care path</p>
-          <h2 className="mt-1 text-lg font-bold text-ink">{current === 1 ? "With the doctor" : "Waiting for triage"}</h2>
-          <p className="mt-1 text-sm text-muted-strong">Registration, triage, then the doctor.</p>
+          <h2 className="mt-1 text-lg font-bold text-ink">{visit.status === "seen" ? "Seen by the doctor" : current === 1 ? "With the doctor" : "Waiting for triage"}</h2>
+          <p className="mt-1 text-sm text-muted-strong">Registration, triage, the doctor, then the finished encounter.</p>
         </div>
-        <span className="rounded-full bg-panel px-3 py-1 text-xs font-semibold text-blue">Step {current + 1} of 2</span>
+        <span className="rounded-full bg-panel px-3 py-1 text-xs font-semibold text-blue">Step {visit.status === "seen" ? 3 : current + 1} of 3</span>
       </div>
       <div className="mt-5 flex gap-2" aria-hidden="true">
         <span className={`h-1.5 flex-1 rounded-full ${current === 0 ? "bg-blue" : "bg-success"}`} />
-        <span className={`h-1.5 flex-1 rounded-full ${current >= 1 ? "bg-blue" : "bg-line"}`} />
+        <span className={`h-1.5 flex-1 rounded-full ${current === 0 ? "bg-line" : current === 1 ? "bg-blue" : "bg-success"}`} />
+        <span className={`h-1.5 flex-1 rounded-full ${visit.status === "seen" ? "bg-success" : "bg-line"}`} />
       </div>
       <ol className="mt-7">
         {workflowSteps.map((step, index) => {
