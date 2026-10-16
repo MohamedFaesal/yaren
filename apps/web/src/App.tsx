@@ -214,7 +214,7 @@ function AppShell({
             {canSeeDoctorCases(user) ? <DoctorCasesNavLink token={token} pathname={pathname} /> : null}
             {canAct(user, "visit", "view") ? <NavLink to="/patients/visits" className={navClass}><VisitsIcon />Visits</NavLink> : null}
             {canAct(user, "patient", "view") ? <NavLink to="/patients" end className={navClass}><PatientsIcon />Patients</NavLink> : null}
-            <NavLink to="/services" className={navClass}><PriceIcon />Medical Services</NavLink>
+            <NavLink to="/services" className={navClass}><PriceIcon />Professional Services</NavLink>
             <NavLink to="/medications" className={navClass}><MedicationIcon />Medications</NavLink>
           </NavSection>
           <NavSection
@@ -556,7 +556,7 @@ function heading(pathname: string) {
   if (section === "profile") return "My profile";
   if (section === "activity") return "Activity";
   if (section === "settings") return "General settings";
-  if (section === "services") return "Medical Services";
+  if (section === "services") return "Professional Services";
   if (section === "medications") return "Medications";
   if (section === "roles") {
     if (!id) return "Roles";

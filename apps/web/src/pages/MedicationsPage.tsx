@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import { api, type CatalogMedication, type User } from "../api";
+import { api, type CatalogMedication, type MedicalService, type User } from "../api";
 import { canManageSettings } from "../access";
 import { useToast } from "../toast";
-import { ConfirmDialog, DataTable, Field, Filters, IconAction, Page, PlusIcon, SearchSelect, field, messageOf, primary, secondary, th, useFieldErrors } from "./ui";
+import { ConfirmDialog, DataTable, Field, Filters, IconAction, Page, PlusIcon, SearchSelect, field, label, messageOf, primary, secondary, th, useFieldErrors } from "./ui";
 
 const dosageForms = [
   "Tablet",
@@ -123,19 +123,21 @@ export function MedicationsPage({ token, actor }: { token: string; actor: User }
             <th className={th}>Active ingredient</th>
             <th className={th}>Strength</th>
             <th className={th}>Dosage form</th>
-            <th className={th}>Route</th>
+            <th className={th}>Routes</th>
+            <th className={th}>Procedure services</th>
             {canManage ? <th className={th}>Actions</th> : null}
           </tr>
         </thead>
         <tbody>
           {items.length === 0 ? (
-            <tr><td className="px-4 py-10 text-center text-sm text-muted" colSpan={canManage ? 5 : 4}>{loading ? "Loading medications…" : search || dosageForm ? "No medications match this search." : "No medications yet."}</td></tr>
+            <tr><td className="px-4 py-10 text-center text-sm text-muted" colSpan={canManage ? 6 : 5}>{loading ? "Loading medications…" : search || dosageForm ? "No medications match this search." : "No medications yet."}</td></tr>
           ) : items.map((row) => (
             <tr key={row.id} className="border-t border-line-soft">
               <td className="px-4 py-3 font-semibold">{row.name}</td>
               <td className="px-4 py-3">{row.strength}</td>
               <td className="px-4 py-3 text-sm text-muted-strong">{row.dosage_form}</td>
-              <td className="px-4 py-3 text-sm text-muted-strong">{row.route}</td>
+              <td className="px-4 py-3 text-sm text-muted-strong">{(row.routes?.map((item) => item.route) ?? [row.route]).join(", ")}</td>
+              <td className="px-4 py-3 text-sm text-muted-strong"><ProcedureServices medication={row} /></td>
               {canManage ? (
                 <td className="px-4 py-3">
                   <div className="flex gap-2">
@@ -194,9 +196,28 @@ function MedicationDialog({
   const [name, setName] = useState(medication?.name ?? "");
   const [strength, setStrength] = useState(medication?.strength ?? "");
   const [dosageForm, setDosageForm] = useState(medication?.dosage_form ?? "Tablet");
-  const [route, setRoute] = useState(medication?.route ?? "Oral");
+  const [assigned, setAssigned] = useState<{ route: string; serviceIds: string[] }[]>(
+    medication?.routes?.length
+      ? medication.routes.map((item) => ({ route: item.route, serviceIds: item.services.map((service) => service.id) }))
+      : [{ route: medication?.route ?? "Oral", serviceIds: [] }],
+  );
+  const [procedures, setProcedures] = useState<MedicalService[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    api<{ items: MedicalService[] }>(`/api/services?service_type=${encodeURIComponent("Medical Procedures Services")}`, {}, token)
+      .then((data) => {
+        if (!cancelled) setProcedures(data.items);
+      })
+      .catch(() => {
+        if (!cancelled) setProcedures([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [token]);
 
   useEffect(() => {
     function onKey(event: KeyboardEvent) {
@@ -211,7 +232,12 @@ function MedicationDialog({
     if (!fields.validateForm(event.currentTarget)) return;
     setPending(true);
     setError(null);
-    const body = { name: name.trim(), strength: strength.trim(), dosage_form: dosageForm, route };
+    const body = {
+      name: name.trim(),
+      strength: strength.trim(),
+      dosage_form: dosageForm,
+      routes: assigned.map((item) => ({ route: item.route, service_ids: item.serviceIds })),
+    };
     try {
       if (medication) {
         await api(`/api/medications/${medication.id}`, { method: "PATCH", body: JSON.stringify(body) }, token);
@@ -233,7 +259,7 @@ function MedicationDialog({
   return (
     <div className="triage-dialog-backdrop fixed inset-0 z-50 grid place-items-center bg-shell/45 p-4" role="presentation" onMouseDown={() => { if (!pending) onClose(); }}>
       <form
-        className="triage-dialog-panel w-full max-w-lg rounded-2xl bg-surface p-5 shadow-dialog"
+        className="flex max-h-[90vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl bg-surface shadow-dialog"
         role="dialog"
         aria-modal="true"
         aria-labelledby="medication-dialog-title"
@@ -241,39 +267,128 @@ function MedicationDialog({
         onMouseDown={(event) => event.stopPropagation()}
         onSubmit={(event) => void save(event)}
       >
-        <h2 id="medication-dialog-title" className="text-lg font-semibold text-ink">{medication ? "Edit medication" : "Add medication"}</h2>
-        <p className="mt-1 text-sm text-muted">This is shared by every clinic. Choosing it on an order fills the ingredient, strength, form, and route.</p>
-        {error ? <p className="mt-3 text-sm text-danger">{error}</p> : null}
-        <div className="mt-4 grid gap-4">
-          <Field label="Active ingredient" error={fields.errorOf("name")}>
-            <input className={field} name="name" value={name} onChange={(event) => { setName(event.target.value); fields.clearField("name"); }} required />
-          </Field>
-          <div className="grid gap-4 sm:grid-cols-2">
-            <Field label="Strength" error={fields.errorOf("strength")}>
-              <input className={field} name="strength" value={strength} placeholder="500 mg" onChange={(event) => { setStrength(event.target.value); fields.clearField("strength"); }} required />
+        <div className="min-h-0 flex-1 overflow-y-auto p-5">
+          <h2 id="medication-dialog-title" className="text-lg font-semibold text-ink">{medication ? "Edit medication" : "Add medication"}</h2>
+          <p className="mt-1 text-sm text-muted">This is shared by every clinic. Each route can have its own medical procedure services. Choosing the medication and route on an order adds those services to Surgical Procedures.</p>
+          {error ? <p className="mt-3 text-sm text-danger">{error}</p> : null}
+          <div className="mt-4 grid gap-4">
+            <Field label="Active ingredient" error={fields.errorOf("name")}>
+              <input className={field} name="name" value={name} onChange={(event) => { setName(event.target.value); fields.clearField("name"); }} required />
             </Field>
-            <Field label="Dosage form" error={fields.errorOf("dosage_form")}>
-              <SearchSelect
-                name="dosage_form"
-                required
-                value={dosageForm}
-                placeholder="Search dosage form"
-                options={dosageFormOptions(dosageForm)}
-                onChange={(value) => { setDosageForm(value); fields.clearField("dosage_form"); }}
-              />
-            </Field>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <Field label="Strength" error={fields.errorOf("strength")}>
+                <input className={field} name="strength" value={strength} placeholder="500 mg" onChange={(event) => { setStrength(event.target.value); fields.clearField("strength"); }} required />
+              </Field>
+              <Field label="Dosage form" error={fields.errorOf("dosage_form")}>
+                <SearchSelect
+                  name="dosage_form"
+                  required
+                  fixedMenu
+                  value={dosageForm}
+                  placeholder="Search dosage form"
+                  options={dosageFormOptions(dosageForm)}
+                  onChange={(value) => { setDosageForm(value); fields.clearField("dosage_form"); }}
+                />
+              </Field>
+            </div>
+            <div>
+              <p className={label}>Routes of administration</p>
+              <input className="sr-only" name="routes" value={assigned.length ? assigned.map((item) => item.route).join(", ") : ""} readOnly required tabIndex={-1} aria-hidden="true" />
+              <div className="mt-1 grid gap-2 sm:grid-cols-2">
+                {routes.map((item) => {
+                  const selected = assigned.some((entry) => entry.route === item);
+                  return (
+                    <label key={item} className="flex items-center gap-2 rounded-lg border border-line-soft bg-surface px-3 py-2 text-sm text-ink">
+                      <input
+                        type="checkbox"
+                        checked={selected}
+                        onChange={() => {
+                          fields.clearField("routes");
+                          setAssigned((current) => selected
+                            ? current.filter((entry) => entry.route !== item)
+                            : [...current, { route: item, serviceIds: [] }]);
+                        }}
+                      />
+                      {item}
+                    </label>
+                  );
+                })}
+              </div>
+              {fields.errorOf("routes") ? <p className="mt-1 text-sm font-medium text-danger" role="alert">{fields.errorOf("routes")}</p> : null}
+            </div>
+            {assigned.map((entry) => (
+              <div key={entry.route} className="rounded-xl border border-line-soft bg-canvas p-3">
+                <p className="text-sm font-semibold text-ink">{entry.route}</p>
+                <p className="mt-1 text-xs text-muted">Medical procedure services for this route.</p>
+                <div className="mt-3">
+                  <p className={label}>Add a service</p>
+                  <SearchSelect
+                    fixedMenu
+                    value=""
+                    placeholder="Search medical procedure services"
+                    options={procedures
+                      .filter((service) => !entry.serviceIds.includes(service.id))
+                      .map((service) => ({
+                        value: service.id,
+                        label: service.name,
+                        hint: `${service.code} · ${service.unit}`,
+                      }))}
+                    onChange={(serviceId) => {
+                      if (!serviceId || entry.serviceIds.includes(serviceId)) return;
+                      setAssigned((current) => current.map((item) => item.route === entry.route
+                        ? { ...item, serviceIds: [...item.serviceIds, serviceId] }
+                        : item));
+                    }}
+                  />
+                </div>
+                {entry.serviceIds.length > 0 ? (
+                  <ul className="mt-3 grid gap-2">
+                    {entry.serviceIds.map((serviceId) => {
+                      const service = procedures.find((item) => item.id === serviceId)
+                        ?? medication?.routes?.flatMap((item) => item.services).find((item) => item.id === serviceId);
+                      return (
+                        <li key={serviceId} className="flex items-center justify-between gap-3 rounded-lg border border-line-soft bg-surface px-3 py-2 text-sm">
+                          <span className="min-w-0 text-ink">{service ? `${service.name} · ${service.code}` : serviceId}</span>
+                          <button
+                            type="button"
+                            className="shrink-0 text-sm font-medium text-danger"
+                            onClick={() => setAssigned((current) => current.map((item) => item.route === entry.route
+                              ? { ...item, serviceIds: item.serviceIds.filter((id) => id !== serviceId) }
+                              : item))}
+                          >Remove</button>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                ) : <p className="mt-2 text-xs text-muted">No procedure services for this route yet.</p>}
+              </div>
+            ))}
           </div>
-          <Field label="Route of administration" error={fields.errorOf("route")}>
-            <select className={field} name="route" value={route} onChange={(event) => setRoute(event.target.value)}>
-              {routes.map((item) => <option key={item} value={item}>{item}</option>)}
-            </select>
-          </Field>
         </div>
-        <div className="mt-5 flex justify-end gap-2">
+        <div className="flex shrink-0 justify-end gap-2 border-t border-line-soft px-5 py-4">
           <button type="button" className={secondary} disabled={pending} onClick={onClose}>Cancel</button>
           <button type="submit" className={primary} disabled={pending}>{pending ? "Saving…" : "Save"}</button>
         </div>
       </form>
+    </div>
+  );
+}
+
+function ProcedureServices({ medication }: { medication: CatalogMedication }) {
+  const assigned = (medication.routes ?? []).filter((item) => item.services.length > 0);
+  if (assigned.length === 0) return <span className="text-muted">—</span>;
+  return (
+    <div className="grid gap-2">
+      {assigned.map((item) => (
+        <div key={item.route}>
+          <p className="text-xs font-semibold uppercase tracking-wide text-muted">{item.route}</p>
+          <ul className="mt-0.5">
+            {item.services.map((service) => (
+              <li key={service.id}>{service.name} <span className="font-mono text-xs text-muted">{service.code}</span></li>
+            ))}
+          </ul>
+        </div>
+      ))}
     </div>
   );
 }

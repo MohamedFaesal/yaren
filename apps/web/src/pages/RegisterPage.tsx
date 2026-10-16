@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router";
-import { api, type Clinic, type Patient, type PatientMatch, type PatientVisit, type User } from "../api";
+import { api, type Clinic, type MedicalService, type Patient, type PatientMatch, type PatientVisit, type User } from "../api";
 import { canAct } from "../access";
 import { useActiveClinic } from "../ClinicWorkspace";
 import { nationalityOption } from "../nationalities";
@@ -22,7 +22,7 @@ const sectionFields: Record<RegisterSection, string[]> = {
     "emergency_contact_phone",
     "emergency_contact_relationship",
   ],
-  hotel: ["clinic_id", "visit_type", "hotel_room_no", "hotel_checkin_date", "hotel_checkout_date"],
+  hotel: ["clinic_id", "visit_type", "professional_service_id", "hotel_room_no", "hotel_checkin_date", "hotel_checkout_date"],
   consent: visitDocumentMeta.map((item) => `document_${item.type}`),
 };
 
@@ -75,6 +75,8 @@ export function RegisterPage({ token, actor }: { token: string; actor: User }) {
   const [checkout, setCheckout] = useState("");
   const [room, setRoom] = useState("");
   const [visitType, setVisitType] = useState("");
+  const [professionalServiceId, setProfessionalServiceId] = useState("");
+  const [professionalServices, setProfessionalServices] = useState<MedicalService[]>([]);
   const [clinicId, setClinicId] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
@@ -208,6 +210,7 @@ export function RegisterPage({ token, actor }: { token: string; actor: User }) {
       hotel_checkout_date: checkout,
       hotel_room_no: room,
       visit_type: visitType,
+      professional_service_id: professionalServiceId,
       clinic_id: clinicId,
     };
     try {
@@ -286,6 +289,26 @@ export function RegisterPage({ token, actor }: { token: string; actor: User }) {
       return clinics.length === 1 ? clinics[0].id : current;
     });
   }, [activeClinicId, clinics]);
+
+  useEffect(() => {
+    if (!clinicId) {
+      setProfessionalServices([]);
+      return;
+    }
+    let cancelled = false;
+    api<{ items: MedicalService[] }>(`/api/services?clinic_id=${encodeURIComponent(clinicId)}&service_type=${encodeURIComponent("Professional Services")}`, {}, token)
+      .then((data) => {
+        if (cancelled) return;
+        setProfessionalServices(data.items);
+        setProfessionalServiceId((current) => data.items.some((service) => service.id === current) ? current : "");
+      })
+      .catch(() => {
+        if (!cancelled) setProfessionalServices([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [clinicId, token]);
 
   return (
     <Page
@@ -428,6 +451,7 @@ export function RegisterPage({ token, actor }: { token: string; actor: User }) {
                       value={selectedClinic ? `${selectedClinic.name} · ${selectedClinic.hotel_name}` : ""}
                     />
                     <SectionSummaryItem label="Type" value={visitType === "follow-up" ? "Follow-up" : visitType === "new" ? "New" : ""} />
+                    <SectionSummaryItem label="Service" value={professionalServices.find((service) => service.id === professionalServiceId)?.code ?? ""} />
                     <SectionSummaryItem label="Room" value={room} />
                     <SectionSummaryItem label="Check-in" value={checkin} />
                     <SectionSummaryItem label="Check-out" value={checkout} />
@@ -473,6 +497,18 @@ export function RegisterPage({ token, actor }: { token: string; actor: User }) {
                     <input name="visit_type" className="pointer-events-none absolute h-0 w-0 opacity-0" value={visitType} required tabIndex={-1} onChange={() => undefined} />
                     {fields.errorOf("visit_type") ? <p className="mt-1 text-xs font-medium text-danger">{fields.errorOf("visit_type")}</p> : null}
                   </div>
+                  <Field className="md:col-span-2" label="Professional medical service" error={fields.errorOf("professional_service_id")}>
+                    <SearchSelect
+                      name="professional_service_id"
+                      value={professionalServiceId}
+                      onChange={(value) => { setProfessionalServiceId(value); fields.clearField("professional_service_id"); }}
+                      options={professionalServices.map((service) => ({ value: service.id, label: service.code, hint: service.name }))}
+                      placeholder={clinicId ? "Choose a professional service" : "Choose a clinic first"}
+                      disabled={!canRegister || !clinicId}
+                      fixedMenu
+                      required
+                    />
+                  </Field>
                   <Field label="Hotel room" error={fields.errorOf("hotel_room_no")}>
                     <input className={field} name="hotel_room_no" value={room} onChange={(event) => { setRoom(event.target.value); fields.clearField("hotel_room_no"); }} required disabled={!canRegister} />
                   </Field>

@@ -57,6 +57,7 @@ const visitBodySchema = z.object({
   hotel_room_no: z.string().trim().min(1, "Enter the hotel room number"),
   clinic_id: z.string().uuid(),
   visit_type: z.enum(visitTypes, { error: "Choose a visit type" }),
+  professional_service_id: z.string().uuid({ error: "Choose a professional medical service" }),
 }).superRefine((value, context) => {
   if (value.hotel_checkout_date && !/^\d{4}-\d{2}-\d{2}$/.test(value.hotel_checkout_date)) {
     context.addIssue({ code: "custom", message: "Choose a check-out date", path: ["hotel_checkout_date"] });
@@ -92,7 +93,8 @@ const patientColumns = `p.id, p.name, p.mrn, p.birthdate::text AS birthdate, p.n
 const visitColumns = `v.id, v.patient_id, v.passport_number, v.preferred_contact_method,
   v.emergency_contact_name, v.emergency_contact_phone, v.emergency_contact_relationship,
   v.hotel_checkin_date::text AS hotel_checkin_date, v.hotel_checkout_date::text AS hotel_checkout_date,
-  v.hotel_room_no, v.visit_type, v.clinic_id, c.name AS clinic_name, h.name AS hotel_name,
+  v.hotel_room_no, v.visit_type, v.professional_service_id, ps.name AS professional_service_name, ps.code AS professional_service_code,
+  v.clinic_id, c.name AS clinic_name, h.name AS hotel_name,
   v.status, v.status_changed_at, v.assigned_doctor_id, d.name AS assigned_doctor_name,
   EXTRACT(YEAR FROM age((v.created_at AT TIME ZONE 'UTC')::date, p.birthdate))::int AS patient_age_at_visit,
   v.created_at, v.updated_at, v.deleted_at`;
@@ -169,6 +171,7 @@ export function registerPatients(app: FastifyInstance, pool: pg.Pool) {
       JOIN patients p ON p.id = v.patient_id
       JOIN users u ON u.id = p.added_by
       LEFT JOIN users d ON d.id = v.assigned_doctor_id
+      LEFT JOIN medical_services ps ON ps.id = v.professional_service_id
       ${where}`;
     const counted = await pool.query<{ total: number }>(`SELECT count(*)::int AS total ${from}`, values);
     const total = counted.rows[0]?.total ?? 0;
@@ -507,6 +510,7 @@ export function registerPatients(app: FastifyInstance, pool: pg.Pool) {
     if (!patient) throw new ApplicationError(404, "not_found", "Patient was not found");
     const body = parse(visitSchema, request.body);
     await assertClinicExists(pool, body.clinic_id);
+    await assertProfessionalService(pool, body.professional_service_id);
     const access = await loadAccess(pool, request.user);
     await assertVisitClinic(access, request.user.sub, ["create"], body.clinic_id, patient.added_by);
     const { passport_number, ...visitBody } = body;
@@ -520,6 +524,7 @@ export function registerPatients(app: FastifyInstance, pool: pg.Pool) {
     const previous = await findVisit(pool, patientId, id);
     if (!previous) throw new ApplicationError(404, "not_found", "Visit was not found");
     await assertClinicExists(pool, body.clinic_id);
+    await assertProfessionalService(pool, body.professional_service_id);
     await assertCan(pool, request, {
       resource: "visit",
       action: "update",
@@ -538,11 +543,11 @@ export function registerPatients(app: FastifyInstance, pool: pg.Pool) {
       `UPDATE patient_visits
        SET passport_number = $3, preferred_contact_method = $4, emergency_contact_name = $5, emergency_contact_phone = $6,
            emergency_contact_relationship = $7, hotel_checkin_date = $8::date, hotel_checkout_date = $9::date,
-           hotel_room_no = $10, clinic_id = $11, visit_type = $12, updated_at = now()
+           hotel_room_no = $10, clinic_id = $11, visit_type = $12, professional_service_id = $13, updated_at = now()
        WHERE id = $1 AND patient_id = $2 AND deleted_at IS NULL`,
       [
         id, patientId, body.passport_number, body.preferred_contact_method, body.emergency_contact_name, body.emergency_contact_phone,
-        body.emergency_contact_relationship, body.hotel_checkin_date, body.hotel_checkout_date, body.hotel_room_no, body.clinic_id, body.visit_type,
+        body.emergency_contact_relationship, body.hotel_checkin_date, body.hotel_checkout_date, body.hotel_room_no, body.clinic_id, body.visit_type, body.professional_service_id,
       ],
     );
     const next = await findVisit(pool, patientId, id);
@@ -558,6 +563,7 @@ export function registerPatients(app: FastifyInstance, pool: pg.Pool) {
         changed("Hotel check-out", previous.hotel_checkout_date, body.hotel_checkout_date),
         changed("Hotel room", previous.hotel_room_no, body.hotel_room_no),
         changed("Visit type", visitTypeLabel(previous.visit_type), visitTypeLabel(body.visit_type)),
+        changed("Professional medical service", previous.professional_service_name, next.professional_service_name),
         changed("Clinic", previous.clinic_name, next.clinic_name),
       ].filter((item) => item !== null),
     });
@@ -907,17 +913,19 @@ async function insertVisit(
   visit: z.infer<typeof visitBodySchema>,
   actorId: string,
 ) {
+  await assertProfessionalService(db, visit.professional_service_id);
   const result = await db.query(
     `INSERT INTO patient_visits (
        patient_id, passport_number, preferred_contact_method, emergency_contact_name, emergency_contact_phone,
        emergency_contact_relationship, hotel_checkin_date, hotel_checkout_date, hotel_room_no, clinic_id,
-       visit_type, status, status_changed_at
-     ) VALUES ($1, $2, $3, $4, $5, $6, $7::date, $8::date, $9, $10, $11, 'waiting_for_triage', now())
+       visit_type, professional_service_id, status, status_changed_at
+     ) VALUES ($1, $2, $3, $4, $5, $6, $7::date, $8::date, $9, $10, $11, $12, 'waiting_for_triage', now())
      RETURNING id`,
     [
       patientId, passportNumber, visit.preferred_contact_method, visit.emergency_contact_name, visit.emergency_contact_phone,
       visit.emergency_contact_relationship, visit.hotel_checkin_date, visit.hotel_checkout_date, visit.hotel_room_no, visit.clinic_id,
       visit.visit_type,
+      visit.professional_service_id,
     ],
   );
   const visitId = result.rows[0]?.id as string;
@@ -943,6 +951,7 @@ async function listVisits(pool: Db, patientId: string, where?: { sql: string; pa
      JOIN hotels h ON h.id = c.hotel_id
      JOIN patients p ON p.id = v.patient_id
      LEFT JOIN users d ON d.id = v.assigned_doctor_id
+     LEFT JOIN medical_services ps ON ps.id = v.professional_service_id
      WHERE v.patient_id = $1 AND v.deleted_at IS NULL AND ${shifted}
      ORDER BY v.hotel_checkin_date DESC, v.created_at DESC`,
     [patientId, ...filter.params],
@@ -958,6 +967,7 @@ async function findVisit(pool: pg.Pool, patientId: string, id: string) {
      JOIN hotels h ON h.id = c.hotel_id
      JOIN patients p ON p.id = v.patient_id
      LEFT JOIN users d ON d.id = v.assigned_doctor_id
+     LEFT JOIN medical_services ps ON ps.id = v.professional_service_id
      WHERE v.id = $1 AND v.patient_id = $2 AND v.deleted_at IS NULL AND p.deleted_at IS NULL`,
     [id, patientId],
   );
@@ -974,6 +984,7 @@ async function findVisit(pool: pg.Pool, patientId: string, id: string) {
     hotel_checkout_date: string | null;
     hotel_room_no: string | null;
     visit_type: string;
+    professional_service_name: string | null;
     status: string;
     patient_name: string;
     patient_added_by: string;
@@ -1102,6 +1113,15 @@ function readVisitListQuery(query: unknown) {
     sort: sort as (typeof visitSorts)[number],
     dir: dir === "asc" ? "ASC" : "DESC",
   };
+}
+
+async function assertProfessionalService(db: Db, id: string) {
+  const result = await db.query(
+    `SELECT id FROM medical_services
+     WHERE id = $1 AND deleted_at IS NULL AND service_type = 'Professional Services'`,
+    [id],
+  );
+  if (!result.rows[0]) throw new ApplicationError(422, "invalid_service", "Choose a professional medical service");
 }
 
 async function assertClinicExists(pool: pg.Pool, id: string) {

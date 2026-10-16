@@ -127,6 +127,9 @@ export type PatientVisit = {
   hotel_checkout_date: string | null;
   hotel_room_no: string | null;
   visit_type?: VisitType;
+  professional_service_id?: string | null;
+  professional_service_name?: string | null;
+  professional_service_code?: string | null;
   clinic_id: string;
   clinic_name: string;
   hotel_name: string;
@@ -262,6 +265,7 @@ export type ClinicalEncounter = {
   chief_complaint: string;
   history_of_present_illness: string;
   past_history: string;
+  medication_allergy_history: string;
   temperature_c: number | null;
   pulse: number | null;
   respiratory_rate: number | null;
@@ -297,6 +301,7 @@ export type EncounterInvestigation = {
   code: string;
   unit: string;
   price: number | null;
+  priority: "emergency" | "urgent" | "normal";
 };
 
 export type CatalogMedication = {
@@ -305,6 +310,10 @@ export type CatalogMedication = {
   strength: string;
   dosage_form: string;
   route: string;
+  routes?: {
+    route: string;
+    services: { id: string; name: string; code: string; unit: string; price: number | null }[];
+  }[];
 };
 
 export type MedicationOrder = {
@@ -328,6 +337,7 @@ export type ProcedureOrder = {
   unit: string;
   price: number | null;
   notes: string;
+  linked_medication_order_id?: string | null;
 };
 
 export type PatientAdvice = {

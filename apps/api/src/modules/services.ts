@@ -15,7 +15,14 @@ const descriptionSchema = z.string().trim().max(500, "Description must be 500 ch
   return value || null;
 });
 
-const serviceTypes = ["Medical service", "Investigation service", "Procedure service"] as const;
+const serviceTypes = [
+  "Professional Services",
+  "Administrative & Coordination Services",
+  "Medical Procedures Services",
+  "Surgical Procedures Services",
+  "Investigations [Laboratory & Imaging] Services",
+  "Others",
+] as const;
 const serviceTypeSchema = z.enum(serviceTypes, { error: "Choose a service type" });
 
 const categorySchema = z.string().trim().min(1, "Enter a category").max(80);
@@ -129,7 +136,7 @@ export function registerServices(app: FastifyInstance, pool: pg.Pool) {
       noteActivity(request, {
         entity: "service",
         entityId: id,
-        summary: `Added medical service ${body.name}`,
+        summary: `Added professional service ${body.name}`,
         changes: [
           changed("Name", null, body.name),
           changed("Type", null, body.service_type),
@@ -207,7 +214,7 @@ export function registerServices(app: FastifyInstance, pool: pg.Pool) {
     noteActivity(request, {
       entity: "service",
       entityId: id,
-      summary: `Updated medical service ${name}`,
+      summary: `Updated professional service ${name}`,
       changes: [
         changed("Name", current.name, name),
         changed("Type", current.service_type, serviceType),
@@ -246,7 +253,7 @@ export function registerServices(app: FastifyInstance, pool: pg.Pool) {
     noteActivity(request, {
       entity: "service",
       entityId: id,
-      summary: `Removed medical service ${current.name}`,
+      summary: `Removed professional service ${current.name}`,
     });
     return reply.status(204).send();
   });

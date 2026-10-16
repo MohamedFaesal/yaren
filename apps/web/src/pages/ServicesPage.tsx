@@ -5,7 +5,14 @@ import { useActiveClinic } from "../ClinicWorkspace";
 import { useToast } from "../toast";
 import { ConfirmDialog, DataTable, Field, Filters, IconAction, Page, PlusIcon, SearchSelect, field, messageOf, primary, secondary, th, useFieldErrors } from "./ui";
 
-const serviceTypes = ["Medical service", "Investigation service", "Procedure service"];
+const serviceTypes = [
+  "Professional Services",
+  "Administrative & Coordination Services",
+  "Medical Procedures Services",
+  "Surgical Procedures Services",
+  "Investigations [Laboratory & Imaging] Services",
+  "Others",
+];
 
 export function ServicesPage({ token, actor }: { token: string; actor: User }) {
   const toast = useToast();
@@ -65,7 +72,7 @@ export function ServicesPage({ token, actor }: { token: string; actor: User }) {
     setDeleteError(null);
     try {
       await api(`/api/services/${service.id}`, { method: "DELETE" }, token);
-      toast.success("Service removed", `${service.name} was removed from medical services.`);
+      toast.success("Service removed", `${service.name} was removed from professional services.`);
       setPendingDelete(null);
       setReloadKey((current) => current + 1);
     } catch (caught) {
@@ -77,9 +84,9 @@ export function ServicesPage({ token, actor }: { token: string; actor: User }) {
 
   return (
     <Page
-      title="Medical Services"
+      title="Professional Services"
       description={clinicId ? "Prices for this clinic. A service without its own price uses the shared amount." : "Shared prices used by every clinic that does not set its own."}
-      crumbs={[{ label: "Care" }, { label: "Medical Services" }]}
+      crumbs={[{ label: "Care" }, { label: "Professional Services" }]}
       action={canManage ? <button type="button" className={primary} onClick={() => setEditor({ service: null })}><PlusIcon />Add service</button> : null}
     >
       {error ? <p className="mb-4 text-sm text-danger">{error}</p> : null}
@@ -118,7 +125,7 @@ export function ServicesPage({ token, actor }: { token: string; actor: User }) {
         </thead>
         <tbody>
           {items.length === 0 ? (
-            <tr><td className="px-4 py-10 text-center text-sm text-muted" colSpan={columns}>{loading ? "Loading medical services…" : search || serviceType || category ? "No services match this search." : "No services yet."}</td></tr>
+            <tr><td className="px-4 py-10 text-center text-sm text-muted" colSpan={columns}>{loading ? "Loading professional services…" : search || serviceType || category ? "No services match this search." : "No services yet."}</td></tr>
           ) : items.map((row) => (
             <tr key={row.id} className="border-t border-line-soft">
               <td className="px-4 py-3 font-mono text-xs font-semibold">{row.code}</td>
@@ -200,7 +207,7 @@ function ServiceDialog({
   const fields = useFieldErrors();
   const clinicPrice = Boolean(clinicId && service);
   const [name, setName] = useState(service?.name ?? "");
-  const [serviceType, setServiceType] = useState(service?.service_type ?? "Medical service");
+  const [serviceType, setServiceType] = useState(service?.service_type ?? "Professional Services");
   const [category, setCategory] = useState(service?.category || categories[0] || "");
   const [unit, setUnit] = useState(service?.unit || units[0] || "");
   const [code, setCode] = useState(service?.code ?? "");
@@ -249,7 +256,7 @@ function ServiceDialog({
         toast.success("Price saved", clinicPrice ? `${service.name} now has a price for this clinic.` : `${name.trim()} was updated.`);
       } else {
         await api("/api/services", { method: "POST", body: JSON.stringify(body) }, token);
-        toast.success("Service added", `${name.trim()} was added to medical services.`);
+        toast.success("Service added", `${name.trim()} was added to professional services.`);
       }
       onSaved();
     } catch (caught) {

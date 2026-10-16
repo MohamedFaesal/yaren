@@ -216,6 +216,7 @@ function VisitDetails({
           ),
         },
         { label: "Type", value: visitTypeLabel(visit.visit_type) },
+        { label: "Professional medical service", value: visit.professional_service_code ? `${visit.professional_service_code}${visit.professional_service_name ? ` · ${visit.professional_service_name}` : ""}` : "—" },
         { label: "Clinic", value: visit.clinic_name },
         { label: "Hotel", value: visit.hotel_name },
         { label: "Room", value: <SecretValue value={visit.hotel_room_no} /> },

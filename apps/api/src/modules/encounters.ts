@@ -14,15 +14,6 @@ const appearances = ["well", "ill", "toxic"] as const;
 const consciousnessLevels = ["alert", "drowsy", "confused"] as const;
 const nutritionLevels = ["normal", "overweight", "obese", "cachectic"] as const;
 const hydrationLevels = ["adequate", "mildly_dehydrated", "dehydrated"] as const;
-const historyLabel: Record<string, string> = {
-  hypertension: "Hypertension",
-  copd: "COPD",
-  diabetes_mellitus: "Diabetes mellitus",
-  immunosuppression: "Immunosuppression",
-  asthma: "Asthma",
-  hypothyroidism: "Hypothyroidism",
-  cardiac_disease: "Cardiac disease",
-};
 
 const optionalText = z.string().trim().max(8000).optional().transform((value) => value ?? "");
 const optionalChoice = <T extends string>(values: readonly T[]) =>
@@ -41,6 +32,7 @@ const encounterSchema = z.object({
   chief_complaint: optionalText,
   history_of_present_illness: optionalText,
   past_history: optionalText,
+  medication_allergy_history: optionalText,
   temperature_c: z.number().min(10).max(60).nullable().optional().transform((value) => value ?? null),
   pulse: z.number().int().min(0).max(300).nullable().optional().transform((value) => value ?? null),
   respiratory_rate: z.number().int().min(0).max(80).nullable().optional().transform((value) => value ?? null),
@@ -79,6 +71,7 @@ const encounterSchema = z.object({
     code: z.string().trim().max(40).optional().transform((value) => value ?? ""),
     unit: z.string().trim().max(80).optional().transform((value) => value ?? ""),
     price: z.number().min(0).nullable().optional().transform((value) => value ?? null),
+    priority: z.enum(["emergency", "urgent", "normal"]).optional().transform((value) => value ?? "normal"),
   })).max(40).optional().transform((value) => value ?? []),
   management_plan: optionalText,
   allergies: z.array(allergySchema).max(40).optional().transform((value) => value ?? []),
@@ -103,6 +96,7 @@ const encounterSchema = z.object({
     unit: z.string().trim().max(40).optional().transform((value) => value ?? ""),
     price: z.number().min(0).nullable().optional().transform((value) => value ?? null),
     notes: z.string().trim().max(500).optional().transform((value) => value ?? ""),
+    linked_medication_order_id: z.string().uuid().nullable().optional().transform((value) => value ?? null),
   })).max(40).optional().transform((value) => value ?? []),
   patient_advices: z.array(z.object({
     id: z.string().uuid(),
@@ -185,7 +179,7 @@ export function registerEncounters(app: FastifyInstance, pool: pg.Pool) {
     const { id } = request.params as { id: string };
     const visit = await loadCase(pool, request.user, id);
     if (visit.status !== "to_doctor") throw new ApplicationError(422, "encounter_finished", "This encounter is already finished");
-    const body = resolveDiagnosis(parse(encounterSchema, request.body));
+    const body = await applyRouteProcedures(pool, id, resolveDiagnosis(parse(encounterSchema, request.body)));
     await saveEncounter(pool, id, body, null);
     noteActivity(request, { entity: "patient", entityId: visit.patient_id, summary: `Saved the clinical encounter for ${visit.patient_name}` });
     return presentEncounter(pool, visit);
@@ -195,7 +189,7 @@ export function registerEncounters(app: FastifyInstance, pool: pg.Pool) {
     const { id } = request.params as { id: string };
     const visit = await loadCase(pool, request.user, id);
     if (visit.status !== "to_doctor") throw new ApplicationError(422, "encounter_finished", "This encounter is already finished");
-    const body = resolveDiagnosis(parse(finishSchema, request.body));
+    const body = await applyRouteProcedures(pool, id, resolveDiagnosis(parse(finishSchema, request.body)));
     const client = await pool.connect();
     try {
       await client.query("BEGIN");
@@ -342,16 +336,83 @@ function resolveDiagnosis(body: EncounterBody): EncounterBody {
   };
 }
 
+async function applyRouteProcedures<T extends EncounterBody>(db: pg.Pool | pg.PoolClient, visitId: string, body: T): Promise<T> {
+  const orders = body.medication_orders.filter((order) => order.medication_id && order.route);
+  const medicationIds = [...new Set(orders.map((order) => order.medication_id).filter((id): id is string => Boolean(id)))];
+  const linked = new Map<string, { id: string; name: string; code: string; unit: string; price: number | null }[]>();
+  if (medicationIds.length > 0) {
+    const result = await db.query<{
+      medication_id: string;
+      route: string;
+      id: string;
+      name: string;
+      code: string;
+      unit: string;
+      price: string | null;
+    }>(
+      `SELECT mr.medication_id, mr.route, s.id, s.name, s.code, s.unit, COALESCE(csp.price, s.price) AS price
+       FROM medication_routes mr
+       JOIN medication_route_services mrs ON mrs.medication_route_id = mr.id
+       JOIN medical_services s ON s.id = mrs.service_id AND s.deleted_at IS NULL
+         AND s.service_type = 'Medical Procedures Services'
+       JOIN patient_visits v ON v.id = $2::uuid
+       LEFT JOIN clinic_service_prices csp ON csp.service_id = s.id AND csp.clinic_id = v.clinic_id
+       WHERE mr.medication_id = ANY($1::uuid[])`,
+      [medicationIds, visitId],
+    );
+    for (const row of result.rows) {
+      const key = `${row.medication_id}\n${row.route}`;
+      const list = linked.get(key) ?? [];
+      list.push({
+        id: row.id,
+        name: row.name,
+        code: row.code,
+        unit: row.unit,
+        price: row.price == null ? null : Number(row.price),
+      });
+      linked.set(key, list);
+    }
+  }
+  const neededByOrder = new Map<string, { id: string; name: string; code: string; unit: string; price: number | null }[]>();
+  const neededIds = new Set<string>();
+  for (const order of orders) {
+    const services = linked.get(`${order.medication_id}\n${order.route}`) ?? [];
+    neededByOrder.set(order.id, services);
+    for (const service of services) neededIds.add(service.id);
+  }
+  const procedures = body.procedure_orders.filter((item) => {
+    if (!item.linked_medication_order_id) return true;
+    if (item.procedure_id && neededIds.has(item.procedure_id)) return true;
+    return false;
+  });
+  for (const [orderId, services] of neededByOrder) {
+    for (const service of services) {
+      if (procedures.some((item) => item.procedure_id === service.id)) continue;
+      procedures.push({
+        id: randomUUID(),
+        procedure_id: service.id,
+        name: service.name,
+        code: service.code,
+        unit: service.unit,
+        price: service.price,
+        notes: "",
+        linked_medication_order_id: orderId,
+      });
+    }
+  }
+  return { ...body, procedure_orders: procedures };
+}
+
 async function saveEncounter(db: pg.Pool | pg.PoolClient, visitId: string, body: EncounterBody, finishedBy: string | null) {
   await db.query(
     `INSERT INTO patient_visit_encounters (
-       visit_id, chief_complaint, history_of_present_illness, past_history,
+       visit_id, chief_complaint, history_of_present_illness, past_history, medication_allergy_history,
        temperature_c, pulse, respiratory_rate, blood_pressure, spo2, pain_score, vitals_recorded_at,
        examination, provisional_diagnosis, provisional_diagnosis_code, provisional_diagnoses, investigations, management_plan, allergies, medications,
        medication_orders, procedure_orders, patient_advices,
        finished_at, finished_by, updated_at
      ) VALUES (
-       $1, $2, $3, $4,
+       $1, $2, $3, $4, $24,
        $5, $6, $7, $8, $9, $10, $11,
        $12::jsonb, $13, $22, $23::jsonb, $14::jsonb, $15, $16::jsonb, $17::jsonb,
        $18::jsonb, $19::jsonb, $20::jsonb,
@@ -361,6 +422,7 @@ async function saveEncounter(db: pg.Pool | pg.PoolClient, visitId: string, body:
        chief_complaint = EXCLUDED.chief_complaint,
        history_of_present_illness = EXCLUDED.history_of_present_illness,
        past_history = EXCLUDED.past_history,
+       medication_allergy_history = EXCLUDED.medication_allergy_history,
        temperature_c = EXCLUDED.temperature_c,
        pulse = EXCLUDED.pulse,
        respiratory_rate = EXCLUDED.respiratory_rate,
@@ -407,6 +469,7 @@ async function saveEncounter(db: pg.Pool | pg.PoolClient, visitId: string, body:
       finishedBy,
       body.provisional_diagnoses.length === 1 ? body.provisional_diagnoses[0]?.code ?? null : null,
       JSON.stringify(body.provisional_diagnoses),
+      body.medication_allergy_history || null,
     ],
   );
 }
@@ -449,6 +512,7 @@ function storedEncounter(row: Record<string, unknown>) {
     chief_complaint: text(row.chief_complaint),
     history_of_present_illness: text(row.history_of_present_illness),
     past_history: text(row.past_history),
+    medication_allergy_history: text(row.medication_allergy_history),
     temperature_c: numberOrNull(row.temperature_c),
     pulse: numberOrNull(row.pulse),
     respiratory_rate: numberOrNull(row.respiratory_rate),
@@ -479,24 +543,19 @@ function storedEncounter(row: Record<string, unknown>) {
   };
 }
 
-function blankEncounter(visit: CaseRow) {
-  const history = (visit.relevant_history ?? []).filter((item) => item !== "other").map((item) => historyLabel[item] ?? item);
-  for (const item of visit.relevant_history_items ?? []) {
-    if (item.name?.trim()) history.push(item.name.trim());
-  }
-  const other = visit.relevant_history_other?.trim();
-  if (other && !history.some((item) => item.toLowerCase() === other.toLowerCase())) history.push(other);
+function blankEncounter(_visit: CaseRow) {
   return {
-    chief_complaint: visit.chief_complaint?.trim() ?? "",
+    chief_complaint: "",
     history_of_present_illness: "",
-    past_history: history.join("\n"),
-    temperature_c: numberOrNull(visit.temperature_c),
-    pulse: visit.pulse,
-    respiratory_rate: visit.respiratory_rate,
-    blood_pressure: visit.blood_pressure?.trim() ?? "",
-    spo2: visit.spo2,
+    past_history: "",
+    medication_allergy_history: "",
+    temperature_c: null,
+    pulse: null,
+    respiratory_rate: null,
+    blood_pressure: "",
+    spo2: null,
     pain_score: null,
-    vitals_recorded_at: visit.triage_completed_at,
+    vitals_recorded_at: null,
     examination: {
       general_appearance: "",
       consciousness: "",
@@ -509,8 +568,8 @@ function blankEncounter(visit: CaseRow) {
     provisional_diagnosis: "",
     investigations: [],
     management_plan: "",
-    allergies: visit.allergies ?? [],
-    medications: visit.medications ?? [],
+    allergies: [],
+    medications: [],
     medication_orders: [],
     procedure_orders: [],
     patient_advices: [],
@@ -537,6 +596,10 @@ function presentInvestigation(value: unknown) {
   const row = value as Record<string, unknown>;
   if (typeof row.id !== "string" || typeof row.name !== "string" || !row.name.trim()) return null;
   const price = row.price == null || row.price === "" ? null : Number(row.price);
+  const priorities = ["emergency", "urgent", "normal"] as const;
+  const priority = typeof row.priority === "string" && priorities.includes(row.priority as (typeof priorities)[number])
+    ? row.priority as (typeof priorities)[number]
+    : "normal";
   return {
     id: row.id,
     service_id: typeof row.service_id === "string" ? row.service_id : null,
@@ -544,6 +607,7 @@ function presentInvestigation(value: unknown) {
     code: typeof row.code === "string" ? row.code : "",
     unit: typeof row.unit === "string" ? row.unit : "",
     price: price != null && Number.isFinite(price) ? price : null,
+    priority,
   };
 }
 

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router";
-import { api, type Clinic, type Patient, type PatientVisit, type User } from "../api";
+import { api, type Clinic, type MedicalService, type Patient, type PatientVisit, type User } from "../api";
 import { canAct } from "../access";
 import { useActiveClinic } from "../ClinicWorkspace";
 import { useToast } from "../toast";
@@ -44,6 +44,8 @@ export function VisitFormPage({ token, actor }: { token: string; actor: User }) 
   const [checkout, setCheckout] = useState("");
   const [room, setRoom] = useState("");
   const [visitType, setVisitType] = useState("");
+  const [professionalServiceId, setProfessionalServiceId] = useState("");
+  const [professionalServices, setProfessionalServices] = useState<MedicalService[]>([]);
   const [clinicId, setClinicId] = useState("");
   const [documents, setDocuments] = useState<Partial<Record<VisitDocumentType, File | null>>>({});
   const [error, setError] = useState<string | null>(null);
@@ -71,6 +73,26 @@ export function VisitFormPage({ token, actor }: { token: string; actor: User }) 
   }, [activeClinicId, clinics, id]);
 
   useEffect(() => {
+    if (!clinicId) {
+      setProfessionalServices([]);
+      return;
+    }
+    let cancelled = false;
+    api<{ items: MedicalService[] }>(`/api/services?clinic_id=${encodeURIComponent(clinicId)}&service_type=${encodeURIComponent("Professional Services")}`, {}, token)
+      .then((data) => {
+        if (cancelled) return;
+        setProfessionalServices(data.items);
+        setProfessionalServiceId((current) => current && !data.items.some((service) => service.id === current) ? "" : current);
+      })
+      .catch(() => {
+        if (!cancelled) setProfessionalServices([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [clinicId, token]);
+
+  useEffect(() => {
     if (!id || !patientId) return;
     api<PatientVisit>(`/api/patients/${patientId}/visits/${id}`, {}, token).then((visit) => {
       setPassport(visit.passport_number);
@@ -82,6 +104,7 @@ export function VisitFormPage({ token, actor }: { token: string; actor: User }) 
       setCheckout(visit.hotel_checkout_date ?? "");
       setRoom(visit.hotel_room_no ?? "");
       setVisitType(visit.visit_type ?? "");
+      setProfessionalServiceId(visit.professional_service_id ?? "");
       setClinicId(visit.clinic_id);
     }).catch((caught) => setError(messageOf(caught)));
   }, [id, patientId, token]);
@@ -125,6 +148,7 @@ export function VisitFormPage({ token, actor }: { token: string; actor: User }) 
                 hotel_checkout_date: checkout,
                 hotel_room_no: room,
                 visit_type: visitType,
+                professional_service_id: professionalServiceId,
                 clinic_id: clinicId,
               };
               try {
@@ -182,6 +206,18 @@ export function VisitFormPage({ token, actor }: { token: string; actor: User }) 
                   ]}
                   placeholder="New or follow-up"
                   disabled={!canWrite}
+                  required
+                />
+              </Field>
+              <Field className="md:col-span-2" label="Professional medical service" error={fields.errorOf("professional_service_id")}>
+                <SearchSelect
+                  name="professional_service_id"
+                  value={professionalServiceId}
+                  onChange={(value) => { setProfessionalServiceId(value); fields.clearField("professional_service_id"); }}
+                  options={professionalServices.map((service) => ({ value: service.id, label: service.code, hint: service.name }))}
+                  placeholder={clinicId ? "Choose a professional service" : "Choose a clinic first"}
+                  disabled={!canWrite || !clinicId}
+                  fixedMenu
                   required
                 />
               </Field>

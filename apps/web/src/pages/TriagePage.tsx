@@ -488,15 +488,7 @@ export function TriagePage({ token, actor }: { token: string; actor: User }) {
                     </div>
                   </Group>
 
-                  <Group
-                    title="Vital signs"
-                    hint="Abnormal values turn red."
-                    action={readonly ? undefined : (
-                      <button type="button" className={`${secondary} h-8 px-3 py-0 text-xs`} onClick={() => setForm((current) => ({ ...current, ...normalVitals }))}>
-                        Set Normal
-                      </button>
-                    )}
-                  >
+                  <Group title="Vital signs" hint="Abnormal values turn red.">
                     <div className="grid gap-3 sm:grid-cols-2">
                       <VitalField label="Temperature" unit="°C" icon={<TempIcon />} value={form.temperature_c} disabled={readonly} required alert={form.temperature_c !== "" && Number(form.temperature_c) >= 38} onChange={(value) => setForm((current) => ({ ...current, temperature_c: value }))} />
                       <VitalField label="Pulse" unit="/min" icon={<PulseIcon />} value={form.pulse} disabled={readonly} required alert={form.pulse !== "" && Number(form.pulse) >= 100} onChange={(value) => setForm((current) => ({ ...current, pulse: value }))} />
@@ -897,14 +889,6 @@ function StatusBadge({ status, compact = false }: { status: VisitCareStatus; com
     </span>
   );
 }
-
-const normalVitals = {
-  temperature_c: "36.8",
-  pulse: "72",
-  respiratory_rate: "16",
-  blood_pressure: "120/80",
-  spo2: "98",
-};
 
 function Group({ title, hint, action, children }: { title: string; hint?: string; action?: ReactNode; children: ReactNode }) {
   return (

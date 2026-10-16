@@ -1,24 +1,24 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Link, useNavigate, useParams } from "react-router";
 import {
   api,
   formatPrice,
   type CatalogMedication,
   type ClinicalEncounter,
+  type DoctorCaseDetail,
   type EncounterRecord,
   type Icd10Code,
   type MedicalService,
   type MedicationOrder,
-  type TriageCategory,
+  type ProcedureOrder,
 } from "../api";
 import { useToast } from "../toast";
-import { ConfirmDialog, Page, RemoveButton, SearchSelect, field, messageOf, primary, secondary } from "./ui";
+import { ConfirmDialog, Page, RemoveButton, SearchSelect, field, label, messageOf, primary, secondary } from "./ui";
 
-type EncounterTab = "info" | "history" | "vitals" | "examination" | "investigations" | "diagnosis" | "plan";
+type EncounterTab = "history" | "vitals" | "examination" | "investigations" | "diagnosis" | "plan";
 type PlanTab = "medications" | "procedures" | "advice";
 
 const tabs: { id: EncounterTab; label: string }[] = [
-  { id: "info", label: "Patient Info" },
   { id: "history", label: "History" },
   { id: "vitals", label: "Vital Signs" },
   { id: "examination", label: "Examination" },
@@ -63,11 +63,11 @@ const dosageForms = [
 ];
 const frequencies = ["Once", "Once daily", "Every 6 hours", "Every 8 hours", "Every 12 hours", "Three times daily", "As prescribed"];
 
-const categoryLabel: Record<TriageCategory, string> = {
-  emergency: "Emergency",
-  urgent: "Urgent",
-  normal: "Normal",
-};
+const investigationPriorities = [
+  { value: "emergency", label: "Emergency" },
+  { value: "urgent", label: "Urgent" },
+  { value: "normal", label: "Normal" },
+] as const;
 
 const cell = "w-full min-w-[6.5rem] rounded-lg border border-line-strong bg-surface px-2 py-1.5 text-sm text-ink outline-none focus:border-blue disabled:bg-surface-3";
 
@@ -80,7 +80,7 @@ export function EncounterPage({ token }: { token: string }) {
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [confirmFinish, setConfirmFinish] = useState(false);
-  const [tab, setTab] = useState<EncounterTab>("info");
+  const [tab, setTab] = useState<EncounterTab>("history");
   const [planTab, setPlanTab] = useState<PlanTab>("medications");
   const [allergyName, setAllergyName] = useState("");
   const [allergyReaction, setAllergyReaction] = useState("");
@@ -91,6 +91,22 @@ export function EncounterPage({ token }: { token: string }) {
   const [serviceId, setServiceId] = useState("");
   const [procedureId, setProcedureId] = useState("");
   const [adviceText, setAdviceText] = useState("");
+  const [triageOpen, setTriageOpen] = useState(false);
+  const triageButtonRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    if (!triageOpen) return;
+    const previous = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") setTriageOpen(false);
+    }
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.body.style.overflow = previous;
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [triageOpen]);
 
   useEffect(() => {
     api<EncounterRecord>(`/api/doctor-cases/${id}/encounter`, {}, token)
@@ -122,14 +138,14 @@ export function EncounterPage({ token }: { token: string }) {
     if (!visit?.clinic_id) return;
     let cancelled = false;
     const clinic = encodeURIComponent(visit.clinic_id);
-    api<{ items: MedicalService[] }>(`/api/services?clinic_id=${clinic}&service_type=${encodeURIComponent("Investigation service")}`, {}, token)
+    api<{ items: MedicalService[] }>(`/api/services?clinic_id=${clinic}&service_type=${encodeURIComponent("Investigations [Laboratory & Imaging] Services")}`, {}, token)
       .then((data) => {
         if (!cancelled) setServices(data.items);
       })
       .catch(() => {
         if (!cancelled) setServices([]);
       });
-    api<{ items: MedicalService[] }>(`/api/services?clinic_id=${clinic}&service_type=${encodeURIComponent("Medical service,Procedure service")}`, {}, token)
+    api<{ items: MedicalService[] }>(`/api/services?clinic_id=${clinic}&service_type=${encodeURIComponent("Surgical Procedures Services")}`, {}, token)
       .then((data) => {
         if (!cancelled) setProcedureServices(data.items);
       })
@@ -285,7 +301,7 @@ export function EncounterPage({ token }: { token: string }) {
     >
       {error ? <p className="mb-4 text-sm text-danger">{error}</p> : null}
       {!form || !visit || !record ? <p className="text-sm text-muted">{error ? "" : "Loading encounter…"}</p> : (
-        <div className="space-y-4">
+        <div className="space-y-4 pr-10">
           <section className="rounded-2xl border border-line bg-surface p-4 shadow-card sm:p-5">
             <div className="flex flex-wrap items-center gap-4">
               <span className="grid h-14 w-14 place-items-center rounded-full bg-panel text-lg font-bold text-blue">{initials(visit.patient_name)}</span>
@@ -314,6 +330,21 @@ export function EncounterPage({ token }: { token: string }) {
             </div>
           </section>
 
+          <button
+            ref={triageButtonRef}
+            type="button"
+            aria-expanded={triageOpen}
+            aria-controls="triage-summary"
+            className={`fixed top-48 right-0 z-40 flex items-center gap-1.5 rounded-l-2xl bg-blue py-3 pr-1.5 pl-2 text-white shadow-card transition-transform duration-200 hover:-translate-x-1 hover:bg-blue-strong ${triageOpen ? "pointer-events-none invisible" : ""}`}
+            onClick={() => setTriageOpen(true)}
+          >
+            <svg viewBox="0 0 24 24" className="h-4 w-4 shrink-0" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><path d="M15 6 9 12l6 6" /></svg>
+            <span className="text-[11px] font-semibold tracking-wide [writing-mode:vertical-lr]">Triage Summary</span>
+            {triageHasAlert(visit) ? <span className="absolute -left-1 top-2 h-2.5 w-2.5 rounded-full bg-danger ring-2 ring-canvas" aria-hidden="true" /> : null}
+            {triageHasAlert(visit) ? <span className="sr-only">Abnormal vital signs</span> : null}
+          </button>
+          {triageOpen ? <TriageSummary visit={visit} onClose={() => { setTriageOpen(false); triageButtonRef.current?.focus(); }} /> : null}
+
           <div className="flex gap-1 overflow-x-auto rounded-2xl border border-line bg-surface p-2 shadow-card" role="tablist">
             {tabs.map((item, index) => (
               <button
@@ -326,54 +357,82 @@ export function EncounterPage({ token }: { token: string }) {
               >
                 <span className="text-xs">{index + 1}.</span>
                 {item.label}
+                {item.id === "investigations" ? (
+                  <span className={`inline-flex min-w-6 justify-center rounded-full px-2 py-0.5 text-center text-xs font-bold tabular-nums ${tab === item.id ? "bg-surface text-blue" : "bg-surface-2 text-ink"}`}>{form.investigations.length}</span>
+                ) : null}
               </button>
             ))}
           </div>
 
-          {tab === "info" ? (
-            <div className="grid items-start gap-4 lg:grid-cols-2">
-                <Panel title="Triage Summary">
-                  <SideLine label="Level" value={visit.triage_category ? categoryLabel[visit.triage_category] : "—"} />
-                  <SideLine label="Nurse concern" value={visit.chief_complaint || "—"} />
-                  <SideLine label="Nurse notes" value={visit.initial_assessment || "—"} />
-                  {visit.completed_by_name ? <p className="text-xs text-muted">Recorded by {visit.completed_by_name}</p> : null}
-                </Panel>
+          {tab === "history" ? (
+            <div className="space-y-4">
+              <Panel title="This visit">
+                <div className="grid gap-4">
+                  <label className={label}>Chief complaint<span className="text-danger"> *</span>
+                    <textarea className={`${field} min-h-24`} disabled={locked} value={form.chief_complaint} onChange={(event) => update({ chief_complaint: event.target.value })} />
+                  </label>
+                  <label className={label}>History of present illness <span className="font-medium text-muted">Optional</span>
+                    <textarea className={`${field} min-h-32`} disabled={locked} value={form.history_of_present_illness} onChange={(event) => update({ history_of_present_illness: event.target.value })} />
+                  </label>
+                </div>
+              </Panel>
+              <Panel title="Background" optional>
+                <div className="grid gap-4 md:grid-cols-2">
+                  <label className={label}>Past medical and surgical history
+                    <textarea className={`${field} min-h-32`} disabled={locked} value={form.past_history} onChange={(event) => update({ past_history: event.target.value })} />
+                  </label>
+                  <label className={label}>History of allergies to medications
+                    <textarea className={`${field} min-h-32`} disabled={locked} value={form.medication_allergy_history} onChange={(event) => update({ medication_allergy_history: event.target.value })} />
+                  </label>
+                </div>
+              </Panel>
+              <div className="grid items-start gap-4 md:grid-cols-2">
                 <Panel title="Allergies" optional>
-                  <ul className="space-y-2">
-                    {form.allergies.length === 0 ? <li className="text-sm text-muted">No allergies recorded.</li> : form.allergies.map((item, index) => (
-                      <li key={`${item.name}-${index}`} className="flex items-start justify-between gap-2 text-sm">
-                        <span><span className="font-semibold text-danger">{item.name}</span>{item.reaction ? <span className="text-muted"> ({item.reaction})</span> : null}</span>
-                        {locked ? null : <RemoveButton onClick={() => update({ allergies: form.allergies.filter((_, itemIndex) => itemIndex !== index) })} />}
-                      </li>
-                    ))}
-                  </ul>
+                  {form.allergies.length === 0 ? <p className="text-sm text-muted">No allergies recorded.</p> : (
+                    <ul className="grid gap-2">
+                      {form.allergies.map((item, index) => (
+                        <li key={`${item.name}-${index}`} className="flex items-center justify-between gap-2 rounded-lg border border-line-soft bg-canvas px-3 py-2 text-sm">
+                          <span className="min-w-0"><span className="font-semibold text-danger">{item.name}</span>{item.reaction ? <span className="text-muted"> · {item.reaction}</span> : null}</span>
+                          {locked ? null : <RemoveButton onClick={() => update({ allergies: form.allergies.filter((_, itemIndex) => itemIndex !== index) })} />}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
                   {locked ? null : (
-                    <div className="mt-3 space-y-2">
-                      <input className={field} value={allergyName} placeholder="Allergy" onChange={(event) => setAllergyName(event.target.value)} />
-                      <input className={field} value={allergyReaction} placeholder="Reaction" onChange={(event) => setAllergyReaction(event.target.value)} />
-                      <button type="button" className={`${secondary} w-full`} onClick={() => {
+                    <div className="mt-3 grid gap-2 sm:grid-cols-[1fr_1fr_auto] sm:items-end">
+                      <label className={label}>Allergy
+                        <input className={field} value={allergyName} placeholder="Penicillin" onChange={(event) => setAllergyName(event.target.value)} />
+                      </label>
+                      <label className={label}>Reaction
+                        <input className={field} value={allergyReaction} placeholder="Rash" onChange={(event) => setAllergyReaction(event.target.value)} />
+                      </label>
+                      <button type="button" className={secondary} onClick={() => {
                         const name = allergyName.trim();
                         if (!name) return;
                         update({ allergies: [...form.allergies, { name, reaction: allergyReaction.trim() || undefined }] });
                         setAllergyName("");
                         setAllergyReaction("");
-                      }}>Add allergy</button>
+                      }}>Add</button>
                     </div>
                   )}
                 </Panel>
-                <Panel title="Current Medications" optional>
-                  <ul className="space-y-2">
-                    {form.medications.length === 0 ? <li className="text-sm text-muted">No medications recorded.</li> : form.medications.map((item, index) => (
-                      <li key={`${item.name}-${index}`} className="flex items-center justify-between gap-2 text-sm">
-                        <span className="font-medium">{item.name}</span>
-                        {locked ? null : <RemoveButton onClick={() => update({ medications: form.medications.filter((_, itemIndex) => itemIndex !== index) })} />}
-                      </li>
-                    ))}
-                  </ul>
+                <Panel title="Current medications" optional>
+                  {form.medications.length === 0 ? <p className="text-sm text-muted">No medications recorded.</p> : (
+                    <ul className="grid gap-2">
+                      {form.medications.map((item, index) => (
+                        <li key={`${item.name}-${index}`} className="flex items-center justify-between gap-2 rounded-lg border border-line-soft bg-canvas px-3 py-2 text-sm">
+                          <span className="min-w-0 font-medium">{item.name}</span>
+                          {locked ? null : <RemoveButton onClick={() => update({ medications: form.medications.filter((_, itemIndex) => itemIndex !== index) })} />}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
                   {locked ? null : (
-                    <div className="mt-3 flex gap-2">
-                      <input className={field} value={medicationName} placeholder="Medication" onChange={(event) => setMedicationName(event.target.value)} />
-                      <button type="button" className={`${secondary} shrink-0`} onClick={() => {
+                    <div className="mt-3 grid gap-2 sm:grid-cols-[1fr_auto] sm:items-end">
+                      <label className={label}>Medication
+                        <input className={field} value={medicationName} placeholder="Name and dose" onChange={(event) => setMedicationName(event.target.value)} />
+                      </label>
+                      <button type="button" className={secondary} onClick={() => {
                         const name = medicationName.trim();
                         if (!name) return;
                         update({ medications: [...form.medications, { name }] });
@@ -382,53 +441,37 @@ export function EncounterPage({ token }: { token: string }) {
                     </div>
                   )}
                 </Panel>
-                <Panel title="Documents & Images" optional>
-                  <ul className="space-y-2">
-                    {record.files.length === 0 ? <li className="text-sm text-muted">0 files</li> : record.files.map((file) => (
-                      <li key={file.id} className="flex items-center justify-between gap-2 text-sm">
+              </div>
+              <Panel
+                title="Documents and images"
+                optional
+                action={locked ? null : (
+                  <label className={`${secondary} cursor-pointer`}>
+                    Add file
+                    <input type="file" accept="application/pdf,image/jpeg,image/png,image/webp" className="sr-only" onChange={(event) => {
+                      const file = event.target.files?.[0];
+                      if (file) void uploadFile(file);
+                      event.currentTarget.value = "";
+                    }} />
+                  </label>
+                )}
+              >
+                {record.files.length === 0 ? <p className="text-sm text-muted">No documents yet.</p> : (
+                  <ul className="grid gap-2">
+                    {record.files.map((file) => (
+                      <li key={file.id} className="flex items-center justify-between gap-2 rounded-lg border border-line-soft bg-canvas px-3 py-2 text-sm">
                         {file.file_url ? <a className="min-w-0 truncate font-medium text-blue hover:underline" href={file.file_url} target="_blank" rel="noreferrer">{file.original_name}</a> : <span className="truncate">{file.original_name}</span>}
                         {locked ? null : <RemoveButton onClick={() => void removeFile(file.id)} />}
                       </li>
                     ))}
                   </ul>
-                  {locked ? null : (
-                    <label className={`${secondary} mt-3 w-full cursor-pointer`}>
-                      Add file
-                      <input type="file" accept="application/pdf,image/jpeg,image/png,image/webp" className="sr-only" onChange={(event) => {
-                        const file = event.target.files?.[0];
-                        if (file) void uploadFile(file);
-                        event.currentTarget.value = "";
-                      }} />
-                    </label>
-                  )}
-                </Panel>
-            </div>
-          ) : null}
-
-          {tab === "history" ? (
-            <div className="space-y-4">
-              <Panel title="Chief Complaint" required>
-                <textarea className={`${field} min-h-28`} disabled={locked} value={form.chief_complaint} onChange={(event) => update({ chief_complaint: event.target.value })} />
-              </Panel>
-              <Panel title="History of Present Illness" optional>
-                <textarea className={`${field} min-h-36`} disabled={locked} value={form.history_of_present_illness} onChange={(event) => update({ history_of_present_illness: event.target.value })} />
-              </Panel>
-              <Panel title="Past Medical & Surgical History" optional>
-                <textarea className={`${field} min-h-36`} disabled={locked} value={form.past_history} onChange={(event) => update({ past_history: event.target.value })} />
+                )}
               </Panel>
             </div>
           ) : null}
 
           {tab === "vitals" ? (
-            <Panel
-              title="Vital Signs"
-              required
-              action={locked ? undefined : (
-                <button type="button" className={`${secondary} h-8 px-3 py-0 text-xs`} onClick={() => update(normalVitals)}>
-                  Set Normal
-                </button>
-              )}
-            >
+            <Panel title="Vital Signs" required>
               <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
                 <VitalField label="Temperature" unit="°C" value={form.temperature_c} alert={abnormal("temp", form.temperature_c)} disabled={locked} onChange={(temperature_c) => update({ temperature_c })} />
                 <VitalField label="Pulse" unit="/min" value={form.pulse} alert={abnormal("pulse", form.pulse)} disabled={locked} onChange={(pulse) => update({ pulse })} />
@@ -482,6 +525,7 @@ export function EncounterPage({ token }: { token: string }) {
                         code: service.code,
                         unit: service.unit,
                         price: service.price,
+                        priority: "normal",
                       }],
                     });
                     setServiceId("");
@@ -493,16 +537,28 @@ export function EncounterPage({ token }: { token: string }) {
               <div className="overflow-x-auto">
                 <table className="w-full min-w-[36rem] text-left text-sm">
                   <thead className="text-xs uppercase tracking-wide text-muted">
-                    <tr><th className="px-2 py-2">#</th><th className="px-2 py-2">Code</th><th className="px-2 py-2">Service</th><th className="px-2 py-2">Unit</th><th className="px-2 py-2">Price</th><th className="px-2 py-2">Actions</th></tr>
+                    <tr><th className="px-2 py-2">#</th><th className="px-2 py-2">Code</th><th className="px-2 py-2">Service</th><th className="px-2 py-2">Priority</th><th className="px-2 py-2">Unit</th><th className="px-2 py-2">Price</th><th className="px-2 py-2">Actions</th></tr>
                   </thead>
                   <tbody>
                     {form.investigations.length === 0 ? (
-                      <tr><td className="px-2 py-6 text-muted" colSpan={6}>No services added yet.</td></tr>
+                      <tr><td className="px-2 py-6 text-muted" colSpan={7}>No services added yet.</td></tr>
                     ) : form.investigations.map((item, index) => (
                       <tr key={item.id} className="border-t border-line-soft">
                         <td className="px-2 py-2 text-muted">{index + 1}</td>
                         <td className="px-2 py-2 font-mono text-xs">{item.code || "—"}</td>
                         <td className="px-2 py-2 font-medium">{item.name}</td>
+                        <td className="px-2 py-2">
+                          <select
+                            className={`rounded-lg border px-2 py-1.5 text-sm font-semibold disabled:opacity-80 ${priorityClass(item.priority)}`}
+                            value={item.priority}
+                            disabled={locked}
+                            onChange={(event) => update({
+                              investigations: form.investigations.map((row) => row.id === item.id ? { ...row, priority: event.target.value as typeof item.priority } : row),
+                            })}
+                          >
+                            {investigationPriorities.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                          </select>
+                        </td>
                         <td className="px-2 py-2 text-muted">{item.unit || "—"}</td>
                         <td className="px-2 py-2">{item.price == null ? "—" : formatPrice(item.price)}</td>
                         <td className="px-2 py-2">
@@ -538,11 +594,11 @@ export function EncounterPage({ token }: { token: string }) {
                 <h3 className="text-2xl font-bold text-ink">Management Plan</h3>
                 <span className={`rounded-full px-2.5 py-0.5 text-xs font-semibold ${locked ? "bg-panel text-blue" : "bg-surface-2 text-muted-strong"}`}>{locked ? "Finished" : "Draft"}</span>
               </div>
-              <p className="mt-1 text-sm text-muted">Document medications, procedures, and advice for this encounter.</p>
+              <p className="mt-1 text-sm text-muted">Document medications, surgical procedures, and advice for this encounter.</p>
               <div className="mt-4 flex gap-2 overflow-x-auto border-b border-line-soft">
-                <PlanTabButton selected={planTab === "medications"} onClick={() => setPlanTab("medications")}>Medication Orders</PlanTabButton>
-                <PlanTabButton selected={planTab === "procedures"} onClick={() => setPlanTab("procedures")}>Medical Procedures</PlanTabButton>
-                <PlanTabButton selected={planTab === "advice"} onClick={() => setPlanTab("advice")}>Patient Advices</PlanTabButton>
+                <PlanTabButton selected={planTab === "medications"} count={form.medication_orders.length} onClick={() => setPlanTab("medications")}>Medication Orders</PlanTabButton>
+                <PlanTabButton selected={planTab === "procedures"} count={form.procedure_orders.length} onClick={() => setPlanTab("procedures")}>Surgical Procedures</PlanTabButton>
+                <PlanTabButton selected={planTab === "advice"} count={form.patient_advices.length} onClick={() => setPlanTab("advice")}>Patient Advices</PlanTabButton>
               </div>
 
               {planTab === "medications" ? (
@@ -563,7 +619,7 @@ export function EncounterPage({ token }: { token: string }) {
                     render={(row, index) => (
                       <>
                         <td className="px-2 py-2 text-muted">{index + 1}</td>
-                        <td className="px-2 py-2"><SelectCell disabled={locked} value={row.route} options={routes} onChange={(route) => patchOrder(form, update, row.id, { route })} /></td>
+                        <td className="px-2 py-2"><SelectCell disabled={locked} value={row.route} options={routeOptions(catalog, row)} onChange={(route) => applyOrder(form, update, catalog, row.id, { route })} /></td>
                         <td className="px-2 py-2 min-w-[14rem]">
                           <SearchSelect
                             fixedMenu
@@ -574,12 +630,13 @@ export function EncounterPage({ token }: { token: string }) {
                             onChange={(medicationId) => {
                               const item = catalog.find((entry) => entry.id === medicationId);
                               if (!item) return;
-                              patchOrder(form, update, row.id, {
+                              const route = item.routes?.[0]?.route ?? item.route;
+                              applyOrder(form, update, catalog, row.id, {
                                 medication_id: item.id,
                                 medication: item.name,
                                 strength: item.strength,
                                 dosage_form: item.dosage_form,
-                                route: item.route,
+                                route,
                               });
                             }}
                           />
@@ -602,8 +659,14 @@ export function EncounterPage({ token }: { token: string }) {
                         <td className="px-2 py-2">
                           {locked ? null : (
                             <div className="flex gap-1">
-                              <IconButton label="Copy order" onClick={() => update({ medication_orders: [...form.medication_orders, { ...row, id: crypto.randomUUID() }] })}><CopyIcon /></IconButton>
-                              <RemoveButton label="Remove order" onClick={() => update({ medication_orders: form.medication_orders.filter((item) => item.id !== row.id) })} />
+                              <IconButton label="Copy order" onClick={() => {
+                                const medication_orders = [...form.medication_orders, { ...row, id: crypto.randomUUID() }];
+                                update({ medication_orders, procedure_orders: reconcileProcedures(medication_orders, form.procedure_orders, catalog) });
+                              }}><CopyIcon /></IconButton>
+                              <RemoveButton label="Remove order" onClick={() => {
+                                const medication_orders = form.medication_orders.filter((item) => item.id !== row.id);
+                                update({ medication_orders, procedure_orders: reconcileProcedures(medication_orders, form.procedure_orders, catalog) });
+                              }} />
                             </div>
                           )}
                         </td>
@@ -617,8 +680,8 @@ export function EncounterPage({ token }: { token: string }) {
                 <div className="mt-4">
                   <div className="flex flex-wrap items-end justify-between gap-3">
                     <div>
-                      <h4 className="text-base font-bold text-ink">Medical Procedures <span className="text-xs font-medium text-muted">Optional</span></h4>
-                      <p className="text-sm text-muted">Choose a medical service or procedure service for this clinic.</p>
+                      <h4 className="text-base font-bold text-ink">Surgical Procedures <span className="text-xs font-medium text-muted">Optional</span></h4>
+                      <p className="text-sm text-muted">Choose a surgical procedure service for this clinic. Procedure services linked to a medication route are added here when that medication and route are chosen.</p>
                     </div>
                   </div>
                   {locked ? null : (
@@ -626,7 +689,7 @@ export function EncounterPage({ token }: { token: string }) {
                       <label className="min-w-0 flex-1 text-sm font-medium text-muted-strong">Service
                         <SearchSelect
                           value={procedureId}
-                          placeholder="Search medical and procedure services"
+                          placeholder="Search surgical procedure services"
                           options={procedureServices.map((service) => ({
                             value: service.id,
                             label: service.name,
@@ -651,17 +714,17 @@ export function EncounterPage({ token }: { token: string }) {
                           }],
                         });
                         setProcedureId("");
-                      }}>Add procedure</button>
+                      }}>Add surgical procedure</button>
                     </div>
                   )}
                   <div className="mt-4 overflow-x-auto">
                     <table className="w-full min-w-[36rem] text-left text-sm">
                       <thead className="text-xs uppercase tracking-wide text-muted">
-                        <tr><th className="px-2 py-2">#</th><th className="px-2 py-2">Code</th><th className="px-2 py-2">Procedure</th><th className="px-2 py-2">Unit</th><th className="px-2 py-2">Price</th><th className="px-2 py-2">Notes</th><th className="px-2 py-2">Actions</th></tr>
+                        <tr><th className="px-2 py-2">#</th><th className="px-2 py-2">Code</th><th className="px-2 py-2">Surgical procedure</th><th className="px-2 py-2">Unit</th><th className="px-2 py-2">Price</th><th className="px-2 py-2">Notes</th><th className="px-2 py-2">Actions</th></tr>
                       </thead>
                       <tbody>
                         {form.procedure_orders.length === 0 ? (
-                          <tr><td className="px-2 py-6 text-muted" colSpan={7}>No procedures yet.</td></tr>
+                          <tr><td className="px-2 py-6 text-muted" colSpan={7}>No surgical procedures yet.</td></tr>
                         ) : form.procedure_orders.map((item, index) => (
                           <tr key={item.id} className="border-t border-line-soft">
                             <td className="px-2 py-2 text-muted">{index + 1}</td>
@@ -732,6 +795,8 @@ export function EncounterPage({ token }: { token: string }) {
 function normalize(encounter: ClinicalEncounter): ClinicalEncounter {
   return {
     ...encounter,
+    past_history: encounter.past_history ?? "",
+    medication_allergy_history: encounter.medication_allergy_history ?? "",
     examination: {
       ...encounter.examination,
       findings: encounter.examination?.findings ?? "",
@@ -743,6 +808,7 @@ function normalize(encounter: ClinicalEncounter): ClinicalEncounter {
       code: item.code ?? "",
       unit: item.unit ?? "",
       price: item.price ?? null,
+      priority: item.priority ?? "normal",
     })),
     provisional_diagnoses: encounter.provisional_diagnoses ?? [],
     medication_orders: (encounter.medication_orders ?? []).map((item) => ({ ...item, medication_id: item.medication_id ?? null })),
@@ -753,6 +819,7 @@ function normalize(encounter: ClinicalEncounter): ClinicalEncounter {
       unit: item.unit ?? "",
       price: item.price ?? null,
       notes: item.notes ?? "",
+      linked_medication_order_id: item.linked_medication_order_id ?? null,
     })),
     patient_advices: encounter.patient_advices ?? [],
   };
@@ -783,7 +850,7 @@ function medicationOptions(catalog: CatalogMedication[], row: MedicationOrder) {
   const options = catalog.map((item) => ({
     value: item.id,
     label: item.name,
-    hint: `${item.strength} · ${item.dosage_form} · ${item.route}`,
+    hint: `${item.strength} · ${item.dosage_form} · ${(item.routes?.map((entry) => entry.route) ?? [item.route]).join(", ")}`,
     group: item.dosage_form,
   }));
   if (row.medication && !options.some((item) => item.value === row.medication_id)) {
@@ -794,6 +861,55 @@ function medicationOptions(catalog: CatalogMedication[], row: MedicationOrder) {
 
 function patchOrder(form: ClinicalEncounter, update: (patch: Partial<ClinicalEncounter>) => void, id: string, patch: Partial<MedicationOrder>) {
   update({ medication_orders: form.medication_orders.map((row) => row.id === id ? { ...row, ...patch } : row) });
+}
+
+function applyOrder(
+  form: ClinicalEncounter,
+  update: (patch: Partial<ClinicalEncounter>) => void,
+  catalog: CatalogMedication[],
+  id: string,
+  patch: Partial<MedicationOrder>,
+) {
+  const medication_orders = form.medication_orders.map((row) => row.id === id ? { ...row, ...patch } : row);
+  update({
+    medication_orders,
+    procedure_orders: reconcileProcedures(medication_orders, form.procedure_orders, catalog),
+  });
+}
+
+function routeOptions(catalog: CatalogMedication[], row: MedicationOrder) {
+  const item = catalog.find((entry) => entry.id === row.medication_id);
+  const assigned = item?.routes?.map((entry) => entry.route) ?? [];
+  if (assigned.length === 0) return row.route && !routes.includes(row.route) ? [row.route, ...routes] : routes;
+  return assigned.includes(row.route) ? assigned : [row.route, ...assigned].filter(Boolean);
+}
+
+function reconcileProcedures(orders: MedicationOrder[], procedures: ProcedureOrder[], catalog: CatalogMedication[]) {
+  const needed = new Map<string, { id: string; name: string; code: string; unit: string; price: number | null }>();
+  const neededByOrder = new Map<string, { id: string; name: string; code: string; unit: string; price: number | null }[]>();
+  for (const order of orders) {
+    const item = catalog.find((entry) => entry.id === order.medication_id);
+    const services = item?.routes?.find((entry) => entry.route === order.route)?.services ?? [];
+    neededByOrder.set(order.id, services);
+    for (const service of services) needed.set(service.id, service);
+  }
+  const next = procedures.filter((item) => !item.linked_medication_order_id || (item.procedure_id != null && needed.has(item.procedure_id)));
+  for (const [orderId, services] of neededByOrder) {
+    for (const service of services) {
+      if (next.some((item) => item.procedure_id === service.id)) continue;
+      next.push({
+        id: crypto.randomUUID(),
+        procedure_id: service.id,
+        name: service.name,
+        code: service.code,
+        unit: service.unit,
+        price: service.price,
+        notes: "",
+        linked_medication_order_id: orderId,
+      });
+    }
+  }
+  return next;
 }
 
 function Icd10Picker({
@@ -1020,12 +1136,135 @@ function InsuranceDiagnosis({ visit, items }: { visit: EncounterRecord["visit"];
   );
 }
 
-const normalVitals = {
-  temperature_c: 36.8,
-  pulse: 72,
-  respiratory_rate: 16,
-  blood_pressure: "120/80",
-  spo2: 98,
+function TriageSummary({ visit, onClose }: { visit: DoctorCaseDetail; onClose: () => void }) {
+  const closeRef = useRef<HTMLButtonElement>(null);
+  const history = triageHistory(visit);
+  const category = visit.triage_category;
+  const categoryTone = category === "emergency"
+    ? "bg-danger-soft text-danger"
+    : category === "urgent"
+      ? "bg-warning-soft text-warning"
+      : "bg-success-soft text-success";
+  const completed = visit.triage_completed_at ? formatDay(visit.triage_completed_at) : null;
+  const vitals = [
+    { label: "Temp °C", value: visit.temperature_c == null || visit.temperature_c === "" ? "—" : String(visit.temperature_c), alert: abnormal("temp", numberOrNull(visit.temperature_c)) },
+    { label: "Pulse", value: visit.pulse == null ? "—" : String(visit.pulse), alert: abnormal("pulse", visit.pulse) },
+    { label: "RR", value: visit.respiratory_rate == null ? "—" : String(visit.respiratory_rate), alert: abnormal("rr", visit.respiratory_rate) },
+    { label: "BP", value: visit.blood_pressure || "—", alert: false },
+    { label: "SpO2", value: visit.spo2 == null ? "—" : `${visit.spo2}%`, alert: abnormal("spo2", visit.spo2) },
+  ];
+  const alertCount = vitals.filter((item) => item.alert).length;
+  const complaint = visit.chief_complaint?.trim();
+  const assessment = visit.initial_assessment?.trim();
+  useEffect(() => { closeRef.current?.focus(); }, []);
+  return (
+    <div className="triage-dialog-backdrop fixed inset-0 z-[60] flex justify-end bg-shell/45" role="presentation" onMouseDown={onClose}>
+      <aside
+        id="triage-summary"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Triage summary"
+        className="triage-drawer flex h-full w-[min(26rem,100vw)] flex-col border-l border-line bg-surface shadow-card"
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <div className="flex shrink-0 items-start justify-between gap-3 border-b border-line px-5 py-4">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <h3 className="text-base font-bold text-ink">Triage summary</h3>
+              {category ? <span className={`rounded-full px-2.5 py-0.5 text-xs font-semibold ${categoryTone}`}>{triageCategoryLabel[category]}</span> : null}
+            </div>
+            <p className="mt-1 text-xs leading-5 text-muted">
+              {completed ? `${completed.day} · ${completed.time}` : "Not completed"}
+              {visit.completed_by_name ? ` · ${visit.completed_by_name}` : ""}
+            </p>
+            {visit.assigned_doctor_name ? <p className="text-xs leading-5 text-muted">Assigned to {visit.assigned_doctor_name}</p> : null}
+          </div>
+          <button ref={closeRef} type="button" className="grid h-9 w-9 shrink-0 place-items-center rounded-lg text-muted-strong hover:bg-surface-2" aria-label="Close" onClick={onClose}>
+            <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" /></svg>
+          </button>
+        </div>
+        <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
+          {alertCount > 0 ? (
+            <p className="mb-3 rounded-xl bg-danger-soft px-3 py-2 text-sm font-semibold text-danger">
+              {alertCount === 1 ? "1 vital sign is outside the usual range" : `${alertCount} vital signs are outside the usual range`}
+            </p>
+          ) : null}
+          <dl className="grid grid-cols-3 gap-2">
+            {vitals.map((item) => (
+              <div key={item.label} className={`rounded-xl px-3 py-2 ${item.alert ? "bg-danger-soft" : "bg-canvas"}`}>
+                <dt className={`text-[11px] font-semibold uppercase tracking-wide ${item.alert ? "text-danger" : "text-muted"}`}>{item.label}</dt>
+                <dd className={`mt-0.5 text-sm font-semibold tabular-nums ${item.alert ? "text-danger" : "text-ink"}`}>{item.value}</dd>
+              </div>
+            ))}
+          </dl>
+          <section className="mt-5">
+            <h4 className="text-[11px] font-semibold uppercase tracking-wide text-muted">Chief complaint</h4>
+            <p className={`mt-1 text-base ${complaint ? "font-semibold text-ink" : "text-muted"}`}>{complaint || "None recorded"}</p>
+          </section>
+          <section className="mt-4 border-t border-line-soft pt-4">
+            <h4 className="text-[11px] font-semibold uppercase tracking-wide text-muted">Initial assessment</h4>
+            <p className={`mt-1 text-sm ${assessment ? "text-ink" : "text-muted"}`}>{assessment || "None recorded"}</p>
+          </section>
+          <SummaryChips title="Allergies" empty="No allergies recorded" items={visit.allergies.map((item) => ({ label: item.name, detail: item.reaction }))} />
+          <SummaryChips title="Current medications" empty="No medications recorded" items={visit.medications.map((item) => ({ label: item.name }))} />
+          <SummaryChips title="Relevant history" empty="No history recorded" items={history.map((item) => ({ label: item }))} />
+        </div>
+      </aside>
+    </div>
+  );
+}
+
+function SummaryChips({ title, empty, items }: { title: string; empty: string; items: { label: string; detail?: string }[] }) {
+  const filled = items.filter((item) => item.label.trim());
+  return (
+    <section className="mt-4 border-t border-line-soft pt-4">
+      <h4 className="text-[11px] font-semibold uppercase tracking-wide text-muted">{title}</h4>
+      {filled.length === 0 ? <p className="mt-1 text-sm text-muted">{empty}</p> : (
+        <ul className="mt-2 flex flex-wrap gap-2">
+          {filled.map((item) => (
+            <li key={`${item.label}-${item.detail ?? ""}`} className="rounded-full bg-canvas px-3 py-1 text-sm text-ink">
+              <span className="font-semibold">{item.label}</span>
+              {item.detail?.trim() ? <span className="text-muted"> · {item.detail.trim()}</span> : null}
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+function triageHasAlert(visit: DoctorCaseDetail) {
+  return abnormal("temp", numberOrNull(visit.temperature_c))
+    || abnormal("pulse", visit.pulse)
+    || abnormal("rr", visit.respiratory_rate)
+    || abnormal("spo2", visit.spo2);
+}
+
+function triageHistory(visit: DoctorCaseDetail) {
+  const history = (visit.relevant_history ?? []).filter((item) => item !== "other").map((item) => triageHistoryLabel[item] ?? item);
+  for (const item of visit.relevant_history_items ?? []) {
+    if (item.name?.trim()) history.push(item.name.trim());
+  }
+  const other = visit.relevant_history_other?.trim();
+  if (other && !history.some((item) => item.toLowerCase() === other.toLowerCase())) history.push(other);
+  return history;
+}
+
+function numberOrNull(value: number | string | null) {
+  if (value == null || value === "") return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+const triageCategoryLabel = { emergency: "Emergency", urgent: "Urgent", normal: "Normal" };
+const triageHistoryLabel: Record<string, string> = {
+  hypertension: "Hypertension",
+  copd: "COPD",
+  diabetes_mellitus: "Diabetes mellitus",
+  immunosuppression: "Immunosuppression",
+  asthma: "Asthma",
+  hypothyroidism: "Hypothyroidism",
+  cardiac_disease: "Cardiac disease",
 };
 
 function Panel({ title, action, required, optional, children }: { title: string; action?: ReactNode; required?: boolean; optional?: boolean; children: ReactNode }) {
@@ -1044,10 +1283,11 @@ function Panel({ title, action, required, optional, children }: { title: string;
   );
 }
 
-function PlanTabButton({ selected, onClick, children }: { selected: boolean; onClick: () => void; children: ReactNode }) {
+function PlanTabButton({ selected, count, onClick, children }: { selected: boolean; count: number; onClick: () => void; children: ReactNode }) {
   return (
-    <button type="button" onClick={onClick} className={`shrink-0 border-b-2 px-3 py-2 text-sm font-semibold ${selected ? "border-blue text-blue" : "border-transparent text-muted-strong"}`}>
-      {children}
+    <button type="button" onClick={onClick} className={`inline-flex shrink-0 items-center gap-2 border-b-2 px-3 py-2 text-sm font-semibold ${selected ? "border-blue text-blue" : "border-transparent text-muted-strong"}`}>
+      <span>{children}</span>
+      <span className={`inline-flex min-w-6 justify-center rounded-full px-2 py-0.5 text-center text-xs font-bold tabular-nums ${selected ? "bg-panel text-blue" : "bg-surface-2 text-ink"}`}>{count}</span>
     </button>
   );
 }
@@ -1119,13 +1359,10 @@ function VitalField({ label: name, unit, value, alert, disabled, onChange }: { l
   );
 }
 
-function SideLine({ label: name, value }: { label: string; value: string }) {
-  return (
-    <div className="mb-3">
-      <p className="text-[11px] font-semibold uppercase tracking-wide text-muted">{name}</p>
-      <p className="mt-0.5 whitespace-pre-wrap text-sm text-ink">{value}</p>
-    </div>
-  );
+function priorityClass(priority: "emergency" | "urgent" | "normal") {
+  if (priority === "emergency") return "border-danger bg-danger-soft text-danger";
+  if (priority === "urgent") return "border-warning bg-warning-soft text-warning";
+  return "border-success bg-success-soft text-success";
 }
 
 function abnormal(kind: "temp" | "pulse" | "rr" | "spo2", raw: number | null) {

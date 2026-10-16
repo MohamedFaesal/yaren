@@ -25,7 +25,7 @@ const entityOptions = [
   { value: "session", label: "Sign-in" },
   { value: "role", label: "Roles" },
   { value: "settings", label: "Settings" },
-  { value: "service", label: "Medical Services" },
+  { value: "service", label: "Professional Services" },
   { value: "medication", label: "Medications" },
 ];
 

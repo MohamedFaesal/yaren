@@ -229,6 +229,15 @@ h1, h2, h3 {
   animation: triage-dialog-panel 320ms cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
+@keyframes triage-drawer-in {
+  from { transform: translateX(100%); }
+  to { transform: translateX(0); }
+}
+
+.triage-drawer {
+  animation: triage-drawer-in 280ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
 .triage-rise {
   animation: triage-rise 420ms cubic-bezier(0.22, 1, 0.36, 1) both;
 }
@@ -268,6 +277,7 @@ h1, h2, h3 {
   .greeting-swap,
   .triage-dialog-backdrop,
   .triage-dialog-panel,
+  .triage-drawer,
   .triage-rise,
   .triage-badge,
   .care-pulse {

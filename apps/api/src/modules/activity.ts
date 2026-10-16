@@ -299,18 +299,18 @@ function describe(request: FastifyRequest, path: string, statusCode: number) {
   }
   if (resource === "services") {
     if (request.method === "POST") {
-      return { action: "create", entity: "service", entityId: null, actorLabel: null, summary: name ? `Added medical service ${name}` : "Added a medical service" };
+      return { action: "create", entity: "service", entityId: null, actorLabel: null, summary: name ? `Added professional service ${name}` : "Added a professional service" };
     }
     if (request.method === "PATCH") {
-      return { action: "update", entity: "service", entityId, actorLabel: null, summary: name ? `Updated medical service ${name}` : "Updated a medical service" };
+      return { action: "update", entity: "service", entityId, actorLabel: null, summary: name ? `Updated professional service ${name}` : "Updated a professional service" };
     }
     if (request.method === "DELETE" && extra === "clinics") {
       return { action: "update", entity: "service", entityId, actorLabel: null, summary: "A clinic now uses the shared service price" };
     }
     if (request.method === "DELETE") {
-      return { action: "delete", entity: "service", entityId, actorLabel: null, summary: "Removed a medical service" };
+      return { action: "delete", entity: "service", entityId, actorLabel: null, summary: "Removed a professional service" };
     }
-    return { action: "view", entity: "service", entityId: null, actorLabel: null, summary: "Opened medical services" };
+    return { action: "view", entity: "service", entityId: null, actorLabel: null, summary: "Opened professional services" };
   }
   if (resource === "medications") {
     if (request.method === "POST") {
