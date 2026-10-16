@@ -7,6 +7,7 @@ import { authenticate, parse } from "../http.js";
 import { loadAccess, workspaceClinicOptionsWhere } from "../permissions.js";
 import { fileUrl, removeUpload, saveEncounterFile } from "../uploads.js";
 import { changed, noteActivity } from "./activity.js";
+import { icd10Title } from "../icd10.js";
 
 const systems = ["general", "heent", "respiratory", "cardiovascular", "abdomen", "cns", "musculoskeletal", "skin", "other"] as const;
 const appearances = ["well", "ill", "toxic"] as const;
@@ -66,6 +67,10 @@ const encounterSchema = z.object({
       return notes;
     }),
   }),
+  provisional_diagnoses: z.array(z.object({
+    code: z.string().trim().min(1).max(10),
+    title: z.string().trim().max(500).optional().transform((value) => value ?? ""),
+  })).max(20).optional().transform((value) => value ?? []),
   provisional_diagnosis: optionalText,
   investigations: z.array(z.object({
     id: z.string().uuid(),
@@ -94,6 +99,9 @@ const encounterSchema = z.object({
     id: z.string().uuid(),
     procedure_id: z.string().uuid().nullable().optional().transform((value) => value ?? null),
     name: z.string().trim().min(1, "Enter the procedure").max(160),
+    code: z.string().trim().max(32).optional().transform((value) => value ?? ""),
+    unit: z.string().trim().max(40).optional().transform((value) => value ?? ""),
+    price: z.number().min(0).nullable().optional().transform((value) => value ?? null),
     notes: z.string().trim().max(500).optional().transform((value) => value ?? ""),
   })).max(40).optional().transform((value) => value ?? []),
   patient_advices: z.array(z.object({
@@ -106,15 +114,26 @@ const finishSchema = encounterSchema.superRefine((value, context) => {
   if (!value.chief_complaint.trim()) {
     context.addIssue({ code: "custom", message: "Enter the chief complaint", path: ["chief_complaint"] });
   }
-  if (!value.provisional_diagnosis.trim()) {
-    context.addIssue({ code: "custom", message: "Enter a provisional diagnosis", path: ["provisional_diagnosis"] });
+  if (value.temperature_c == null) {
+    context.addIssue({ code: "custom", message: "Enter the temperature", path: ["temperature_c"] });
   }
-  const hasPlan = Boolean(value.management_plan.trim())
-    || (value.medication_orders ?? []).length > 0
-    || (value.procedure_orders ?? []).length > 0
-    || (value.patient_advices ?? []).length > 0;
-  if (!hasPlan) {
-    context.addIssue({ code: "custom", message: "Add a medication order, procedure, advice, or management note", path: ["management_plan"] });
+  if (value.pulse == null) {
+    context.addIssue({ code: "custom", message: "Enter the pulse", path: ["pulse"] });
+  }
+  if (value.respiratory_rate == null) {
+    context.addIssue({ code: "custom", message: "Enter the respiratory rate", path: ["respiratory_rate"] });
+  }
+  if (!value.blood_pressure) {
+    context.addIssue({ code: "custom", message: "Enter the blood pressure", path: ["blood_pressure"] });
+  }
+  if (value.spo2 == null) {
+    context.addIssue({ code: "custom", message: "Enter the oxygen saturation", path: ["spo2"] });
+  }
+  if (!value.examination.findings.trim()) {
+    context.addIssue({ code: "custom", message: "Enter the examination findings", path: ["examination", "findings"] });
+  }
+  if (value.provisional_diagnoses.length === 0) {
+    context.addIssue({ code: "custom", message: "Add at least one ICD-10-CM diagnosis", path: ["provisional_diagnoses"] });
   }
 });
 
@@ -142,6 +161,7 @@ type CaseRow = {
   pulse: number | null;
   respiratory_rate: number | null;
   spo2: number | null;
+  blood_pressure: string | null;
   allergies: { name: string; reaction?: string }[];
   medications: { name: string }[];
   relevant_history: string[];
@@ -165,7 +185,7 @@ export function registerEncounters(app: FastifyInstance, pool: pg.Pool) {
     const { id } = request.params as { id: string };
     const visit = await loadCase(pool, request.user, id);
     if (visit.status !== "to_doctor") throw new ApplicationError(422, "encounter_finished", "This encounter is already finished");
-    const body = parse(encounterSchema, request.body);
+    const body = resolveDiagnosis(parse(encounterSchema, request.body));
     await saveEncounter(pool, id, body, null);
     noteActivity(request, { entity: "patient", entityId: visit.patient_id, summary: `Saved the clinical encounter for ${visit.patient_name}` });
     return presentEncounter(pool, visit);
@@ -175,21 +195,22 @@ export function registerEncounters(app: FastifyInstance, pool: pg.Pool) {
     const { id } = request.params as { id: string };
     const visit = await loadCase(pool, request.user, id);
     if (visit.status !== "to_doctor") throw new ApplicationError(422, "encounter_finished", "This encounter is already finished");
-    const body = parse(finishSchema, request.body);
+    const body = resolveDiagnosis(parse(finishSchema, request.body));
     const client = await pool.connect();
     try {
       await client.query("BEGIN");
       await saveEncounter(client, id, body, request.user.sub);
+      const nextStatus = body.investigations.length > 0 ? "waiting_for_investigation" : "diagnosed";
       await client.query(
         `UPDATE patient_visits
-         SET status = 'seen', status_changed_at = now(), updated_at = now()
+         SET status = $2, status_changed_at = now(), updated_at = now()
          WHERE id = $1 AND deleted_at IS NULL AND status = 'to_doctor'`,
-        [id],
+        [id, nextStatus],
       );
       await client.query(
         `INSERT INTO patient_visit_status_history (visit_id, from_status, to_status, changed_by)
-         VALUES ($1, 'to_doctor', 'seen', $2)`,
-        [id, request.user.sub],
+         VALUES ($1, 'to_doctor', $2, $3)`,
+        [id, nextStatus, request.user.sub],
       );
       await client.query("COMMIT");
     } catch (error) {
@@ -202,7 +223,7 @@ export function registerEncounters(app: FastifyInstance, pool: pg.Pool) {
       entity: "patient",
       entityId: visit.patient_id,
       summary: `Finished the clinical encounter for ${visit.patient_name}`,
-      changes: [changed("Status", "To see the doctor", "Seen by the doctor")].filter((item) => item !== null),
+      changes: [changed("Status", "To see the doctor", body.investigations.length > 0 ? "Waiting for investigation" : "Diagnosed")].filter((item) => item !== null),
     });
     const finished = await loadCase(pool, request.user, id);
     return presentEncounter(pool, finished);
@@ -267,7 +288,7 @@ async function loadCase(pool: pg.Pool, user: { sub: string; type: string; role: 
             p.name AS patient_name, p.mrn AS patient_mrn, p.gender AS patient_gender,
             p.nationality AS patient_nationality,
             EXTRACT(YEAR FROM age((v.created_at AT TIME ZONE 'UTC')::date, p.birthdate))::int AS patient_age_at_visit,
-            t.chief_complaint, t.temperature_c, t.pulse, t.respiratory_rate, t.spo2,
+            t.chief_complaint, t.temperature_c, t.pulse, t.respiratory_rate, t.spo2, t.blood_pressure,
             t.allergies, t.medications, t.relevant_history, t.relevant_history_items, t.relevant_history_other,
             t.initial_assessment, t.triage_category, t.completed_at AS triage_completed_at,
             d.name AS assigned_doctor_name, n.name AS completed_by_name
@@ -281,7 +302,7 @@ async function loadCase(pool: pg.Pool, user: { sub: string; type: string; role: 
      WHERE v.id = $1
        AND v.deleted_at IS NULL
        AND p.deleted_at IS NULL
-       AND v.status IN ('to_doctor', 'seen')
+       AND v.status IN ('to_doctor', 'seen', 'waiting_for_investigation', 'diagnosed', 'pending_payment')
        AND v.assigned_doctor_id IS NOT NULL
        AND t.completed_at IS NOT NULL`,
     [id],
@@ -302,18 +323,37 @@ async function loadCase(pool: pg.Pool, user: { sub: string; type: string; role: 
   return row;
 }
 
+function resolveDiagnosis(body: EncounterBody): EncounterBody {
+  const seen = new Set<string>();
+  const diagnoses: { code: string; title: string }[] = [];
+  for (const item of body.provisional_diagnoses) {
+    const code = item.code.toUpperCase();
+    if (seen.has(code)) continue;
+    const title = icd10Title(code);
+    if (!title) throw new ApplicationError(422, "invalid_body", "provisional_diagnoses: Choose a valid ICD-10-CM code");
+    seen.add(code);
+    diagnoses.push({ code, title });
+  }
+  const summary = diagnoses.map((item) => `${item.code} ${item.title}`).join("\n");
+  return {
+    ...body,
+    provisional_diagnoses: diagnoses,
+    provisional_diagnosis: diagnoses.length > 0 ? summary : body.provisional_diagnosis,
+  };
+}
+
 async function saveEncounter(db: pg.Pool | pg.PoolClient, visitId: string, body: EncounterBody, finishedBy: string | null) {
   await db.query(
     `INSERT INTO patient_visit_encounters (
        visit_id, chief_complaint, history_of_present_illness, past_history,
        temperature_c, pulse, respiratory_rate, blood_pressure, spo2, pain_score, vitals_recorded_at,
-       examination, provisional_diagnosis, investigations, management_plan, allergies, medications,
+       examination, provisional_diagnosis, provisional_diagnosis_code, provisional_diagnoses, investigations, management_plan, allergies, medications,
        medication_orders, procedure_orders, patient_advices,
        finished_at, finished_by, updated_at
      ) VALUES (
        $1, $2, $3, $4,
        $5, $6, $7, $8, $9, $10, $11,
-       $12::jsonb, $13, $14::jsonb, $15, $16::jsonb, $17::jsonb,
+       $12::jsonb, $13, $22, $23::jsonb, $14::jsonb, $15, $16::jsonb, $17::jsonb,
        $18::jsonb, $19::jsonb, $20::jsonb,
        CASE WHEN $21::uuid IS NULL THEN NULL ELSE now() END, $21, now()
      )
@@ -330,6 +370,8 @@ async function saveEncounter(db: pg.Pool | pg.PoolClient, visitId: string, body:
        vitals_recorded_at = EXCLUDED.vitals_recorded_at,
        examination = EXCLUDED.examination,
        provisional_diagnosis = EXCLUDED.provisional_diagnosis,
+       provisional_diagnosis_code = EXCLUDED.provisional_diagnosis_code,
+       provisional_diagnoses = EXCLUDED.provisional_diagnoses,
        investigations = EXCLUDED.investigations,
        management_plan = EXCLUDED.management_plan,
        allergies = EXCLUDED.allergies,
@@ -363,6 +405,8 @@ async function saveEncounter(db: pg.Pool | pg.PoolClient, visitId: string, body:
       JSON.stringify(body.procedure_orders),
       JSON.stringify(body.patient_advices),
       finishedBy,
+      body.provisional_diagnoses.length === 1 ? body.provisional_diagnoses[0]?.code ?? null : null,
+      JSON.stringify(body.provisional_diagnoses),
     ],
   );
 }
@@ -388,7 +432,7 @@ async function presentEncounter(pool: pg.Pool, visit: CaseRow) {
       created_at: file.created_at,
     })),
     saved: Boolean(row),
-    finished: visit.status === "seen" || Boolean(row?.finished_at),
+    finished: visit.status !== "to_doctor" || Boolean(row?.finished_at),
   };
 }
 
@@ -420,7 +464,8 @@ function storedEncounter(row: Record<string, unknown>) {
       findings: text(examination.findings) || Object.values(examination.notes ?? {}).map((item) => item.trim()).filter(Boolean).join("\n\n"),
       notes: examination.notes ?? {},
     },
-    provisional_diagnosis: text(row.provisional_diagnosis),
+    provisional_diagnoses: presentDiagnoses(row),
+    provisional_diagnosis: presentDiagnoses(row).length > 0 ? "" : text(row.provisional_diagnosis),
     investigations: Array.isArray(row.investigations) ? row.investigations.flatMap((item) => {
       const notice = presentInvestigation(item);
       return notice ? [notice] : [];
@@ -448,7 +493,7 @@ function blankEncounter(visit: CaseRow) {
     temperature_c: numberOrNull(visit.temperature_c),
     pulse: visit.pulse,
     respiratory_rate: visit.respiratory_rate,
-    blood_pressure: "",
+    blood_pressure: visit.blood_pressure?.trim() ?? "",
     spo2: visit.spo2,
     pain_score: null,
     vitals_recorded_at: visit.triage_completed_at,
@@ -460,6 +505,7 @@ function blankEncounter(visit: CaseRow) {
       findings: "",
       notes: {},
     },
+    provisional_diagnoses: [],
     provisional_diagnosis: "",
     investigations: [],
     management_plan: "",
@@ -469,6 +515,21 @@ function blankEncounter(visit: CaseRow) {
     procedure_orders: [],
     patient_advices: [],
   };
+}
+
+function presentDiagnoses(row: Record<string, unknown>) {
+  const stored = Array.isArray(row.provisional_diagnoses) ? row.provisional_diagnoses : [];
+  const diagnoses = stored.flatMap((item) => {
+    if (item === null || typeof item !== "object") return [];
+    const record = item as Record<string, unknown>;
+    const code = typeof record.code === "string" ? record.code.trim().toUpperCase() : "";
+    const title = icd10Title(code) ?? (typeof record.title === "string" ? record.title.trim() : "");
+    return code && title ? [{ code, title }] : [];
+  });
+  if (diagnoses.length > 0) return diagnoses;
+  const code = text(row.provisional_diagnosis_code).toUpperCase();
+  const title = icd10Title(code);
+  return code && title ? [{ code, title }] : [];
 }
 
 function presentInvestigation(value: unknown) {

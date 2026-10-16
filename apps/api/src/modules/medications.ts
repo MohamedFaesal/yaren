@@ -6,7 +6,39 @@ import { authenticate, parse } from "../http.js";
 import { changed, noteActivity } from "./activity.js";
 
 const routes = ["IV Infusion / Drip", "IM injection", "Oral", "SC injection", "Inhalation / Nebulization", "Topical"] as const;
-const dosageForms = ["Powder for injection", "Injection (ampoule)", "Injection (prefilled syringe)", "Tablet", "Nebule", "Ointment", "Capsule", "Syrup"] as const;
+const dosageForms = [
+  "Tablet",
+  "Capsule",
+  "Chewable tablet",
+  "Syrup",
+  "Suspension",
+  "Oral Drops",
+  "Ampule",
+  "Vial",
+  "Prefilled Syringe",
+  "Infusion Solution",
+  "Infusion Concentrate",
+  "Inhaler",
+  "Cream",
+  "Ointment",
+  "Gel",
+  "Lotion",
+  "Spray",
+  "Eye drops",
+  "Eye ointment",
+  "Ear drops",
+  "Nasal drops",
+  "Nasal spray",
+  "Rectal Suppository",
+  "Enema",
+  "Vaginal Tablet",
+  "Vaginal Cream",
+  "Vaginal Pessary",
+  "Patch",
+  "Oral powder",
+  "Sachet",
+  "Mouthwash",
+] as const;
 
 const medicationSchema = z.object({
   name: z.string().trim().min(1, "Enter the active ingredient").max(160),

@@ -42,7 +42,7 @@ export function RolesPage({ token, actor }: { token: string; actor: User }) {
         </thead>
         <tbody>
           {rows.length === 0 ? (
-            <tr><td className="px-4 py-8 text-muted" colSpan={4}>No roles yet.</td></tr>
+            <tr><td className="px-4 py-10 text-center text-sm text-muted" colSpan={4}>No roles yet.</td></tr>
           ) : rows.map((row) => (
             <tr key={row.id} className="cursor-pointer border-t border-line-soft hover:bg-surface-2" onClick={() => navigate(`/roles/${row.id}`)}>
               <td className="px-4 py-3">

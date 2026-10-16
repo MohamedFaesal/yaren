@@ -19,7 +19,7 @@ import { nationalities } from "./nationalities.js";
 import { fileUrl, removeUpload, saveVisitDocument } from "../uploads.js";
 
 const genders = ["male", "female"] as const;
-const visitStatuses = ["waiting_for_triage", "to_doctor", "seen"] as const;
+const visitStatuses = ["waiting_for_triage", "to_doctor", "seen", "waiting_for_investigation", "diagnosed", "pending_payment"] as const;
 const visitTypes = ["new", "follow-up"] as const;
 const visitSorts = ["created_at", "updated_at"] as const;
 const contactMethods = ["phone", "email", "whatsapp"] as const;
@@ -564,6 +564,41 @@ export function registerPatients(app: FastifyInstance, pool: pg.Pool) {
     return next;
   });
 
+  app.post("/api/patients/:patientId/visits/:id/pending-payment", { preHandler: authenticate }, async (request) => {
+    const { patientId, id } = request.params as { patientId: string; id: string };
+    const visit = await findVisit(pool, patientId, id);
+    if (!visit) throw new ApplicationError(404, "not_found", "Visit was not found");
+    await assertCan(pool, request, {
+      resource: "visit",
+      action: "update",
+      ownerId: visit.patient_added_by,
+      clinicId: visit.clinic_id,
+    });
+    if (visit.status !== "diagnosed") {
+      throw new ApplicationError(422, "invalid_status", "Only a diagnosed visit can move to pending payment");
+    }
+    await pool.query(
+      `UPDATE patient_visits
+       SET status = 'pending_payment', status_changed_at = now(), updated_at = now()
+       WHERE id = $1 AND patient_id = $2 AND deleted_at IS NULL AND status = 'diagnosed'`,
+      [id, patientId],
+    );
+    await pool.query(
+      `INSERT INTO patient_visit_status_history (visit_id, from_status, to_status, changed_by)
+       VALUES ($1, 'diagnosed', 'pending_payment', $2)`,
+      [id, request.user.sub],
+    );
+    noteActivity(request, {
+      entity: "patient",
+      entityId: patientId,
+      summary: `Marked the visit for ${visit.patient_name} as pending payment`,
+      changes: [changed("Status", "Diagnosed", "Pending payment")].filter((item) => item !== null),
+    });
+    const next = await findVisit(pool, patientId, id);
+    if (!next) throw new ApplicationError(404, "not_found", "Visit was not found");
+    return next;
+  });
+
   app.delete("/api/patients/:patientId/visits/:id", { preHandler: authenticate }, async (request, reply) => {
     const { patientId, id } = request.params as { patientId: string; id: string };
     const visit = await findVisit(pool, patientId, id);
@@ -939,6 +974,8 @@ async function findVisit(pool: pg.Pool, patientId: string, id: string) {
     hotel_checkout_date: string | null;
     hotel_room_no: string | null;
     visit_type: string;
+    status: string;
+    patient_name: string;
     patient_added_by: string;
   } | undefined;
   if (!visit) return undefined;

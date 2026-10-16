@@ -14,7 +14,7 @@ import {
 } from "../permissions.js";
 import { changed, noteActivity } from "./activity.js";
 
-const visitStatuses = ["waiting_for_triage", "to_doctor"] as const;
+const visitStatuses = ["waiting_for_triage", "waiting_for_investigation", "to_doctor"] as const;
 const triageCategories = ["emergency", "urgent", "normal"] as const;
 const historyKeys = [
   "hypertension",
@@ -43,6 +43,9 @@ const triageDraftSchema = z.object({
   pulse: z.union([z.number().int(), z.null()]).optional(),
   respiratory_rate: z.union([z.number().int(), z.null()]).optional(),
   spo2: z.union([z.number().int(), z.null()]).optional(),
+  blood_pressure: z.union([z.string().trim().max(7), z.null()]).optional()
+    .refine((value) => !value || /^\d{2,3}\/\d{2,3}$/.test(value), "Enter blood pressure as systolic/diastolic, for example 120/80")
+    .transform((value) => value || null),
   allergies: z.array(allergySchema).optional(),
   medications: z.array(medicationSchema).optional(),
   relevant_history: z.array(z.enum(historyKeys)).optional(),
@@ -59,6 +62,7 @@ const triageCompleteSchema = z.object({
   pulse: z.number().int({ error: "Enter pulse" }),
   respiratory_rate: z.number().int({ error: "Enter respiratory rate" }),
   spo2: z.number().int({ error: "Enter SpO2" }),
+  blood_pressure: z.string().trim().regex(/^\d{2,3}\/\d{2,3}$/, "Enter blood pressure as systolic/diastolic, for example 120/80"),
   allergies: z.array(allergySchema).optional(),
   medications: z.array(medicationSchema).optional(),
   relevant_history: z.array(z.enum(historyKeys)).optional(),
@@ -85,7 +89,7 @@ export function registerTriage(app: FastifyInstance, pool: pg.Pool) {
     const query = readQueueQuery(request.query);
     const scope = viewWhere(access, request.user.sub, "triage", { owner: "p.added_by", clinic: "v.clinic_id" });
     const values: unknown[] = [...scope.params];
-    const clauses = [`v.deleted_at IS NULL`, `p.deleted_at IS NULL`, `v.status IN ('waiting_for_triage', 'to_doctor')`, scope.sql];
+    const clauses = [`v.deleted_at IS NULL`, `p.deleted_at IS NULL`, `v.status IN ('waiting_for_triage', 'waiting_for_investigation', 'to_doctor')`, scope.sql];
     if (query.clinicId) {
       values.push(query.clinicId);
       clauses.push(`v.clinic_id = $${values.length}`);
@@ -126,10 +130,11 @@ export function registerTriage(app: FastifyInstance, pool: pg.Pool) {
     );
     const summary = {
       waiting_for_triage: 0,
+      waiting_for_investigation: 0,
       to_doctor: 0,
     };
     for (const row of counts.rows) {
-      if (row.status === "waiting_for_triage" || row.status === "to_doctor") {
+      if (row.status === "waiting_for_triage" || row.status === "waiting_for_investigation" || row.status === "to_doctor") {
         summary[row.status] = row.count;
       }
     }
@@ -167,7 +172,7 @@ export function registerTriage(app: FastifyInstance, pool: pg.Pool) {
     const clauses = [
       "v.deleted_at IS NULL",
       "p.deleted_at IS NULL",
-      "v.status = 'to_doctor'",
+      "v.status IN ('to_doctor', 'diagnosed', 'waiting_for_investigation')",
       "v.assigned_doctor_id IS NOT NULL",
       "t.completed_at IS NOT NULL",
     ];
@@ -206,21 +211,28 @@ export function registerTriage(app: FastifyInstance, pool: pg.Pool) {
       emergency: number;
       urgent: number;
       normal: number;
+      diagnosed: number;
+      waiting_for_investigation: number;
       average_wait_minutes: number;
     }>(
-      `SELECT count(*)::int AS waiting,
-              count(*) FILTER (WHERE t.completed_at >= date_trunc('day', now()))::int AS today,
-              count(*) FILTER (WHERE t.triage_category IN ('emergency', 'urgent'))::int AS to_see_now,
-              count(*) FILTER (WHERE t.triage_category = 'emergency')::int AS emergency,
-              count(*) FILTER (WHERE t.triage_category = 'urgent')::int AS urgent,
-              count(*) FILTER (WHERE t.triage_category = 'normal')::int AS normal,
-              COALESCE(ROUND(AVG(EXTRACT(EPOCH FROM (now() - t.completed_at)) / 60))::int, 0) AS average_wait_minutes
+      `SELECT count(*) FILTER (WHERE v.status = 'to_doctor')::int AS waiting,
+              count(*) FILTER (WHERE v.status = 'to_doctor' AND t.completed_at >= date_trunc('day', now()))::int AS today,
+              count(*) FILTER (WHERE v.status = 'to_doctor' AND t.triage_category IN ('emergency', 'urgent'))::int AS to_see_now,
+              count(*) FILTER (WHERE v.status = 'to_doctor' AND t.triage_category = 'emergency')::int AS emergency,
+              count(*) FILTER (WHERE v.status = 'to_doctor' AND t.triage_category = 'urgent')::int AS urgent,
+              count(*) FILTER (WHERE v.status = 'to_doctor' AND t.triage_category = 'normal')::int AS normal,
+              count(*) FILTER (WHERE v.status = 'diagnosed')::int AS diagnosed,
+              count(*) FILTER (WHERE v.status = 'waiting_for_investigation')::int AS waiting_for_investigation,
+              COALESCE(ROUND(AVG(EXTRACT(EPOCH FROM (now() - t.completed_at)) / 60) FILTER (WHERE v.status = 'to_doctor'))::int, 0) AS average_wait_minutes
        ${summaryFrom}`,
       values,
     );
-    if (focus === "today") clauses.push("t.completed_at >= date_trunc('day', now())");
-    if (focus === "now") clauses.push("t.triage_category IN ('emergency', 'urgent')");
+    if (focus === "diagnosed") clauses.push("v.status = 'diagnosed'");
+    if (focus === "waiting_for_investigation") clauses.push("v.status = 'waiting_for_investigation'");
+    if (focus === "today") clauses.push("v.status = 'to_doctor' AND t.completed_at >= date_trunc('day', now())");
+    if (focus === "now") clauses.push("v.status = 'to_doctor' AND t.triage_category IN ('emergency', 'urgent')");
     if (focus === "emergency" || focus === "urgent" || focus === "normal") {
+      clauses.push("v.status = 'to_doctor'");
       values.push(focus);
       clauses.push(`t.triage_category = $${values.length}`);
     }
@@ -255,7 +267,8 @@ export function registerTriage(app: FastifyInstance, pool: pg.Pool) {
               h.name AS hotel_name, p.name AS patient_name, p.mrn AS patient_mrn,
               t.triage_category, t.chief_complaint, t.completed_at AS triage_completed_at
        ${from}
-       ORDER BY t.completed_at DESC
+       ORDER BY CASE WHEN v.status = 'to_doctor' THEN 0 ELSE 1 END,
+                CASE WHEN v.status = 'to_doctor' THEN t.completed_at ELSE v.status_changed_at END DESC
        LIMIT $${values.length + 1} OFFSET $${values.length + 2}`,
       [...values, query.pageSize, (page - 1) * query.pageSize],
     );
@@ -266,6 +279,8 @@ export function registerTriage(app: FastifyInstance, pool: pg.Pool) {
       emergency: 0,
       urgent: 0,
       normal: 0,
+      diagnosed: 0,
+      waiting_for_investigation: 0,
       average_wait_minutes: 0,
     };
     return { items: result.rows, total, page, page_size: query.pageSize, summary };
@@ -284,7 +299,7 @@ export function registerTriage(app: FastifyInstance, pool: pg.Pool) {
               p.name AS patient_name, p.mrn AS patient_mrn, p.gender AS patient_gender,
               p.nationality AS patient_nationality,
               EXTRACT(YEAR FROM age((v.created_at AT TIME ZONE 'UTC')::date, p.birthdate))::int AS patient_age_at_visit,
-              t.chief_complaint, t.temperature_c, t.pulse, t.respiratory_rate, t.spo2,
+              t.chief_complaint, t.temperature_c, t.pulse, t.respiratory_rate, t.spo2, t.blood_pressure,
               t.allergies, t.medications, t.relevant_history, t.relevant_history_items, t.relevant_history_other,
               t.initial_assessment, t.triage_category, t.completed_at AS triage_completed_at,
               d.name AS assigned_doctor_name, n.name AS completed_by_name
@@ -298,7 +313,7 @@ export function registerTriage(app: FastifyInstance, pool: pg.Pool) {
        WHERE v.id = $1
          AND v.deleted_at IS NULL
          AND p.deleted_at IS NULL
-         AND v.status = 'to_doctor'
+         AND v.status IN ('to_doctor', 'diagnosed', 'waiting_for_investigation')
          AND v.assigned_doctor_id IS NOT NULL
          AND t.completed_at IS NOT NULL`,
       [id],
@@ -489,7 +504,7 @@ export function registerTriage(app: FastifyInstance, pool: pg.Pool) {
   });
 }
 
-const caseFocuses = ["today", "now", "emergency", "urgent", "normal"] as const;
+const caseFocuses = ["today", "now", "emergency", "urgent", "normal", "diagnosed", "waiting_for_investigation"] as const;
 
 function readCaseFocus(query: unknown) {
   const source = query !== null && typeof query === "object" ? query as Record<string, unknown> : {};
@@ -610,18 +625,19 @@ async function upsertTriage(
          pulse = $4,
          respiratory_rate = $5,
          spo2 = $6,
-         allergies = $7::jsonb,
-         medications = $8::jsonb,
-         relevant_history = $9::text[],
-         relevant_history_items = $10::jsonb,
+         blood_pressure = $7,
+         allergies = $8::jsonb,
+         medications = $9::jsonb,
+         relevant_history = $10::text[],
+         relevant_history_items = $11::jsonb,
          relevant_history_other = NULL,
-         initial_assessment = $11,
-         triage_category = $12,
-         assigned_doctor_id = $13::uuid,
-         started_by = COALESCE(started_by, $14::uuid),
+         initial_assessment = $12,
+         triage_category = $13,
+         assigned_doctor_id = $14::uuid,
+         started_by = COALESCE(started_by, $15::uuid),
          started_at = COALESCE(started_at, now()),
-         completed_by = CASE WHEN $15::boolean THEN $14::uuid ELSE completed_by END,
-         completed_at = CASE WHEN $15::boolean THEN now() ELSE completed_at END,
+         completed_by = CASE WHEN $16::boolean THEN $15::uuid ELSE completed_by END,
+         completed_at = CASE WHEN $16::boolean THEN now() ELSE completed_at END,
          updated_at = now()
        WHERE visit_id = $1`,
       [
@@ -631,6 +647,7 @@ async function upsertTriage(
         body.pulse ?? null,
         body.respiratory_rate ?? null,
         body.spo2 ?? null,
+        body.blood_pressure ?? null,
         allergies,
         medications,
         relevantHistory,
@@ -645,16 +662,16 @@ async function upsertTriage(
   } else {
     await db.query(
       `INSERT INTO patient_visit_triages (
-         visit_id, chief_complaint, temperature_c, pulse, respiratory_rate, spo2,
+         visit_id, chief_complaint, temperature_c, pulse, respiratory_rate, spo2, blood_pressure,
          allergies, medications, relevant_history, relevant_history_items, initial_assessment,
          triage_category, assigned_doctor_id, started_by, started_at,
          completed_by, completed_at
        ) VALUES (
-         $1, $2, $3, $4, $5, $6,
-         $7::jsonb, $8::jsonb, $9::text[], $10::jsonb, $11,
-         $12, $13::uuid, $14::uuid, $15::timestamptz,
-         CASE WHEN $16::boolean THEN $14::uuid ELSE NULL::uuid END,
-         CASE WHEN $16::boolean THEN now() ELSE NULL::timestamptz END
+         $1, $2, $3, $4, $5, $6, $7,
+         $8::jsonb, $9::jsonb, $10::text[], $11::jsonb, $12,
+         $13, $14::uuid, $15::uuid, $16::timestamptz,
+         CASE WHEN $17::boolean THEN $15::uuid ELSE NULL::uuid END,
+         CASE WHEN $17::boolean THEN now() ELSE NULL::timestamptz END
        )`,
       [
         visitId,
@@ -663,6 +680,7 @@ async function upsertTriage(
         body.pulse ?? null,
         body.respiratory_rate ?? null,
         body.spo2 ?? null,
+        body.blood_pressure ?? null,
         allergies,
         medications,
         relevantHistory,

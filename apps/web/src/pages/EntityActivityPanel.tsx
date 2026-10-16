@@ -96,7 +96,7 @@ export function EntityActivityPanel({
         <tbody>
           {result.items.length === 0 ? (
             <tr>
-              <td className="px-4 py-8 text-muted" colSpan={5}>
+              <td className="px-4 py-10 text-center text-sm text-muted" colSpan={5}>
                 {loading ? "Loading activity…" : "No activity recorded for this record yet."}
               </td>
             </tr>

@@ -310,7 +310,7 @@ function describe(request: FastifyRequest, path: string, statusCode: number) {
     if (request.method === "DELETE") {
       return { action: "delete", entity: "service", entityId, actorLabel: null, summary: "Removed a medical service" };
     }
-    return { action: "view", entity: "service", entityId: null, actorLabel: null, summary: "Opened the service price list" };
+    return { action: "view", entity: "service", entityId: null, actorLabel: null, summary: "Opened medical services" };
   }
   if (resource === "medications") {
     if (request.method === "POST") {
@@ -323,18 +323,6 @@ function describe(request: FastifyRequest, path: string, statusCode: number) {
       return { action: "delete", entity: "medication", entityId, actorLabel: null, summary: "Removed a medication" };
     }
     return { action: "view", entity: "medication", entityId: null, actorLabel: null, summary: "Opened the medication list" };
-  }
-  if (resource === "surgical-procedures") {
-    if (request.method === "POST") {
-      return { action: "create", entity: "procedure", entityId: null, actorLabel: null, summary: name ? `Added surgical procedure ${name}` : "Added a surgical procedure" };
-    }
-    if (request.method === "PATCH") {
-      return { action: "update", entity: "procedure", entityId, actorLabel: null, summary: name ? `Updated surgical procedure ${name}` : "Updated a surgical procedure" };
-    }
-    if (request.method === "DELETE") {
-      return { action: "delete", entity: "procedure", entityId, actorLabel: null, summary: "Removed a surgical procedure" };
-    }
-    return { action: "view", entity: "procedure", entityId: null, actorLabel: null, summary: "Opened the surgical procedures" };
   }
   if (resource === "settings") {
     if (request.method === "PATCH") {
@@ -387,6 +375,9 @@ function describe(request: FastifyRequest, path: string, statusCode: number) {
       actorLabel: null,
       summary: registerName ? `Registered patient ${registerName} with a visit` : "Registered a patient visit",
     };
+  }
+  if (resource === "patients" && extra === "visits" && parts[5] === "pending-payment" && request.method === "POST") {
+    return { action: "update", entity: "patient", entityId, actorLabel: null, summary: "Marked a visit as pending payment" };
   }
   if (resource === "patients" && extra === "visits") {
     if (request.method === "POST") {

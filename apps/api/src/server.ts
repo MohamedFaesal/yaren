@@ -18,8 +18,8 @@ import { registerRoles } from "./modules/roles.js";
 import { registerSettings } from "./modules/settings.js";
 import { registerServices } from "./modules/services.js";
 import { registerMedications } from "./modules/medications.js";
-import { registerProcedures } from "./modules/procedures.js";
 import { registerEncounters } from "./modules/encounters.js";
+import { registerIcd10 } from "./modules/icd10.js";
 import { registerNotifications } from "./modules/notifications.js";
 import { startActivityLog } from "./modules/activity.js";
 import { ensureUploadDirs, maxVisitDocumentBytes, uploadsRoot } from "./uploads.js";
@@ -61,8 +61,8 @@ export async function buildServer() {
   registerSettings(app, pool);
   registerServices(app, pool);
   registerMedications(app, pool);
-  registerProcedures(app, pool);
   registerEncounters(app, pool);
+  registerIcd10(app);
   registerNotifications(app, pool);
   startActivityLog(app, pool);
 

@@ -1,6 +1,6 @@
 import { api, type AccessRole, type Clinic, type Permission, type UserAssignment, type UserGrant } from "../api";
 import { permissionTitle } from "../access";
-import { messageOf, secondary, SearchSelect } from "./ui";
+import { RemoveButton, messageOf, secondary, SearchSelect } from "./ui";
 import { useEffect, useState } from "react";
 
 const groups = [
@@ -164,7 +164,7 @@ function ChoiceCard({
           <p className="text-sm font-medium text-muted-strong">{label}</p>
           <SearchSelect value={value} onChange={onValue} options={options} placeholder={placeholder} disabled={disabled} required />
         </div>
-        <button type="button" className={`${secondary} mt-6`} disabled={disabled} onClick={onRemove}>Remove</button>
+        <div className="mt-6"><RemoveButton disabled={disabled} onClick={onRemove} /></div>
       </div>
       {detail ? <p className="mt-2 text-sm text-muted-strong">{detail}</p> : null}
       {clinics ? (

@@ -1,17 +1,17 @@
 import { Children, cloneElement, useEffect, useId, useRef, useState, type ReactElement, type ReactNode } from "react";
 import { Link } from "react-router";
 
-export const field = "mt-1 w-full rounded-lg border border-line-strong bg-surface px-3 py-2.5 text-sm text-ink outline-none focus:border-blue disabled:bg-surface-3";
-export const fieldInvalid = "border-danger focus:border-danger";
+export const field = "mt-1 w-full rounded-lg border border-line-strong bg-surface px-3 py-2.5 text-sm text-ink outline-none transition focus:border-blue focus:ring-2 focus:ring-blue/15 disabled:bg-surface-3";
+export const fieldInvalid = "border-danger focus:border-danger focus:ring-danger/15";
 export const label = "block text-[13px] font-medium text-muted-strong";
-export const primary = "inline-flex items-center justify-center gap-1.5 rounded-lg bg-blue px-4 py-2.5 text-sm font-semibold text-white disabled:opacity-60";
-export const secondary = "inline-flex items-center justify-center rounded-lg border border-line-strong bg-surface px-4 py-2.5 text-sm font-semibold text-ink";
-export const danger = "inline-flex items-center justify-center rounded-lg bg-danger px-4 py-2.5 text-sm font-semibold text-white disabled:opacity-60";
+export const primary = "inline-flex items-center justify-center gap-1.5 rounded-lg bg-blue px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-blue-strong disabled:opacity-60";
+export const secondary = "inline-flex items-center justify-center rounded-lg border border-line-strong bg-surface px-4 py-2.5 text-sm font-semibold text-ink transition hover:bg-surface-2";
+export const danger = "inline-flex items-center justify-center rounded-lg bg-danger px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-[#8f1c14] disabled:opacity-60";
 
 const actionTone = {
   view: "border border-line-strong bg-surface text-ink hover:bg-surface-2",
   edit: "bg-blue text-white hover:bg-blue-strong",
-  delete: "border border-danger-line bg-surface text-danger hover:bg-danger-soft",
+  delete: "border border-danger bg-surface text-danger hover:bg-danger-soft",
 } as const;
 
 export function IconAction({
@@ -24,10 +24,25 @@ export function IconAction({
   onClick?: () => void;
 }) {
   const label = kind === "view" ? "View" : kind === "edit" ? "Edit" : "Delete";
-  const className = `inline-grid h-9 w-9 place-items-center rounded-lg ${actionTone[kind]}`;
+  const className = `inline-grid h-9 w-9 place-items-center rounded-lg transition ${actionTone[kind]}`;
   const icon = kind === "view" ? <EyeIcon /> : kind === "edit" ? <PencilIcon /> : <TrashIcon />;
   if (to) return <Link to={to} className={className} aria-label={label} title={label}>{icon}</Link>;
   return <button type="button" className={className} aria-label={label} title={label} onClick={onClick}>{icon}</button>;
+}
+
+export function RemoveButton({ label = "Remove", disabled, onClick }: { label?: string; disabled?: boolean; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      className="inline-grid h-9 w-9 shrink-0 place-items-center rounded-lg border border-danger bg-surface text-danger transition hover:bg-danger-soft disabled:opacity-60"
+      aria-label={label}
+      title={label}
+      disabled={disabled}
+      onClick={onClick}
+    >
+      <TrashIcon />
+    </button>
+  );
 }
 
 function EyeIcon() {
@@ -334,13 +349,13 @@ export function Page({
   children: ReactNode;
 }) {
   return (
-    <section>
-      <header className="border-b border-line pb-4 sm:pb-5">
+    <section className="min-w-0">
+      <header className="border-b border-line-strong/70 pb-4 sm:pb-5">
         <nav className="flex flex-wrap items-center gap-1.5 text-xs font-medium text-muted">
           {crumbs.map((crumb, index) => (
             <span key={`${crumb.label}-${index}`} className="flex items-center gap-1.5">
               {index > 0 ? <span aria-hidden="true">/</span> : null}
-              {crumb.to ? <Link className="hover:text-blue" to={crumb.to}>{crumb.label}</Link> : <span className="text-muted-strong">{crumb.label}</span>}
+              {crumb.to ? <Link className="hover:text-blue" to={crumb.to}>{crumb.label}</Link> : <span className="text-blue">{crumb.label}</span>}
             </span>
           ))}
         </nav>
@@ -358,7 +373,7 @@ export function Page({
 }
 
 export function Card({ children }: { children: ReactNode }) {
-  return <div className="rounded-2xl bg-surface p-4 shadow-[0_8px_24px_rgba(16,42,67,0.06)] sm:p-5">{children}</div>;
+  return <div className="rounded-2xl border border-line bg-surface p-4 shadow-card sm:p-5">{children}</div>;
 }
 
 export function Section({ index, title }: { index: string; title: string }) {
@@ -454,13 +469,13 @@ export function Detail({ items }: { items: { label: string; value: ReactNode }[]
 
 export function DataTable({ children }: { children: ReactNode }) {
   return (
-    <div className="overflow-x-auto rounded-2xl border border-line-soft bg-surface shadow-[0_8px_24px_rgba(16,42,67,0.05)]">
+    <div className="overflow-x-auto rounded-2xl border border-line bg-surface shadow-card">
       <table className="w-full text-sm">{children}</table>
     </div>
   );
 }
 
-export const th = "px-4 py-3 text-left text-[11px] font-semibold uppercase tracking-wide text-muted";
+export const th = "border-b border-line px-4 py-3 text-left text-[11px] font-semibold uppercase tracking-wide text-muted-strong";
 
 export function ConfirmDialog({
   open,
@@ -493,18 +508,21 @@ export function ConfirmDialog({
   if (!open) return null;
 
   return (
-    <div className="fixed inset-0 z-50 grid place-items-center bg-shell/45 px-4" role="presentation" onMouseDown={() => {
+    <div className="triage-dialog-backdrop fixed inset-0 z-50 grid place-items-center bg-shell/50 px-4 backdrop-blur-[2px]" role="presentation" onMouseDown={() => {
         if (!pending) onCancel();
       }}>
       <div
-        className="w-full max-w-md rounded-2xl bg-surface p-6 shadow-[0_24px_60px_rgba(11,28,46,0.28)]"
+        className="triage-dialog-panel w-full max-w-md rounded-2xl bg-surface p-6 shadow-dialog"
         role="dialog"
         aria-modal="true"
         aria-labelledby="confirm-title"
         onMouseDown={(event) => event.stopPropagation()}
       >
-        <p className="text-xs font-semibold uppercase tracking-wide text-danger">Confirm delete</p>
-        <h2 id="confirm-title" className="mt-2 text-xl font-bold text-ink">{title}</h2>
+        <span className="grid h-11 w-11 place-items-center rounded-full bg-danger-soft text-danger" aria-hidden="true">
+          <TrashIcon />
+        </span>
+        <p className="mt-4 text-xs font-semibold uppercase tracking-wide text-danger">Confirm delete</p>
+        <h2 id="confirm-title" className="mt-1 text-xl font-bold text-ink">{title}</h2>
         <p className="mt-2 text-sm leading-6 text-muted-strong">{body}</p>
         {error ? <p className="mt-3 text-sm text-danger">{error}</p> : null}
         <div className="mt-6 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
@@ -518,8 +536,8 @@ export function ConfirmDialog({
 
 export function Summary({ title, lines }: { title: ReactNode; lines: ReactNode[] }) {
   return (
-    <aside className="rounded-2xl border border-success-soft bg-success-soft p-5">
-      <p className="text-xs font-semibold uppercase tracking-wide text-success">Selected</p>
+    <aside className="rounded-2xl border border-panel-strong bg-panel p-5">
+      <p className="text-xs font-semibold uppercase tracking-wide text-blue">Selected</p>
       <h2 className="mt-2 text-lg font-bold text-ink">{title}</h2>
       <div className="mt-3 space-y-1 text-sm text-muted-strong">
         {lines.map((line, index) => <p key={index}>{line}</p>)}
@@ -529,7 +547,12 @@ export function Summary({ title, lines }: { title: ReactNode; lines: ReactNode[]
 }
 
 export function Status({ active }: { active: boolean }) {
-  return <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${active ? "bg-success-soft text-success" : "bg-danger-soft text-danger"}`}>{active ? "Active" : "Inactive"}</span>;
+  return (
+    <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold ${active ? "bg-success-soft text-success" : "bg-surface-3 text-muted-strong"}`}>
+      <span className={`h-1.5 w-1.5 rounded-full ${active ? "bg-success" : "bg-muted-soft"}`} aria-hidden="true" />
+      {active ? "Active" : "Inactive"}
+    </span>
+  );
 }
 
 export function Filters({ children }: { children: ReactNode }) {
@@ -537,7 +560,7 @@ export function Filters({ children }: { children: ReactNode }) {
   const panelId = useId();
 
   return (
-    <div className="mb-4 rounded-2xl bg-surface shadow-[0_8px_24px_rgba(16,42,67,0.06)]">
+    <div className="mb-4 rounded-2xl border border-line bg-surface shadow-card">
       <button
         type="button"
         className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left"
@@ -545,7 +568,12 @@ export function Filters({ children }: { children: ReactNode }) {
         aria-controls={panelId}
         onClick={() => setOpen((current) => !current)}
       >
-        <span className="text-sm font-semibold text-ink">Filters</span>
+        <span className="inline-flex items-center gap-2 text-sm font-semibold text-ink">
+          <svg viewBox="0 0 24 24" className="h-4 w-4 text-blue" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M3 5h18" /><path d="M6 12h12" /><path d="M10 19h4" />
+          </svg>
+          Filters
+        </span>
         <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-muted">
           {open ? "Collapse" : "Expand"}
           <svg
@@ -615,7 +643,7 @@ export function SearchSelect({
         type="button"
         disabled={disabled}
         aria-invalid={invalid || undefined}
-        className={`flex w-full items-center justify-between rounded-lg border bg-surface px-3 py-2.5 text-left text-sm disabled:bg-surface-3 ${invalid ? "border-danger" : "border-line-strong"}`}
+        className={`flex w-full items-center justify-between rounded-lg border bg-surface px-3 py-2.5 text-left text-sm transition disabled:bg-surface-3 ${invalid ? "border-danger" : open ? "border-blue ring-2 ring-blue/15" : "border-line-strong hover:border-line"}`}
         onClick={() => {
           if (!open && fixedMenu) {
             const rect = buttonRef.current?.getBoundingClientRect();
@@ -638,7 +666,7 @@ export function SearchSelect({
       </button>
       {open && !disabled ? (
         <div
-          className={`${fixedMenu ? "fixed z-50" : "absolute z-20 mt-1 w-full"} overflow-hidden rounded-lg border border-line-strong bg-surface shadow-lg`}
+          className={`${fixedMenu ? "fixed z-50" : "absolute z-20 mt-1 w-full"} overflow-hidden rounded-xl border border-line bg-surface shadow-[var(--menu-shadow)]`}
           style={fixedMenu && menuBox ? { top: menuBox.top, bottom: menuBox.bottom, left: menuBox.left, width: menuBox.width } : undefined}
         >
           <input

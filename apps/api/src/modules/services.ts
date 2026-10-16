@@ -15,16 +15,18 @@ const descriptionSchema = z.string().trim().max(500, "Description must be 500 ch
   return value || null;
 });
 
+const serviceTypes = ["Medical service", "Investigation service", "Procedure service"] as const;
+const serviceTypeSchema = z.enum(serviceTypes, { error: "Choose a service type" });
+
 const categorySchema = z.string().trim().min(1, "Enter a category").max(80);
-const subcategorySchema = z.string().trim().min(1, "Enter a subcategory").max(20);
 const unitSchema = z.string().trim().min(1, "Enter a unit").max(40);
 const codeSchema = z.string().trim().min(1, "Enter a service code").max(32);
 
 const createSchema = z.object({
   name: z.string().trim().min(1, "Enter the service name").max(160),
   description: descriptionSchema,
+  service_type: serviceTypeSchema,
   category: categorySchema,
-  subcategory: subcategorySchema,
   unit: unitSchema,
   code: codeSchema,
   price: priceSchema,
@@ -34,8 +36,8 @@ const updateSchema = z.object({
   clinic_id: z.union([z.string().uuid(), z.null()]).optional(),
   name: z.string().trim().min(1, "Enter the service name").max(160).optional(),
   description: descriptionSchema,
+  service_type: serviceTypeSchema.optional(),
   category: categorySchema.optional(),
-  subcategory: subcategorySchema.optional(),
   unit: unitSchema.optional(),
   code: codeSchema.optional(),
   price: priceSchema,
@@ -45,8 +47,8 @@ type ServiceRow = {
   id: string;
   name: string;
   description: string | null;
+  service_type: string;
   category: string;
-  subcategory: string;
   unit: string;
   code: string;
   shared_price: string;
@@ -63,6 +65,10 @@ export function registerServices(app: FastifyInstance, pool: pg.Pool) {
       values.push(query.clinicId);
       clinicJoin = `csp.clinic_id = $${values.length}`;
     }
+    if (query.serviceTypes.length > 0) {
+      values.push(query.serviceTypes);
+      clauses.push(`s.service_type = ANY($${values.length}::text[])`);
+    }
     if (query.category) {
       values.push(query.category);
       clauses.push(`s.category = $${values.length}`);
@@ -72,14 +78,14 @@ export function registerServices(app: FastifyInstance, pool: pg.Pool) {
       clauses.push(`(
         s.name ILIKE $${values.length} ESCAPE '\\'
         OR s.code ILIKE $${values.length} ESCAPE '\\'
+        OR s.service_type ILIKE $${values.length} ESCAPE '\\'
         OR s.category ILIKE $${values.length} ESCAPE '\\'
-        OR s.subcategory ILIKE $${values.length} ESCAPE '\\'
         OR s.unit ILIKE $${values.length} ESCAPE '\\'
         OR COALESCE(s.description, '') ILIKE $${values.length} ESCAPE '\\'
       )`);
     }
     const result = await pool.query<ServiceRow>(
-      `SELECT s.id, s.name, s.description, s.category, s.subcategory, s.unit, s.code,
+      `SELECT s.id, s.name, s.description, s.service_type, s.category, s.unit, s.code,
               s.price AS shared_price, csp.price AS clinic_price
        FROM medical_services s
        LEFT JOIN clinic_service_prices csp ON csp.service_id = s.id AND ${clinicJoin}
@@ -93,9 +99,17 @@ export function registerServices(app: FastifyInstance, pool: pg.Pool) {
        WHERE deleted_at IS NULL
        ORDER BY category ASC`,
     );
+    const units = await pool.query<{ unit: string }>(
+      `SELECT DISTINCT unit
+       FROM medical_services
+       WHERE deleted_at IS NULL
+       ORDER BY unit ASC`,
+    );
     return {
       items: result.rows.map((row) => present(row)),
+      service_types: [...serviceTypes],
       categories: categories.rows.map((row) => row.category),
+      units: units.rows.map((row) => row.unit),
     };
   });
 
@@ -105,10 +119,10 @@ export function registerServices(app: FastifyInstance, pool: pg.Pool) {
     const price = money(body.price);
     try {
       const created = await pool.query<{ id: string }>(
-        `INSERT INTO medical_services (name, description, category, subcategory, unit, code, price, position, updated_by)
+        `INSERT INTO medical_services (name, description, service_type, category, unit, code, price, position, updated_by)
          VALUES ($1, $2, $3, $4, $5, $6, $7, (SELECT COALESCE(MAX(position), 0) + 1 FROM medical_services), $8)
          RETURNING id`,
-        [body.name, body.description, body.category, body.subcategory, body.unit, body.code, price, request.user.sub],
+        [body.name, body.description, body.service_type, body.category, body.unit, body.code, price, request.user.sub],
       );
       const id = created.rows[0]?.id;
       if (!id) throw new ApplicationError(500, "internal_error", "Unexpected server error");
@@ -118,8 +132,8 @@ export function registerServices(app: FastifyInstance, pool: pg.Pool) {
         summary: `Added medical service ${body.name}`,
         changes: [
           changed("Name", null, body.name),
+          changed("Type", null, body.service_type),
           changed("Category", null, body.category),
-          changed("Subcategory", null, body.subcategory),
           changed("Unit", null, body.unit),
           changed("Code", null, body.code),
           changed("Description", null, body.description),
@@ -174,17 +188,17 @@ export function registerServices(app: FastifyInstance, pool: pg.Pool) {
 
     const name = body.name ?? current.name;
     const description = body.description === undefined ? current.description : body.description;
+    const serviceType = body.service_type ?? current.service_type;
     const category = body.category ?? current.category;
-    const subcategory = body.subcategory ?? current.subcategory;
     const unit = body.unit ?? current.unit;
     const code = body.code ?? current.code;
     try {
       await pool.query(
         `UPDATE medical_services
-         SET name = $2, description = $3, category = $4, subcategory = $5, unit = $6, code = $7,
+         SET name = $2, description = $3, service_type = $4, category = $5, unit = $6, code = $7,
              price = $8, updated_at = now(), updated_by = $9
          WHERE id = $1 AND deleted_at IS NULL`,
-        [id, name, description, category, subcategory, unit, code, price, request.user.sub],
+        [id, name, description, serviceType, category, unit, code, price, request.user.sub],
       );
     } catch (error) {
       if (isUnique(error)) throw new ApplicationError(409, "name_taken", "A service with this name already exists");
@@ -196,8 +210,8 @@ export function registerServices(app: FastifyInstance, pool: pg.Pool) {
       summary: `Updated medical service ${name}`,
       changes: [
         changed("Name", current.name, name),
+        changed("Type", current.service_type, serviceType),
         changed("Category", current.category, category),
-        changed("Subcategory", current.subcategory, subcategory),
         changed("Unit", current.unit, unit),
         changed("Code", current.code, code),
         changed("Description", current.description, description),
@@ -268,8 +282,8 @@ function present(row: ServiceRow) {
     id: row.id,
     name: row.name,
     description: row.description,
+    service_type: row.service_type,
     category: row.category,
-    subcategory: row.subcategory,
     unit: row.unit,
     code: row.code,
     shared_price: shared,
@@ -284,10 +298,14 @@ function readListQuery(query: unknown) {
   const q = text("q");
   const clinicId = text("clinic_id");
   const category = text("category");
+  const serviceTypesQuery = text("service_type").split(",").map((item) => item.trim()).filter(Boolean);
   if (q.length > 200) throw new ApplicationError(422, "invalid_query", "Search is too long");
   if (category.length > 80) throw new ApplicationError(422, "invalid_query", "Unknown category");
+  if (serviceTypesQuery.some((item) => !serviceTypes.includes(item as (typeof serviceTypes)[number]))) {
+    throw new ApplicationError(422, "invalid_query", "Unknown service type");
+  }
   if (clinicId && !z.string().uuid().safeParse(clinicId).success) throw new ApplicationError(422, "invalid_query", "Unknown clinic");
-  return { q, clinicId: clinicId || null, category: category || null };
+  return { q, clinicId: clinicId || null, category: category || null, serviceTypes: serviceTypesQuery };
 }
 
 function readId(params: unknown) {
@@ -298,7 +316,7 @@ function readId(params: unknown) {
 
 async function findService(pool: pg.Pool, id: string, clinicId: string | null) {
   const result = await pool.query<ServiceRow>(
-    `SELECT s.id, s.name, s.description, s.category, s.subcategory, s.unit, s.code, s.price AS shared_price, csp.price AS clinic_price
+    `SELECT s.id, s.name, s.description, s.service_type, s.category, s.unit, s.code, s.price AS shared_price, csp.price AS clinic_price
      FROM medical_services s
      LEFT JOIN clinic_service_prices csp ON csp.service_id = s.id AND csp.clinic_id = $2
      WHERE s.id = $1 AND s.deleted_at IS NULL`,

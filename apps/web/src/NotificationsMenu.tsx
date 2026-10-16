@@ -90,11 +90,11 @@ export function NotificationsMenu({ token }: { token: string }) {
         ) : null}
       </button>
       {open ? (
-        <div className="absolute right-0 z-40 mt-2 w-[min(22rem,calc(100vw-2rem))] overflow-hidden rounded-2xl border border-line bg-surface shadow-[0_16px_40px_rgba(16,42,67,0.16)]">
+        <div className="absolute right-0 z-40 mt-2 w-[min(22rem,calc(100vw-2rem))] overflow-hidden rounded-2xl border border-line bg-surface shadow-[var(--menu-shadow)]">
           <div className="flex items-center justify-between gap-3 border-b border-line-soft px-4 py-3">
             <p className="text-sm font-bold text-ink">Notifications</p>
             {result.unread > 0 ? (
-              <button type="button" className="text-xs font-semibold text-blue" onClick={() => void markAll()}>Mark all read</button>
+              <button type="button" className="inline-flex h-8 items-center rounded-lg border border-line-strong bg-surface px-3 text-xs font-semibold text-ink hover:bg-surface-2" onClick={() => void markAll()}>Mark all read</button>
             ) : null}
           </div>
           {showFilters ? (

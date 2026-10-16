@@ -145,7 +145,17 @@ export type PatientVisit = {
   deleted_at: string | null;
 };
 
-export type VisitCareStatus = "waiting_for_triage" | "to_doctor" | "seen";
+export type VisitCareStatus = "waiting_for_triage" | "to_doctor" | "seen" | "waiting_for_investigation" | "diagnosed" | "pending_payment";
+
+export function visitStatusLabel(status?: VisitCareStatus) {
+  if (status === "waiting_for_triage") return "Waiting for triage";
+  if (status === "to_doctor") return "To see the doctor";
+  if (status === "seen") return "Seen by the doctor";
+  if (status === "waiting_for_investigation") return "Waiting for investigation";
+  if (status === "diagnosed") return "Diagnosed";
+  if (status === "pending_payment") return "Pending payment";
+  return "—";
+}
 export type VisitType = "new" | "follow-up";
 
 export function visitTypeLabel(value: VisitType | null | undefined) {
@@ -174,6 +184,7 @@ export type VisitTriage = {
   pulse: number | null;
   respiratory_rate: number | null;
   spo2: number | null;
+  blood_pressure: string | null;
   allergies: TriageAllergy[];
   medications: TriageMedication[];
   relevant_history: string[];
@@ -266,6 +277,7 @@ export type ClinicalEncounter = {
     findings: string;
     notes: Partial<Record<EncounterSystem, string>>;
   };
+  provisional_diagnoses: { code: string; title: string }[];
   provisional_diagnosis: string;
   investigations: EncounterInvestigation[];
   management_plan: string;
@@ -275,6 +287,8 @@ export type ClinicalEncounter = {
   procedure_orders: ProcedureOrder[];
   patient_advices: PatientAdvice[];
 };
+
+export type Icd10Code = { code: string; title: string };
 
 export type EncounterInvestigation = {
   id: string;
@@ -306,16 +320,13 @@ export type MedicationOrder = {
   instructions: string;
 };
 
-export type CatalogProcedure = {
-  id: string;
-  name: string;
-  category: string;
-};
-
 export type ProcedureOrder = {
   id: string;
   procedure_id: string | null;
   name: string;
+  code: string;
+  unit: string;
+  price: number | null;
   notes: string;
 };
 
@@ -348,6 +359,7 @@ export type DoctorCaseDetail = DoctorCase & {
   pulse: number | null;
   respiratory_rate: number | null;
   spo2: number | null;
+  blood_pressure: string | null;
   allergies: TriageAllergy[];
   medications: TriageMedication[];
   relevant_history: string[];
@@ -367,8 +379,8 @@ export type MedicalService = {
   id: string;
   name: string;
   description: string | null;
+  service_type: string;
   category: string;
-  subcategory: string;
   unit: string;
   code: string;
   shared_price: number;
@@ -399,6 +411,8 @@ export type DoctorCaseSummary = {
   emergency: number;
   urgent: number;
   normal: number;
+  diagnosed: number;
+  waiting_for_investigation: number;
   average_wait_minutes: number;
 };
 
@@ -415,7 +429,7 @@ export type TriageQueueResult = {
   total: number;
   page: number;
   page_size: number;
-  summary: { waiting_for_triage: number; to_doctor: number };
+  summary: { waiting_for_triage: number; waiting_for_investigation: number; to_doctor: number };
 };
 
 export type TriageDetail = {

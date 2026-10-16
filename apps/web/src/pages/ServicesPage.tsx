@@ -3,7 +3,9 @@ import { api, formatPrice, type MedicalService, type User } from "../api";
 import { canManageSettings } from "../access";
 import { useActiveClinic } from "../ClinicWorkspace";
 import { useToast } from "../toast";
-import { ConfirmDialog, DataTable, Field, Filters, IconAction, Page, PlusIcon, field, messageOf, primary, secondary, th, useFieldErrors } from "./ui";
+import { ConfirmDialog, DataTable, Field, Filters, IconAction, Page, PlusIcon, SearchSelect, field, messageOf, primary, secondary, th, useFieldErrors } from "./ui";
+
+const serviceTypes = ["Medical service", "Investigation service", "Procedure service"];
 
 export function ServicesPage({ token, actor }: { token: string; actor: User }) {
   const toast = useToast();
@@ -11,6 +13,8 @@ export function ServicesPage({ token, actor }: { token: string; actor: User }) {
   const canManage = canManageSettings(actor);
   const [items, setItems] = useState<MedicalService[]>([]);
   const [categories, setCategories] = useState<string[]>([]);
+  const [units, setUnits] = useState<string[]>([]);
+  const [serviceType, setServiceType] = useState("");
   const [category, setCategory] = useState("");
   const [query, setQuery] = useState("");
   const [search, setSearch] = useState("");
@@ -33,15 +37,17 @@ export function ServicesPage({ token, actor }: { token: string; actor: User }) {
     const id = ++requestId.current;
     const params = new URLSearchParams();
     if (search) params.set("q", search);
+    if (serviceType) params.set("service_type", serviceType);
     if (category) params.set("category", category);
     if (clinicId) params.set("clinic_id", clinicId);
     setLoading(true);
     setError(null);
-    api<{ items: MedicalService[]; categories: string[] }>(`/api/services?${params}`, {}, token)
+    api<{ items: MedicalService[]; categories: string[]; units: string[] }>(`/api/services?${params}`, {}, token)
       .then((data) => {
         if (id === requestId.current) {
           setItems(data.items);
           setCategories(data.categories);
+          setUnits(data.units);
         }
       })
       .catch((caught) => {
@@ -50,16 +56,16 @@ export function ServicesPage({ token, actor }: { token: string; actor: User }) {
       .finally(() => {
         if (id === requestId.current) setLoading(false);
       });
-  }, [token, search, category, clinicId, reloadKey]);
+  }, [token, search, serviceType, category, clinicId, reloadKey]);
 
-  const columns = 5 + (clinicId ? 1 : 0) + (canManage ? 1 : 0);
+  const columns = 6 + (clinicId ? 1 : 0) + (canManage ? 1 : 0);
 
   async function remove(service: MedicalService) {
     setDeleting(true);
     setDeleteError(null);
     try {
       await api(`/api/services/${service.id}`, { method: "DELETE" }, token);
-      toast.success("Service removed", `${service.name} was removed from the service price list.`);
+      toast.success("Service removed", `${service.name} was removed from medical services.`);
       setPendingDelete(null);
       setReloadKey((current) => current + 1);
     } catch (caught) {
@@ -71,15 +77,23 @@ export function ServicesPage({ token, actor }: { token: string; actor: User }) {
 
   return (
     <Page
-      title="Service Price List"
+      title="Medical Services"
       description={clinicId ? "Prices for this clinic. A service without its own price uses the shared amount." : "Shared prices used by every clinic that does not set its own."}
-      crumbs={[{ label: "Care" }, { label: "Service Price List" }]}
+      crumbs={[{ label: "Care" }, { label: "Medical Services" }]}
       action={canManage ? <button type="button" className={primary} onClick={() => setEditor({ service: null })}><PlusIcon />Add service</button> : null}
     >
       {error ? <p className="mb-4 text-sm text-danger">{error}</p> : null}
       <Filters>
         <label className="block text-[13px] font-medium text-muted-strong">Search
-          <input className={field} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search by name, code, category, or unit" />
+          <input className={field} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search by name, code, type, category, or unit" />
+        </label>
+        <label className="block text-[13px] font-medium text-muted-strong">Type
+          <SearchSelect
+            value={serviceType}
+            placeholder="All types"
+            options={[{ value: "", label: "All types" }, ...serviceTypes.map((item) => ({ value: item, label: item }))]}
+            onChange={setServiceType}
+          />
         </label>
         <label className="block text-[13px] font-medium text-muted-strong">Category
           <select className={field} value={category} onChange={(event) => setCategory(event.target.value)}>
@@ -93,6 +107,7 @@ export function ServicesPage({ token, actor }: { token: string; actor: User }) {
         <thead className="bg-surface-2">
           <tr>
             <th className={th}>Code</th>
+            <th className={th}>Type</th>
             <th className={th}>Category</th>
             <th className={th}>Service</th>
             <th className={th}>Unit</th>
@@ -103,14 +118,12 @@ export function ServicesPage({ token, actor }: { token: string; actor: User }) {
         </thead>
         <tbody>
           {items.length === 0 ? (
-            <tr><td className="px-4 py-8 text-muted" colSpan={columns}>{loading ? "Loading service price list…" : search || category ? "No services match this search." : "No services yet."}</td></tr>
+            <tr><td className="px-4 py-10 text-center text-sm text-muted" colSpan={columns}>{loading ? "Loading medical services…" : search || serviceType || category ? "No services match this search." : "No services yet."}</td></tr>
           ) : items.map((row) => (
             <tr key={row.id} className="border-t border-line-soft">
               <td className="px-4 py-3 font-mono text-xs font-semibold">{row.code}</td>
-              <td className="px-4 py-3">
-                <span className="block font-medium">{row.category}</span>
-                <span className="mt-0.5 block text-xs text-muted">{row.subcategory}</span>
-              </td>
+              <td className="px-4 py-3 text-sm text-muted-strong">{row.service_type}</td>
+              <td className="px-4 py-3 font-medium">{row.category}</td>
               <td className="px-4 py-3">
                 <span className="block font-semibold">{row.name}</span>
                 {row.description ? <span className="mt-0.5 block text-sm text-muted">{row.description}</span> : null}
@@ -141,6 +154,8 @@ export function ServicesPage({ token, actor }: { token: string; actor: User }) {
           token={token}
           clinicId={clinicId}
           service={editor.service}
+          categories={categories}
+          units={units}
           onClose={() => setEditor(null)}
           onSaved={() => { setEditor(null); setReloadKey((current) => current + 1); }}
         />
@@ -159,16 +174,25 @@ export function ServicesPage({ token, actor }: { token: string; actor: User }) {
   );
 }
 
+function selectOptions(values: string[], current: string) {
+  const options = current && !values.includes(current) ? [current, ...values] : values;
+  return options.map((item) => ({ value: item, label: item }));
+}
+
 function ServiceDialog({
   token,
   clinicId,
   service,
+  categories,
+  units,
   onClose,
   onSaved,
 }: {
   token: string;
   clinicId: string;
   service: MedicalService | null;
+  categories: string[];
+  units: string[];
   onClose: () => void;
   onSaved: () => void;
 }) {
@@ -176,9 +200,9 @@ function ServiceDialog({
   const fields = useFieldErrors();
   const clinicPrice = Boolean(clinicId && service);
   const [name, setName] = useState(service?.name ?? "");
-  const [category, setCategory] = useState(service?.category ?? "");
-  const [subcategory, setSubcategory] = useState(service?.subcategory ?? "");
-  const [unit, setUnit] = useState(service?.unit ?? "");
+  const [serviceType, setServiceType] = useState(service?.service_type ?? "Medical service");
+  const [category, setCategory] = useState(service?.category || categories[0] || "");
+  const [unit, setUnit] = useState(service?.unit || units[0] || "");
   const [code, setCode] = useState(service?.code ?? "");
   const [description, setDescription] = useState(service?.description ?? "");
   const [price, setPrice] = useState(service ? formatPrice(service.price) : "0.00");
@@ -212,8 +236,8 @@ function ServiceDialog({
       ? { clinic_id: clinicId, description: description.trim(), price: cents / 100 }
       : {
           name: name.trim(),
+          service_type: serviceType,
           category: category.trim(),
-          subcategory: subcategory.trim(),
           unit: unit.trim(),
           code: code.trim(),
           description: description.trim(),
@@ -225,7 +249,7 @@ function ServiceDialog({
         toast.success("Price saved", clinicPrice ? `${service.name} now has a price for this clinic.` : `${name.trim()} was updated.`);
       } else {
         await api("/api/services", { method: "POST", body: JSON.stringify(body) }, token);
-        toast.success("Service added", `${name.trim()} was added to the service price list.`);
+        toast.success("Service added", `${name.trim()} was added to medical services.`);
       }
       onSaved();
     } catch (caught) {
@@ -255,7 +279,7 @@ function ServiceDialog({
   return (
     <div className="triage-dialog-backdrop fixed inset-0 z-50 grid place-items-center bg-shell/45 p-4" role="presentation" onMouseDown={() => { if (!pending) onClose(); }}>
       <form
-        className="triage-dialog-panel max-h-[calc(100vh-2rem)] w-full max-w-xl overflow-y-auto rounded-2xl bg-surface p-5 shadow-[0_24px_60px_rgba(11,28,46,0.28)]"
+        className="triage-dialog-panel max-h-[calc(100vh-2rem)] w-full max-w-xl overflow-y-auto rounded-2xl bg-surface p-5 shadow-dialog"
         role="dialog"
         aria-modal="true"
         aria-labelledby="service-dialog-title"
@@ -273,20 +297,39 @@ function ServiceDialog({
         <div className="mt-4 grid gap-4">
           {clinicPrice ? null : (
             <>
-              <div className="grid gap-4 sm:grid-cols-2">
-                <Field label="Category" error={fields.errorOf("category")}>
-                  <input className={field} name="category" value={category} onChange={(event) => { setCategory(event.target.value); fields.clearField("category"); }} required />
-                </Field>
-                <Field label="Subcategory" error={fields.errorOf("subcategory")}>
-                  <input className={field} name="subcategory" value={subcategory} onChange={(event) => { setSubcategory(event.target.value); fields.clearField("subcategory"); }} required />
-                </Field>
-              </div>
+              <Field label="Type" error={fields.errorOf("service_type")}>
+                <SearchSelect
+                  name="service_type"
+                  required
+                  value={serviceType}
+                  placeholder="Search type"
+                  options={serviceTypes.map((item) => ({ value: item, label: item }))}
+                  onChange={(value) => { setServiceType(value); fields.clearField("service_type"); }}
+                />
+              </Field>
+              <Field label="Category" error={fields.errorOf("category")}>
+                <SearchSelect
+                  name="category"
+                  required
+                  value={category}
+                  placeholder="Choose a category"
+                  options={selectOptions(categories, category)}
+                  onChange={(value) => { setCategory(value); fields.clearField("category"); }}
+                />
+              </Field>
               <Field label="Service name" error={fields.errorOf("name")}>
                 <input className={field} name="name" value={name} onChange={(event) => { setName(event.target.value); fields.clearField("name"); }} required />
               </Field>
               <div className="grid gap-4 sm:grid-cols-2">
                 <Field label="Unit" error={fields.errorOf("unit")}>
-                  <input className={field} name="unit" value={unit} onChange={(event) => { setUnit(event.target.value); fields.clearField("unit"); }} placeholder="Per visit" required />
+                  <SearchSelect
+                    name="unit"
+                    required
+                    value={unit}
+                    placeholder="Choose a unit"
+                    options={selectOptions(units, unit)}
+                    onChange={(value) => { setUnit(value); fields.clearField("unit"); }}
+                  />
                 </Field>
                 <Field label="Service code" error={fields.errorOf("code")}>
                   <input className={field} name="code" value={code} onChange={(event) => { setCode(event.target.value); fields.clearField("code"); }} placeholder="YAR-CONS-001" required />

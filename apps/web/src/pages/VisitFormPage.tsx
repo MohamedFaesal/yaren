@@ -5,7 +5,7 @@ import { canAct } from "../access";
 import { useActiveClinic } from "../ClinicWorkspace";
 import { useToast } from "../toast";
 import { type VisitDocumentType, visitDocumentAccept, visitDocumentIssue, visitDocumentMeta, visitDocumentSizeLabel } from "../visitDocuments";
-import { Card, Field, Page, PlusIcon, SearchSelect, Section, Summary, field, messageOf, primary, secondary, useFieldErrors } from "./ui";
+import { Card, Field, Page, PlusIcon, RemoveButton, SearchSelect, Section, Summary, field, messageOf, primary, secondary, useFieldErrors } from "./ui";
 
 const contactOptions = [
   { value: "", label: "Not set" },
@@ -254,17 +254,14 @@ export function VisitFormPage({ token, actor }: { token: string; actor: User }) 
                             {selected ? selected.name : item.required ? "Required file not selected" : "No file selected"}
                           </span>
                           {selected ? (
-                            <button
-                              type="button"
-                              className="text-sm font-semibold text-danger"
+                            <RemoveButton
+                              label="Clear file"
                               disabled={!canWrite}
                               onClick={() => {
                                 setDocuments((current) => ({ ...current, [item.type]: null }));
                                 fields.clearField(fieldName);
                               }}
-                            >
-                              Clear
-                            </button>
+                            />
                           ) : null}
                         </div>
                         {fileError ? <p className="mt-1 text-sm font-medium text-danger" role="alert">{fileError}</p> : null}

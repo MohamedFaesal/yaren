@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router";
-import { api, type Patient, type PatientVisit, type User, type VisitCareStatus, visitTypeLabel } from "../api";
+import { api, type Patient, type PatientVisit, type User, type VisitCareStatus, visitStatusLabel, visitTypeLabel } from "../api";
 import { canAct } from "../access";
 import { NationalityLabel } from "../nationalities";
 import { useToast } from "../toast";
@@ -270,16 +270,13 @@ function VisitMeta({ label, value, mono }: { label: string; value: ReactNode; mo
 }
 
 function CareStatus({ status }: { status?: VisitCareStatus }) {
-  if (status === "seen") {
-    return <span className="inline-flex rounded-full bg-panel px-2.5 py-1 text-xs font-semibold text-blue">Seen by the doctor</span>;
-  }
-  if (status === "to_doctor") {
-    return <span className="inline-flex rounded-full bg-success-soft px-2.5 py-1 text-xs font-semibold text-success">To see the doctor</span>;
-  }
-  if (status === "waiting_for_triage") {
-    return <span className="inline-flex rounded-full bg-danger-soft px-2.5 py-1 text-xs font-semibold text-danger">Waiting for triage</span>;
-  }
-  return null;
+  if (!status) return null;
+  const tone = status === "seen" || status === "diagnosed"
+    ? "bg-success-soft text-success"
+    : status === "pending_payment" || status === "waiting_for_triage"
+      ? "bg-warning-soft text-warning"
+      : "bg-panel text-blue";
+  return <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${tone}`}>{visitStatusLabel(status)}</span>;
 }
 
 function visitStatus(visit: PatientVisit) {

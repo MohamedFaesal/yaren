@@ -88,7 +88,7 @@ export function UsersPage({ token, actor }: { token: string; actor: User }) {
         </thead>
         <tbody>
           {filtered.length === 0 ? (
-            <tr><td className="px-4 py-8 text-muted" colSpan={8}>{rows.length === 0 ? "No users yet." : "No users match these filters."}</td></tr>
+            <tr><td className="px-4 py-10 text-center text-sm text-muted" colSpan={8}>{rows.length === 0 ? "No users yet." : "No users match these filters."}</td></tr>
           ) : filtered.map((row) => (
             <tr key={row.id} className="cursor-pointer border-t border-line-soft hover:bg-surface-2" onClick={() => navigate(`/users/${row.id}`)}>
               <td className="px-4 py-3 font-semibold">{row.name}</td>

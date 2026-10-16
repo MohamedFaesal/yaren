@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router";
-import { api, type User, type VisitCareStatus, type VisitPageResult, type VisitType, visitTypeLabel } from "../api";
+import { api, type User, type VisitCareStatus, type VisitPageResult, type VisitType, visitStatusLabel, visitTypeLabel } from "../api";
 import { canAct } from "../access";
 import { useActiveClinic } from "../ClinicWorkspace";
 import { DataTable, Filters, IconAction, Page, PlusIcon, SearchSelect, field, label, messageOf, primary, secondary, th } from "./ui";
@@ -83,6 +83,9 @@ export function VisitsPage({ token, actor }: { token: string; actor: User }) {
               { value: "waiting_for_triage", label: "Waiting for triage" },
               { value: "to_doctor", label: "To see the doctor" },
               { value: "seen", label: "Seen by the doctor" },
+              { value: "waiting_for_investigation", label: "Waiting for investigation" },
+              { value: "diagnosed", label: "Diagnosed" },
+              { value: "pending_payment", label: "Pending payment" },
             ]}
             placeholder="Any status"
           />
@@ -136,7 +139,7 @@ export function VisitsPage({ token, actor }: { token: string; actor: User }) {
         </thead>
         <tbody>
           {result.items.length === 0 ? (
-            <tr><td className="px-4 py-8 text-muted" colSpan={8}>{search || status || visitType ? "No visits match these filters." : "No visits yet."}</td></tr>
+            <tr><td className="px-4 py-10 text-center text-sm text-muted" colSpan={8}>{search || status || visitType ? "No visits match these filters." : "No visits yet."}</td></tr>
           ) : result.items.map((row) => (
             <tr
               key={row.id}
@@ -199,14 +202,11 @@ function VisitTypeBadge({ type }: { type?: VisitType }) {
 }
 
 function VisitStatus({ status }: { status?: VisitCareStatus }) {
-  if (status === "seen") {
-    return <span className="inline-flex rounded-full bg-panel px-2.5 py-1 text-xs font-semibold text-blue">Seen by the doctor</span>;
-  }
-  if (status === "to_doctor") {
-    return <span className="inline-flex rounded-full bg-success-soft px-2.5 py-1 text-xs font-semibold text-success">To see the doctor</span>;
-  }
-  if (status === "waiting_for_triage") {
-    return <span className="inline-flex rounded-full bg-danger-soft px-2.5 py-1 text-xs font-semibold text-danger">Waiting for triage</span>;
-  }
-  return <span className="text-muted">—</span>;
+  if (!status) return <span className="text-muted">—</span>;
+  const tone = status === "seen" || status === "diagnosed"
+    ? "bg-success-soft text-success"
+    : status === "pending_payment" || status === "waiting_for_triage"
+      ? "bg-warning-soft text-warning"
+      : "bg-panel text-blue";
+  return <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${tone}`}>{visitStatusLabel(status)}</span>;
 }

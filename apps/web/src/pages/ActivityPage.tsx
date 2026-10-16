@@ -25,9 +25,8 @@ const entityOptions = [
   { value: "session", label: "Sign-in" },
   { value: "role", label: "Roles" },
   { value: "settings", label: "Settings" },
-  { value: "service", label: "Service Price List" },
+  { value: "service", label: "Medical Services" },
   { value: "medication", label: "Medications" },
-  { value: "procedure", label: "Surgical Procedures" },
 ];
 
 export function ActivityPage({ token }: { token: string }) {
@@ -124,7 +123,7 @@ export function ActivityPage({ token }: { token: string }) {
         </thead>
         <tbody>
           {result.items.length === 0 ? (
-            <tr><td className="px-4 py-8 text-muted" colSpan={5}>{filtered ? "No activity matches these filters." : "No activity yet."}</td></tr>
+            <tr><td className="px-4 py-10 text-center text-sm text-muted" colSpan={5}>{filtered ? "No activity matches these filters." : "No activity yet."}</td></tr>
           ) : result.items.map((row) => (
             <tr key={row.id} className="border-t border-line-soft">
               <td className="whitespace-nowrap px-4 py-3 text-muted-strong" title={formatWhen(row.created_at)}>{timeAgo(row.created_at, now)}</td>

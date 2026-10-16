@@ -2,9 +2,41 @@ import { useEffect, useRef, useState, type FormEvent } from "react";
 import { api, type CatalogMedication, type User } from "../api";
 import { canManageSettings } from "../access";
 import { useToast } from "../toast";
-import { ConfirmDialog, DataTable, Field, Filters, IconAction, Page, PlusIcon, field, messageOf, primary, secondary, th, useFieldErrors } from "./ui";
+import { ConfirmDialog, DataTable, Field, Filters, IconAction, Page, PlusIcon, SearchSelect, field, messageOf, primary, secondary, th, useFieldErrors } from "./ui";
 
-const dosageForms = ["Powder for injection", "Injection (ampoule)", "Injection (prefilled syringe)", "Tablet", "Nebule", "Ointment", "Capsule", "Syrup"];
+const dosageForms = [
+  "Tablet",
+  "Capsule",
+  "Chewable tablet",
+  "Syrup",
+  "Suspension",
+  "Oral Drops",
+  "Ampule",
+  "Vial",
+  "Prefilled Syringe",
+  "Infusion Solution",
+  "Infusion Concentrate",
+  "Inhaler",
+  "Cream",
+  "Ointment",
+  "Gel",
+  "Lotion",
+  "Spray",
+  "Eye drops",
+  "Eye ointment",
+  "Ear drops",
+  "Nasal drops",
+  "Nasal spray",
+  "Rectal Suppository",
+  "Enema",
+  "Vaginal Tablet",
+  "Vaginal Cream",
+  "Vaginal Pessary",
+  "Patch",
+  "Oral powder",
+  "Sachet",
+  "Mouthwash",
+];
 const routes = ["IV Infusion / Drip", "IM injection", "Oral", "SC injection", "Inhalation / Nebulization", "Topical"];
 
 export function MedicationsPage({ token, actor }: { token: string; actor: User }) {
@@ -76,10 +108,12 @@ export function MedicationsPage({ token, actor }: { token: string; actor: User }
           <input className={field} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search by name, strength, form, or route" />
         </label>
         <label className="block text-[13px] font-medium text-muted-strong">Dosage form
-          <select className={field} value={dosageForm} onChange={(event) => setDosageForm(event.target.value)}>
-            <option value="">All forms</option>
-            {dosageForms.map((item) => <option key={item} value={item}>{item}</option>)}
-          </select>
+          <SearchSelect
+            value={dosageForm}
+            placeholder="All forms"
+            options={[{ value: "", label: "All forms" }, ...dosageForms.map((item) => ({ value: item, label: item }))]}
+            onChange={setDosageForm}
+          />
         </label>
       </Filters>
       <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-muted">{loading ? "Loading" : `${items.length} shown`}</p>
@@ -95,7 +129,7 @@ export function MedicationsPage({ token, actor }: { token: string; actor: User }
         </thead>
         <tbody>
           {items.length === 0 ? (
-            <tr><td className="px-4 py-8 text-muted" colSpan={canManage ? 5 : 4}>{loading ? "Loading medications…" : search || dosageForm ? "No medications match this search." : "No medications yet."}</td></tr>
+            <tr><td className="px-4 py-10 text-center text-sm text-muted" colSpan={canManage ? 5 : 4}>{loading ? "Loading medications…" : search || dosageForm ? "No medications match this search." : "No medications yet."}</td></tr>
           ) : items.map((row) => (
             <tr key={row.id} className="border-t border-line-soft">
               <td className="px-4 py-3 font-semibold">{row.name}</td>
@@ -108,7 +142,7 @@ export function MedicationsPage({ token, actor }: { token: string; actor: User }
                     <IconAction kind="edit" onClick={() => setEditor(row)} />
                     <button
                       type="button"
-                      className="inline-grid h-9 w-9 place-items-center rounded-lg bg-danger text-white hover:bg-[#8f1c14]"
+                      className="inline-grid h-9 w-9 place-items-center rounded-lg border border-danger bg-surface text-danger hover:bg-danger-soft"
                       aria-label="Remove"
                       title="Remove"
                       onClick={() => { setDeleteError(null); setPendingDelete(row); }}
@@ -199,7 +233,7 @@ function MedicationDialog({
   return (
     <div className="triage-dialog-backdrop fixed inset-0 z-50 grid place-items-center bg-shell/45 p-4" role="presentation" onMouseDown={() => { if (!pending) onClose(); }}>
       <form
-        className="triage-dialog-panel w-full max-w-lg rounded-2xl bg-surface p-5 shadow-[0_24px_60px_rgba(11,28,46,0.28)]"
+        className="triage-dialog-panel w-full max-w-lg rounded-2xl bg-surface p-5 shadow-dialog"
         role="dialog"
         aria-modal="true"
         aria-labelledby="medication-dialog-title"
@@ -219,9 +253,14 @@ function MedicationDialog({
               <input className={field} name="strength" value={strength} placeholder="500 mg" onChange={(event) => { setStrength(event.target.value); fields.clearField("strength"); }} required />
             </Field>
             <Field label="Dosage form" error={fields.errorOf("dosage_form")}>
-              <select className={field} name="dosage_form" value={dosageForm} onChange={(event) => setDosageForm(event.target.value)}>
-                {dosageForms.map((item) => <option key={item} value={item}>{item}</option>)}
-              </select>
+              <SearchSelect
+                name="dosage_form"
+                required
+                value={dosageForm}
+                placeholder="Search dosage form"
+                options={dosageFormOptions(dosageForm)}
+                onChange={(value) => { setDosageForm(value); fields.clearField("dosage_form"); }}
+              />
             </Field>
           </div>
           <Field label="Route of administration" error={fields.errorOf("route")}>
@@ -237,6 +276,12 @@ function MedicationDialog({
       </form>
     </div>
   );
+}
+
+function dosageFormOptions(current: string) {
+  const options = dosageForms.map((item) => ({ value: item, label: item }));
+  if (current && !dosageForms.includes(current)) options.unshift({ value: current, label: current });
+  return options;
 }
 
 function TrashIcon() {

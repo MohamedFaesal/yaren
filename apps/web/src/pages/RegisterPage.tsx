@@ -6,7 +6,7 @@ import { useActiveClinic } from "../ClinicWorkspace";
 import { nationalityOption } from "../nationalities";
 import { useToast } from "../toast";
 import { type VisitDocumentMeta, type VisitDocumentType, visitDocumentAccept, visitDocumentIssue, visitDocumentMeta, visitDocumentSizeLabel } from "../visitDocuments";
-import { Card, CollapsibleSection, Field, Page, PlusIcon, SearchSelect, SectionSummaryItem, Summary, field, label, messageOf, primary, secondary, useFieldErrors } from "./ui";
+import { Card, CollapsibleSection, Field, Page, PlusIcon, RemoveButton, SearchSelect, SectionSummaryItem, Summary, field, label, messageOf, primary, secondary, useFieldErrors } from "./ui";
 
 type RegisterSection = "patient" | "contact" | "hotel" | "consent";
 
@@ -532,7 +532,7 @@ export function RegisterPage({ token, actor }: { token: string; actor: User }) {
           </form>
         </Card>
         <aside className="space-y-5 xl:sticky xl:top-6">
-          <div className="rounded-2xl border border-line-soft bg-surface p-5 shadow-[0_8px_24px_rgba(16,42,67,0.06)]">
+          <div className="rounded-2xl border border-line bg-surface p-5 shadow-card">
             <p className="text-xs font-semibold uppercase tracking-wide text-blue">Existing records</p>
             <h2 className="mt-2 text-lg font-bold text-ink">Check for a match</h2>
             <p className="mt-2 text-sm leading-6 text-muted-strong">
@@ -542,7 +542,7 @@ export function RegisterPage({ token, actor }: { token: string; actor: User }) {
               <div className="mt-3 rounded-xl bg-success-soft px-3 py-3">
                 <p className="text-sm font-semibold text-ink">Visit will be added to {linkedPatient.name}</p>
                 <p className="mt-1 text-sm text-muted-strong">{linkedPatient.mrn}</p>
-                <button type="button" className="mt-2 text-sm font-semibold text-danger" onClick={clearLinkedPatient}>
+                <button type="button" className={`${secondary} mt-2`} onClick={clearLinkedPatient}>
                   Register as a new patient
                 </button>
               </div>
@@ -610,7 +610,7 @@ function MatchDialog({
   return (
     <div className="fixed inset-0 z-50 grid place-items-center bg-shell/45 px-4 py-6" role="presentation" onMouseDown={() => { if (!pending) onClose(); }}>
       <div
-        className="flex max-h-full w-full max-w-2xl flex-col rounded-2xl bg-surface p-4 shadow-[0_24px_60px_rgba(11,28,46,0.28)] sm:p-6"
+        className="flex max-h-full w-full max-w-2xl flex-col rounded-2xl bg-surface p-4 shadow-dialog sm:p-6"
         role="dialog"
         aria-modal="true"
         aria-labelledby="match-title"
@@ -643,7 +643,7 @@ function MatchDialog({
                     to={`/patients/${patient.id}`}
                     target="_blank"
                     rel="noreferrer"
-                    className="mt-1 inline-flex text-xs font-semibold text-blue hover:underline"
+                    className={`${secondary} mt-2 h-8 px-3 py-0 text-xs`}
                   >
                     View profile
                   </Link>
@@ -806,9 +806,7 @@ function DocumentDrop({
         </div>
         <div className="flex shrink-0 items-center gap-2">
           {file ? (
-            <button type="button" className="px-2 py-1.5 text-sm font-semibold text-danger" disabled={disabled} onClick={onClear}>
-              Remove
-            </button>
+            <RemoveButton disabled={disabled} onClick={onClear} />
           ) : null}
           <button
             type="button"

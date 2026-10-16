@@ -21,9 +21,9 @@ export function DashboardPage({ token, actor }: { token: string; actor: User }) 
       {stats ? (
         <div className="space-y-5">
           <div className="grid gap-4 md:grid-cols-3">
-            <Stat to="/users" label="Users" value={stats.users.total} hint={`${stats.users.active} active · ${stats.users.inactive} inactive`} />
-            <Stat to="/hotels" label="Hotels" value={stats.hotels.total} hint={`${stats.hotels.with_clinics} with a clinic`} />
-            <Stat to="/clinics" label="Clinics" value={stats.clinics.total} hint={stats.clinics.by_city[0] ? `Most in ${stats.clinics.by_city[0].city}` : "None open yet"} />
+            <Stat to="/users" label="Users" value={stats.users.total} hint={`${stats.users.active} active · ${stats.users.inactive} inactive`} icon={<UsersGlyph />} />
+            <Stat to="/hotels" label="Hotels" value={stats.hotels.total} hint={`${stats.hotels.with_clinics} with a clinic`} icon={<HotelGlyph />} />
+            <Stat to="/clinics" label="Clinics" value={stats.clinics.total} hint={stats.clinics.by_city[0] ? `Most in ${stats.clinics.by_city[0].city}` : "None open yet"} icon={<ClinicGlyph />} />
           </div>
           <div className="grid items-start gap-5 xl:grid-cols-2">
             <Card>
@@ -62,18 +62,52 @@ export function DashboardPage({ token, actor }: { token: string; actor: User }) 
             )}
           </Card>
         </div>
-      ) : error ? null : <p className="text-sm text-muted">Loading statistics</p>}
+      ) : error ? null : (
+        <div className="grid gap-4 md:grid-cols-3" aria-busy="true">
+          {[0, 1, 2].map((item) => <div key={item} className="h-28 animate-pulse rounded-2xl border border-line bg-surface shadow-card" />)}
+        </div>
+      )}
     </Page>
   );
 }
 
-function Stat({ to, label, value, hint }: { to: string; label: string; value: number; hint: string }) {
+function Stat({ to, label, value, hint, icon }: { to: string; label: string; value: number; hint: string; icon: ReactNode }) {
   return (
-    <Link to={to} className="rounded-2xl bg-surface p-5 shadow-[0_8px_24px_rgba(16,42,67,0.06)]">
-      <p className="text-[11px] font-semibold uppercase tracking-wide text-muted">{label}</p>
-      <p className="mt-2 text-4xl font-bold tracking-tight text-ink">{value}</p>
-      <p className="mt-2 text-sm text-muted-strong">{hint}</p>
+    <Link to={to} className="group flex items-start gap-4 rounded-2xl border border-line bg-surface p-5 shadow-card transition hover:border-panel-strong hover:shadow-[0_12px_32px_-12px_rgba(15,127,145,0.25)]">
+      <span className="grid h-11 w-11 shrink-0 place-items-center rounded-xl bg-panel text-blue" aria-hidden="true">{icon}</span>
+      <span className="min-w-0 flex-1">
+        <span className="block text-[11px] font-semibold uppercase tracking-wide text-muted">{label}</span>
+        <span className="mt-1 block text-3xl font-bold tracking-tight text-ink">{value}</span>
+        <span className="mt-1 block text-sm text-muted-strong">{hint}</span>
+      </span>
+      <span className="mt-1 text-muted-soft transition group-hover:translate-x-0.5 group-hover:text-blue" aria-hidden="true">
+        <svg viewBox="0 0 20 20" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M7 4l6 6-6 6" /></svg>
+      </span>
     </Link>
+  );
+}
+
+function UsersGlyph() {
+  return (
+    <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <circle cx="9" cy="8" r="3.5" /><path d="M2.5 20a6.5 6.5 0 0 1 13 0" /><path d="M16 4.5a3.5 3.5 0 0 1 0 7" /><path d="M18 14.5a5.5 5.5 0 0 1 3.5 5.5" />
+    </svg>
+  );
+}
+
+function HotelGlyph() {
+  return (
+    <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M4 21V5a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v16" /><path d="M2 21h20" /><path d="M9 7h2M13 7h2M9 11h2M13 11h2M9 15h2M13 15h2" />
+    </svg>
+  );
+}
+
+function ClinicGlyph() {
+  return (
+    <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M3 10.5 12 3l9 7.5" /><path d="M5 9.5V21h14V9.5" /><path d="M12 12v6M9 15h6" />
+    </svg>
   );
 }
 
@@ -87,8 +121,8 @@ function Bars({ rows }: { rows: { id: string; label: ReactNode; count: number }[
             <span>{row.label}</span>
             <span className="font-semibold">{row.count}</span>
           </div>
-          <div className="mt-1 h-2 overflow-hidden rounded-full bg-surface-2">
-            <div className="h-full rounded-full bg-blue" style={{ width: `${(row.count / max) * 100}%` }} />
+          <div className="mt-1 h-2 overflow-hidden rounded-full bg-surface-3">
+            <div className="h-full rounded-full bg-blue transition-[width] duration-500" style={{ width: `${(row.count / max) * 100}%` }} />
           </div>
         </div>
       ))}

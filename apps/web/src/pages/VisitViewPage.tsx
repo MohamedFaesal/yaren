@@ -1,10 +1,10 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router";
-import { api, type PatientVisit, type User, type VisitCareStatus, visitTypeLabel } from "../api";
+import { api, type PatientVisit, type User, type VisitCareStatus, visitStatusLabel, visitTypeLabel } from "../api";
 import { canAct } from "../access";
 import { useToast } from "../toast";
 import { visitDocumentAccept, visitDocumentIssue, visitDocumentMeta, visitDocumentSizeLabel } from "../visitDocuments";
-import { AgeBadge, Card, ConfirmDialog, Detail, IconAction, Page, SecretValue, Section, Summary, formatWhen, messageOf, secondary } from "./ui";
+import { AgeBadge, Card, ConfirmDialog, Detail, IconAction, Page, SecretValue, Section, Summary, formatWhen, messageOf, primary, secondary } from "./ui";
 
 export function VisitViewPage({ token, actor }: { token: string; actor: User }) {
   const { patientId, id } = useParams();
@@ -26,6 +26,21 @@ export function VisitViewPage({ token, actor }: { token: string; actor: User }) 
   useEffect(() => {
     api<PatientVisit>(`/api/patients/${patientId}/visits/${id}`, {}, token).then(setVisit).catch((caught) => setError(messageOf(caught)));
   }, [patientId, id, token]);
+
+  async function markPendingPayment() {
+    if (!patientId || !id) return;
+    setPending(true);
+    setError(null);
+    try {
+      const next = await api<PatientVisit>(`/api/patients/${patientId}/visits/${id}/pending-payment`, { method: "POST" }, token);
+      setVisit(next);
+      toast.success("Pending payment", "This visit is ready to be paid.");
+    } catch (caught) {
+      setError(messageOf(caught));
+    } finally {
+      setPending(false);
+    }
+  }
 
   async function uploadDocument(documentType: string, file: File) {
     if (!patientId || !id) return;
@@ -106,10 +121,13 @@ export function VisitViewPage({ token, actor }: { token: string; actor: User }) 
               visit.clinic_name,
               visit.hotel_room_no ? <SecretValue value={`Room ${visit.hotel_room_no}`} /> : "Room not set",
               canAct(actor, "triage", "view", { ownerId: visit.patient_added_by, clinicId: visit.clinic_id })
-                ? <Link className="font-semibold text-blue hover:underline" to="/patients/triage">Open triage queue</Link>
+                ? <Link className={`${secondary} h-8 px-3 py-0 text-xs`} to="/patients/triage">Open nurse dashboard</Link>
                 : null,
-              (visit.status === "to_doctor" || visit.status === "seen") && (actor.type === "super-admin" || actor.type === "admin" || actor.role === "Doctor")
-                ? <Link className="font-semibold text-blue hover:underline" to={`/patients/to-doctor/${visit.id}/encounter`}>{visit.status === "seen" ? "View encounter" : "Start encounter"}</Link>
+              (visit.status === "to_doctor" || visit.status === "seen" || visit.status === "waiting_for_investigation" || visit.status === "diagnosed" || visit.status === "pending_payment") && (actor.type === "super-admin" || actor.type === "admin" || actor.role === "Doctor")
+                ? <Link className={`${secondary} h-8 px-3 py-0 text-xs`} to={`/patients/to-doctor/${visit.id}/encounter`}>{visit.status === "to_doctor" ? "Start encounter" : "View encounter"}</Link>
+                : null,
+              visit.status === "diagnosed" && canWrite
+                ? <button type="button" className={`${primary} h-8 px-3 py-0 text-xs`} disabled={pending} onClick={() => void markPendingPayment()}>Mark pending payment</button>
                 : null,
             ].filter((line) => line !== null)}
           />
@@ -144,16 +162,13 @@ export function VisitViewPage({ token, actor }: { token: string; actor: User }) 
 }
 
 function VisitStatus({ status }: { status?: VisitCareStatus }) {
-  if (status === "seen") {
-    return <span className="inline-flex rounded-full bg-panel px-2.5 py-1 text-xs font-semibold text-blue">Seen by the doctor</span>;
-  }
-  if (status === "to_doctor") {
-    return <span className="inline-flex rounded-full bg-success-soft px-2.5 py-1 text-xs font-semibold text-success">To see the doctor</span>;
-  }
-  if (status === "waiting_for_triage") {
-    return <span className="inline-flex rounded-full bg-danger-soft px-2.5 py-1 text-xs font-semibold text-danger">Waiting for triage</span>;
-  }
-  return <span className="text-muted">—</span>;
+  if (!status) return <span className="text-muted">—</span>;
+  const tone = status === "seen" || status === "diagnosed"
+    ? "bg-success-soft text-success"
+    : status === "pending_payment" || status === "waiting_for_triage"
+      ? "bg-warning-soft text-warning"
+      : "bg-panel text-blue";
+  return <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${tone}`}>{visitStatusLabel(status)}</span>;
 }
 
 function titleCase(value: string) {
@@ -271,50 +286,33 @@ function VisitDetails({
   );
 }
 
-const workflowSteps: { status: VisitCareStatus; title: string; body: string }[] = [
-  {
-    status: "waiting_for_triage",
-    title: "Waiting for triage",
-    body: "The visit is registered and waits for a nurse to complete triage.",
-  },
-  {
-    status: "to_doctor",
-    title: "To see the doctor",
-    body: "Triage is complete and the visit is sent to the assigned doctor.",
-  },
-  {
-    status: "seen",
-    title: "Seen by the doctor",
-    body: "The doctor has finished the clinical encounter.",
-  },
-];
-
 function VisitWorkflow({ visit }: { visit: PatientVisit }) {
-  const current = visit.status === "seen" ? 3 : visit.status === "to_doctor" ? 1 : 0;
+  const steps = careSteps(visit);
+  const current = Math.max(0, steps.findIndex((step) => step.status === visit.status));
   return (
     <Card>
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <p className="text-xs font-semibold uppercase tracking-[0.16em] text-blue">Care path</p>
-          <h2 className="mt-1 text-lg font-bold text-ink">{visit.status === "seen" ? "Seen by the doctor" : current === 1 ? "With the doctor" : "Waiting for triage"}</h2>
-          <p className="mt-1 text-sm text-muted-strong">Registration, triage, the doctor, then the finished encounter.</p>
+          <h2 className="mt-1 text-lg font-bold text-ink">{steps[current]?.title ?? visitStatusLabel(visit.status)}</h2>
+          <p className="mt-1 text-sm text-muted-strong">Registration, triage, the doctor, then the next step for this visit.</p>
         </div>
-        <span className="rounded-full bg-panel px-3 py-1 text-xs font-semibold text-blue">Step {visit.status === "seen" ? 3 : current + 1} of 3</span>
+        <span className="rounded-full bg-panel px-3 py-1 text-xs font-semibold text-blue">Step {current + 1} of {steps.length}</span>
       </div>
       <div className="mt-5 flex gap-2" aria-hidden="true">
-        <span className={`h-1.5 flex-1 rounded-full ${current === 0 ? "bg-blue" : "bg-success"}`} />
-        <span className={`h-1.5 flex-1 rounded-full ${current === 0 ? "bg-line" : current === 1 ? "bg-blue" : "bg-success"}`} />
-        <span className={`h-1.5 flex-1 rounded-full ${visit.status === "seen" ? "bg-success" : "bg-line"}`} />
+        {steps.map((step, index) => (
+          <span key={step.status} className={`h-1.5 flex-1 rounded-full ${index < current ? "bg-success" : index === current ? "bg-blue" : "bg-line"}`} />
+        ))}
       </div>
       <ol className="mt-7">
-        {workflowSteps.map((step, index) => {
+        {steps.map((step, index) => {
           const state = index < current ? "done" : index === current ? "current" : "next";
           const event = visit.status_history?.find((item) => item.to_status === step.status);
           const reached = index <= current;
           const when = reached
             ? event?.created_at ?? (step.status === "waiting_for_triage" ? visit.created_at : visit.status_changed_at)
             : null;
-          const last = index === workflowSteps.length - 1;
+          const last = index === steps.length - 1;
           return (
             <li key={step.status} className="triage-rise relative flex gap-4" style={{ animationDelay: `${index * 90}ms` }}>
               <div className="flex w-11 shrink-0 flex-col items-center">
@@ -327,7 +325,7 @@ function VisitWorkflow({ visit }: { visit: PatientVisit }) {
                 {last ? null : <span className={`my-1.5 w-0.5 flex-1 rounded-full ${index < current ? "bg-success" : "bg-line"}`} />}
               </div>
               <div
-                className={`min-w-0 flex-1 rounded-2xl px-4 py-3.5 ${last ? "" : "mb-3"} ${state === "current" ? "bg-panel shadow-[0_8px_24px_rgba(47,111,237,0.08)]" : state === "done" ? "bg-success-soft" : "bg-surface-2"}`}
+                className={`min-w-0 flex-1 rounded-2xl px-4 py-3.5 ${last ? "" : "mb-3"} ${state === "current" ? "bg-panel shadow-[0_8px_24px_rgba(15,127,145,0.1)]" : state === "done" ? "bg-success-soft" : "bg-surface-2"}`}
                 aria-current={state === "current" ? "step" : undefined}
               >
                 <div className="flex flex-wrap items-center gap-2">
@@ -348,6 +346,35 @@ function VisitWorkflow({ visit }: { visit: PatientVisit }) {
       </ol>
     </Card>
   );
+}
+
+function careSteps(visit: PatientVisit) {
+  const shared = [
+    {
+      status: "waiting_for_triage" as const,
+      title: "Waiting for triage",
+      body: "The visit is registered and waits for a nurse to complete triage.",
+    },
+    {
+      status: "to_doctor" as const,
+      title: "To see the doctor",
+      body: "Triage is complete and the visit is sent to the assigned doctor.",
+    },
+  ];
+  if (visit.status === "seen") {
+    return [...shared, { status: "seen" as const, title: "Seen by the doctor", body: "The doctor has finished the clinical encounter." }];
+  }
+  if (visit.status === "waiting_for_investigation") {
+    return [...shared, { status: "waiting_for_investigation" as const, title: "Waiting for investigation", body: "The doctor ordered investigations. Results are still outstanding." }];
+  }
+  if (visit.status === "diagnosed" || visit.status === "pending_payment") {
+    const diagnosed = { status: "diagnosed" as const, title: "Diagnosed", body: "The doctor finished the encounter without investigations." };
+    if (visit.status === "pending_payment") {
+      return [...shared, diagnosed, { status: "pending_payment" as const, title: "Pending payment", body: "The visit is diagnosed and ready to be paid." }];
+    }
+    return [...shared, diagnosed];
+  }
+  return shared;
 }
 
 function CheckIcon() {

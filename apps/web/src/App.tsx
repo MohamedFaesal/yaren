@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Navigate, NavLink, Route, Routes, useLocation, useNavigate } from "react-router";
 import { api, loadSession, saveSession, type DoctorCasePage, type Session, type TriageQueueResult, type User } from "./api";
 import { canAct, canManageSettings, canSeeDoctorCases } from "./access";
-import { RoleIcon } from "./pages/ui";
+import { RoleIcon, typeLabel } from "./pages/ui";
 import { ClinicFormPage } from "./pages/ClinicFormPage";
 import { ClinicsPage } from "./pages/ClinicsPage";
 import { ClinicViewPage } from "./pages/ClinicViewPage";
@@ -26,7 +26,6 @@ import { EncounterPage } from "./pages/EncounterPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { ServicesPage } from "./pages/ServicesPage";
 import { MedicationsPage } from "./pages/MedicationsPage";
-import { ProceduresPage } from "./pages/ProceduresPage";
 import { VisitFormPage } from "./pages/VisitFormPage";
 import { VisitViewPage } from "./pages/VisitViewPage";
 import { ProfileAvatar, ProfilePage } from "./pages/ProfilePage";
@@ -133,7 +132,6 @@ export function App() {
           <Route path="/settings" element={<SettingsPage token={session.token} />} />
           <Route path="/services" element={<ServicesPage token={session.token} actor={session.user} />} />
           <Route path="/medications" element={<MedicationsPage token={session.token} actor={session.user} />} />
-          <Route path="/procedures" element={<ProceduresPage token={session.token} actor={session.user} />} />
           <Route path="/roles" element={<RolesPage token={session.token} actor={session.user} />} />
           <Route path="/roles/new" element={<RoleFormPage token={session.token} />} />
           <Route path="/roles/:id/edit" element={<RoleFormPage token={session.token} />} />
@@ -179,7 +177,7 @@ function AppShell({
   }, [navOpen]);
 
   return (
-    <div className="min-h-screen bg-canvas lg:grid lg:grid-cols-[248px_1fr]">
+    <div className="min-h-screen bg-canvas lg:grid lg:grid-cols-[248px_minmax(0,1fr)]">
       {navOpen ? (
         <button
           type="button"
@@ -195,11 +193,11 @@ function AppShell({
         }`}
         aria-label="Main navigation"
       >
-        <div className="flex items-center justify-between gap-3 px-2 pb-6">
-          <img src="/yaren-logo.png" alt="Yaren Healthcare" className="h-12 w-auto max-w-full rounded-lg bg-surface px-2 py-1.5" />
+        <div className="mb-5 flex items-center justify-between gap-3 border-b border-white/10 px-2 pb-5">
+          <img src="/yaren-logo.png" alt="Yaren Healthcare" className="h-12 w-auto max-w-full rounded-xl bg-surface px-2.5 py-1.5" />
           <button
             type="button"
-            className="grid h-9 w-9 place-items-center rounded-lg text-slate-300 hover:bg-white/10 hover:text-white lg:hidden"
+            className="grid h-9 w-9 place-items-center rounded-lg text-white/70 hover:bg-white/10 hover:text-white lg:hidden"
             aria-label="Close menu"
             onClick={() => setNavOpen(false)}
           >
@@ -216,9 +214,8 @@ function AppShell({
             {canSeeDoctorCases(user) ? <DoctorCasesNavLink token={token} pathname={pathname} /> : null}
             {canAct(user, "visit", "view") ? <NavLink to="/patients/visits" className={navClass}><VisitsIcon />Visits</NavLink> : null}
             {canAct(user, "patient", "view") ? <NavLink to="/patients" end className={navClass}><PatientsIcon />Patients</NavLink> : null}
-            <NavLink to="/services" className={navClass}><PriceIcon />Service Price List</NavLink>
+            <NavLink to="/services" className={navClass}><PriceIcon />Medical Services</NavLink>
             <NavLink to="/medications" className={navClass}><MedicationIcon />Medications</NavLink>
-            <NavLink to="/procedures" className={navClass}><ProcedureIcon />Surgical Procedures</NavLink>
           </NavSection>
           <NavSection
             title="Network"
@@ -239,6 +236,13 @@ function AppShell({
             {canManageSettings(user) ? <NavLink to="/settings" className={navClass}><SettingsIcon />General settings</NavLink> : null}
           </NavSection>
         </nav>
+        <div className="mt-4 flex items-center gap-3 rounded-xl border border-white/10 bg-white/5 px-3 py-2.5">
+          <ProfileAvatar name={user.name} photoUrl={user.photo_url} />
+          <span className="min-w-0">
+            <span className="block truncate text-sm font-semibold text-white">{user.name}</span>
+            <span className="block truncate text-[11px] text-white/55">{user.role} · {typeLabel(user.type)}</span>
+          </span>
+        </div>
       </aside>
 
       <div className="min-w-0">
@@ -456,11 +460,11 @@ function TriageNavLink({ token, pathname }: { token: string; pathname: string })
     >
       <span className="flex min-w-0 items-center gap-3">
         <TriageIcon />
-        <span className="leading-snug">Patient Queue & Triage</span>
+        <span className="leading-snug">Nurse Dashboard</span>
       </span>
       {waiting > 0 ? (
         <span
-          className="shrink-0 rounded-full bg-danger px-2 py-0.5 text-[11px] font-bold tabular-nums text-white"
+          className="shrink-0 rounded-full bg-gold px-2 py-0.5 text-[11px] font-bold tabular-nums text-shell"
           aria-label={`${waiting} waiting for triage`}
         >
           {waiting > 99 ? "99+" : waiting}
@@ -481,7 +485,7 @@ function DoctorCasesNavLink({ token, pathname }: { token: string; pathname: stri
       if (clinicId) params.set("clinic_id", clinicId);
       api<DoctorCasePage>(`/api/doctor-cases?${params}`, {}, token)
         .then((data) => {
-          if (!cancelled) setCount(data.total);
+          if (!cancelled) setCount(data.summary?.waiting ?? 0);
         })
         .catch(() => {
           if (!cancelled) setCount(0);
@@ -513,7 +517,7 @@ function DoctorCasesNavLink({ token, pathname }: { token: string; pathname: stri
           </span>
           {count > 0 ? (
             <span
-              className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] font-bold tabular-nums ${isActive ? "bg-white text-blue" : "bg-blue text-white"}`}
+              className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] font-bold tabular-nums ${isActive ? "bg-white text-blue" : "bg-white/15 text-white"}`}
               aria-label={`${count} sent to a doctor`}
             >
               {count > 99 ? "99+" : count}
@@ -529,14 +533,14 @@ function NavSection({ title, show = true, children }: { title: string; show?: bo
   if (!show) return null;
   return (
     <div className="first:mt-0 mt-5">
-      <p className="px-3 pb-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">{title}</p>
+      <p className="px-3 pb-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-white/40">{title}</p>
       <div className="flex flex-col gap-1">{children}</div>
     </div>
   );
 }
 
 function navClass({ isActive }: { isActive: boolean }) {
-  return `flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium ${isActive ? "bg-blue text-white" : "text-slate-300 hover:bg-white/5"}`;
+  return `flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors ${isActive ? "bg-blue text-white shadow-[inset_3px_0_0_0_var(--gold)]" : "text-white/70 hover:bg-white/10 hover:text-white"}`;
 }
 
 function greeting(date: Date) {
@@ -552,9 +556,8 @@ function heading(pathname: string) {
   if (section === "profile") return "My profile";
   if (section === "activity") return "Activity";
   if (section === "settings") return "General settings";
-  if (section === "services") return "Service Price List";
+  if (section === "services") return "Medical Services";
   if (section === "medications") return "Medications";
-  if (section === "procedures") return "Surgical Procedures";
   if (section === "roles") {
     if (!id) return "Roles";
     if (id === "new") return "New role";
@@ -567,7 +570,7 @@ function heading(pathname: string) {
     if (parts[1] === "to-doctor" && parts[3] === "encounter") return "Clinical Encounter";
     if (!id) return "Patients";
     if (id === "visits") return "Visits";
-    if (id === "triage") return "Triage";
+    if (id === "triage") return "Nurse Dashboard";
     if (id === "to-doctor") return "Doctor Dashboard";
     if (id === "register") return "Register";
     if (id === "new") return "New patient";
@@ -626,10 +629,6 @@ function ClinicIcon() {
 
 function PatientsIcon() {
   return <Icon><path d="M8 19v-1a4 4 0 0 1 4-4h0a4 4 0 0 1 4 4v1" /><circle cx="12" cy="8" r="3" /><path d="M4 19v-1a3 3 0 0 1 2-2.8" /><path d="M20 19v-1a3 3 0 0 0-2-2.8" /><path d="M6.5 8.5a2.5 2.5 0 1 1 0-0.01" /><path d="M17.5 8.5a2.5 2.5 0 1 1 0-0.01" /></Icon>;
-}
-
-function ProcedureIcon() {
-  return <Icon><path d="M5 19 19 5" /><path d="M14 5h5v5" /><path d="M8 16l-3 3" /></Icon>;
 }
 
 function MedicationIcon() {

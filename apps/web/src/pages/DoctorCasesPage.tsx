@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type MouseEvent, type ReactNode } from "react";
 import { Link } from "react-router";
-import { api, visitTypeLabel, waitMinutes, type DoctorCaseDetail, type DoctorCasePage, type DoctorCaseSummary, type GeneralSettings, type TriageCategory, type User } from "../api";
+import { api, visitStatusLabel, visitTypeLabel, waitMinutes, type DoctorCaseDetail, type DoctorCasePage, type DoctorCaseSummary, type GeneralSettings, type TriageCategory, type User, type VisitCareStatus } from "../api";
 import { canAct } from "../access";
 import { useActiveClinic } from "../ClinicWorkspace";
 import { DataTable, Page, field, messageOf, secondary, th } from "./ui";
@@ -13,10 +13,12 @@ const emptySummary: DoctorCaseSummary = {
   emergency: 0,
   urgent: 0,
   normal: 0,
+  diagnosed: 0,
+  waiting_for_investigation: 0,
   average_wait_minutes: 0,
 };
 
-type CaseFocus = "" | "today" | "now" | "emergency" | "urgent" | "normal";
+type CaseFocus = "" | "today" | "now" | "emergency" | "urgent" | "normal" | "diagnosed" | "waiting_for_investigation";
 
 const categoryLabel: Record<TriageCategory, string> = {
   emergency: "Emergency",
@@ -145,7 +147,7 @@ export function DoctorCasesPage({ token, actor }: { token: string; actor: User }
   return (
     <Page
       title="Doctor Dashboard"
-      description="Patients waiting to see the doctor after triage."
+      description="Patients waiting to see the doctor, plus diagnosed and waiting-for-investigation visits."
       crumbs={[{ label: "Care" }, { label: "Doctor Dashboard" }]}
     >
       {error ? <p className="mb-4 text-sm text-danger">{error}</p> : null}
@@ -154,15 +156,17 @@ export function DoctorCasesPage({ token, actor }: { token: string; actor: User }
         <StatCard label="To see now" value={summary.to_see_now} hint="Emergency and urgent" tone="rose" active={focus === "now"} onClick={() => chooseFocus("now")} />
         <StatCard label="Average waiting time" value={waitedLabel(averageTarget)} hint={averageHint} tone="amber" />
       </div>
-      <section className="rounded-2xl bg-surface p-4 shadow-[0_8px_24px_rgba(16,42,67,0.06)] sm:p-5">
+      <section className="rounded-2xl border border-line bg-surface p-4 shadow-card sm:p-5">
         <h2 className="text-base font-bold text-ink">Patient queue</h2>
-        <p className="mt-0.5 text-sm text-muted">Waiting to see the doctor</p>
+        <p className="mt-0.5 text-sm text-muted">Waiting to see the doctor, plus diagnosed and waiting-for-investigation visits</p>
         <div className="mt-4 flex flex-wrap gap-2">
-          <QueueChip label="All" count={summary.waiting} active={focus === ""} onClick={() => chooseFocus("")} />
+          <QueueChip label="All" count={summary.waiting + summary.diagnosed + summary.waiting_for_investigation} active={focus === ""} onClick={() => chooseFocus("")} />
           <QueueChip label="To see now" count={summary.to_see_now} active={focus === "now"} onClick={() => chooseFocus("now")} dot="bg-danger" />
           <QueueChip label="Emergency" count={summary.emergency} active={focus === "emergency"} onClick={() => chooseFocus("emergency")} dot="bg-danger" />
-          <QueueChip label="Urgent" count={summary.urgent} active={focus === "urgent"} onClick={() => chooseFocus("urgent")} dot="bg-blue" />
+          <QueueChip label="Urgent" count={summary.urgent} active={focus === "urgent"} onClick={() => chooseFocus("urgent")} dot="bg-warning" />
           <QueueChip label="Normal" count={summary.normal} active={focus === "normal"} onClick={() => chooseFocus("normal")} dot="bg-success" />
+          <QueueChip label="Diagnosed" count={summary.diagnosed} active={focus === "diagnosed"} onClick={() => chooseFocus("diagnosed")} dot="bg-success" />
+          <QueueChip label="Waiting for investigation" count={summary.waiting_for_investigation} active={focus === "waiting_for_investigation"} onClick={() => chooseFocus("waiting_for_investigation")} dot="bg-blue" />
         </div>
         <label className="relative mt-4 block max-w-xl">
           <span className="sr-only">Search queue</span>
@@ -177,23 +181,28 @@ export function DoctorCasesPage({ token, actor }: { token: string; actor: User }
                 <th className={th}>Triage</th>
                 <th className={th}>Waiting time</th>
                 {seesAll ? <th className={th}>Doctor</th> : null}
-                <th className={th}>Action</th>
+                <th className={`${th} sticky right-0 z-10 border-l border-line bg-surface-2 text-right`}>Action</th>
               </tr>
             </thead>
             <tbody>
               {result.items.length === 0 ? (
                 <tr>
-                  <td className="px-4 py-8 text-muted" colSpan={columns}>
+                  <td className="px-4 py-10 text-center text-sm text-muted" colSpan={columns}>
                     {loading ? "Loading queue…" : search || focus ? "No patients match this queue." : seesAll ? "No visits have been sent to a doctor." : "No visits have been assigned to you."}
                   </td>
                 </tr>
               ) : result.items.map((row, index) => {
-                const elapsed = row.triage_completed_at ? now - new Date(row.triage_completed_at).getTime() : null;
+                const done = closedCase(row.status) && row.triage_completed_at && row.status_changed_at;
+                const elapsed = done
+                  ? Math.max(0, new Date(row.status_changed_at).getTime() - new Date(row.triage_completed_at!).getTime())
+                  : row.triage_completed_at
+                    ? Math.max(0, now - new Date(row.triage_completed_at).getTime())
+                    : null;
                 const over = elapsed != null && elapsed >= waitMinutes(waitSettings, row.clinic_id, "doctor") * 60_000;
                 return (
                   <tr
                     key={row.id}
-                    className={`cursor-pointer border-t border-line-soft hover:bg-surface-2 ${selectedId === row.id ? "bg-panel" : ""}`}
+                    className={`group cursor-pointer border-t border-line-soft hover:bg-surface-2 ${selectedId === row.id ? "bg-panel" : ""}`}
                     onClick={() => setSelectedId(row.id)}
                   >
                     <td className="px-4 py-3 text-sm text-muted">{start + index}</td>
@@ -214,13 +223,18 @@ export function DoctorCasesPage({ token, actor }: { token: string; actor: User }
                     <td className="px-4 py-3 text-sm">
                       {elapsed == null ? "—" : (
                         <>
-                          <span className={`font-mono text-sm font-semibold tabular-nums ${over ? "text-danger" : "text-ink"}`}>{clockLabel(elapsed)}</span>
-                          {over ? <span className="mt-0.5 block text-xs text-danger">Over the target</span> : null}
+                          <span className={`block font-mono text-sm font-semibold tabular-nums ${over ? "text-danger" : "text-ink"}`}>{clockLabel(elapsed)}</span>
+                          {done ? (
+                            <span className="mt-1 flex flex-wrap items-center gap-1.5">
+                              <span className="text-xs font-semibold text-success">Finished</span>
+                              <QueueStatus status={row.status} />
+                            </span>
+                          ) : over ? <span className="mt-0.5 block text-xs text-danger">Over the target</span> : null}
                         </>
                       )}
                     </td>
                     {seesAll ? <td className="px-4 py-3 text-sm">{row.assigned_doctor_name || "—"}</td> : null}
-                    <td className="px-4 py-3">
+                    <td className={`sticky right-0 z-10 border-l border-line px-4 py-3 ${selectedId === row.id ? "bg-panel" : "bg-surface group-hover:bg-surface-2"}`}>
                       <div className="flex items-center justify-end gap-2">
                         <button
                           type="button"
@@ -234,7 +248,7 @@ export function DoctorCasesPage({ token, actor }: { token: string; actor: User }
                         >
                           <EyeIcon />
                         </button>
-                        <StartEncounterLink to={`/patients/to-doctor/${row.id}/encounter`} onClick={(event) => event.stopPropagation()} />
+                        <StartEncounterLink to={`/patients/to-doctor/${row.id}/encounter`} label={closedCase(row.status) ? "View encounter" : "Start encounter"} onClick={(event) => event.stopPropagation()} />
                       </div>
                     </td>
                   </tr>
@@ -265,14 +279,23 @@ export function DoctorCasesPage({ token, actor }: { token: string; actor: User }
   );
 }
 
-function StartEncounterLink({ to, onClick }: { to: string; onClick?: (event: MouseEvent<HTMLAnchorElement>) => void }) {
+function closedCase(status: VisitCareStatus) {
+  return status === "diagnosed" || status === "waiting_for_investigation";
+}
+
+function QueueStatus({ status }: { status: VisitCareStatus }) {
+  const tone = status === "diagnosed" ? "bg-success-soft text-success" : "bg-panel text-blue";
+  return <span className={`inline-flex whitespace-nowrap rounded-full px-2.5 py-1 text-xs font-semibold ${tone}`}>{visitStatusLabel(status)}</span>;
+}
+
+function StartEncounterLink({ to, label = "Start encounter", onClick }: { to: string; label?: string; onClick?: (event: MouseEvent<HTMLAnchorElement>) => void }) {
   return (
     <Link
       to={to}
       onClick={onClick}
       className="inline-flex h-9 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-lg bg-blue px-3 text-sm font-semibold text-white hover:bg-blue-strong"
     >
-      Start encounter
+      {label}
       <ArrowIcon />
     </Link>
   );
@@ -327,7 +350,7 @@ function TriageRecord({
   return (
     <div className="triage-dialog-backdrop fixed inset-0 z-50 grid place-items-center bg-shell/45 p-4" role="presentation" onMouseDown={onClose}>
       <section
-        className="triage-dialog-panel max-h-[calc(100vh-2rem)] w-full max-w-4xl overflow-y-auto rounded-2xl bg-surface p-4 shadow-[0_24px_60px_rgba(11,28,46,0.28)] sm:p-5"
+        className="triage-dialog-panel max-h-[calc(100vh-2rem)] w-full max-w-4xl overflow-y-auto rounded-2xl bg-surface p-4 shadow-dialog sm:p-5"
         role="dialog"
         aria-modal="true"
         aria-labelledby="triage-record-title"
@@ -361,6 +384,7 @@ function TriageRecord({
               <Vital icon={<TempIcon />} label="Temp" value={detail.temperature_c == null ? "—" : `${detail.temperature_c} °C`} alert={abnormalVital("temp", detail.temperature_c)} />
               <Vital icon={<PulseIcon />} label="Pulse" value={detail.pulse == null ? "—" : `${detail.pulse} /min`} alert={abnormalVital("pulse", detail.pulse)} />
               <Vital icon={<LungsIcon />} label="RR" value={detail.respiratory_rate == null ? "—" : `${detail.respiratory_rate} /min`} alert={abnormalVital("rr", detail.respiratory_rate)} />
+              <Vital icon={<PulseIcon />} label="BP" value={detail.blood_pressure ? `${detail.blood_pressure} mmHg` : "—"} />
               <Vital icon={<OxygenIcon />} label="SpO2" value={detail.spo2 == null ? "—" : `${detail.spo2}%`} alert={abnormalVital("spo2", detail.spo2)} />
             </dl>
             <div className="mt-2 grid gap-2 sm:grid-cols-2">
@@ -377,11 +401,11 @@ function TriageRecord({
             </div>
             <div className="mt-4 flex flex-col gap-3 border-t border-line-soft pt-4 sm:flex-row sm:items-center sm:justify-between">
               {canOpenVisit ? (
-                <Link className="text-sm font-semibold text-blue hover:underline" to={`/patients/${detail.patient_id}/visits/${detail.id}`}>Open visit</Link>
+                <Link className={`${secondary} h-9 px-3 py-0 text-sm`} to={`/patients/${detail.patient_id}/visits/${detail.id}`}>Open visit</Link>
               ) : <span />}
-              <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
-                <button type="button" className={secondary} onClick={onClose}>Close</button>
-                <StartEncounterLink to={`/patients/to-doctor/${detail.id}/encounter`} />
+              <div className="flex items-center justify-end gap-2">
+                <button type="button" className={`${secondary} h-9 px-4 py-0`} onClick={onClose}>Close</button>
+                <StartEncounterLink to={`/patients/to-doctor/${detail.id}/encounter`} label={closedCase(detail.status) ? "View encounter" : "Start encounter"} />
               </div>
             </div>
           </div>
@@ -504,7 +528,7 @@ function StatCard({
   alert?: boolean;
   onClick?: () => void;
 }) {
-  const toneClass = tone === "rose" ? "bg-danger-soft text-danger" : tone === "amber" ? "bg-panel text-blue" : "bg-panel text-blue";
+  const toneClass = tone === "rose" ? "bg-danger-soft text-danger" : tone === "amber" ? "bg-warning-soft text-warning" : "bg-panel text-blue";
   const body = (
     <>
       <span className={`grid h-10 w-10 place-items-center rounded-full ${toneClass}`} aria-hidden="true">
@@ -517,7 +541,7 @@ function StatCard({
       </span>
     </>
   );
-  const className = `flex items-center gap-3 rounded-2xl bg-surface px-4 py-4 text-left shadow-[0_8px_24px_rgba(16,42,67,0.06)] ${onClick ? "transition hover:bg-surface-2" : ""} ${active ? "ring-2 ring-blue" : ""}`;
+  const className = `flex items-center gap-3 rounded-2xl border bg-surface px-4 py-4 text-left shadow-card ${onClick ? "transition hover:border-panel-strong" : ""} ${active ? "border-blue" : "border-line"}`;
   if (!onClick) return <div className={className}>{body}</div>;
   return <button type="button" className={className} onClick={onClick}>{body}</button>;
 }
@@ -549,8 +573,11 @@ function QueueChip({
 }
 
 function CategoryPill({ category }: { category: TriageCategory | null }) {
-  if (category === "emergency" || category === "urgent") {
-    return <span className="inline-flex rounded-full bg-danger-soft px-2.5 py-1 text-xs font-semibold text-danger">{categoryLabel[category]}</span>;
+  if (category === "emergency") {
+    return <span className="inline-flex rounded-full bg-danger-soft px-2.5 py-1 text-xs font-semibold text-danger">{categoryLabel.emergency}</span>;
+  }
+  if (category === "urgent") {
+    return <span className="inline-flex rounded-full bg-warning-soft px-2.5 py-1 text-xs font-semibold text-warning">{categoryLabel.urgent}</span>;
   }
   if (category === "normal") {
     return <span className="inline-flex rounded-full bg-success-soft px-2.5 py-1 text-xs font-semibold text-success">{categoryLabel.normal}</span>;

@@ -29,6 +29,14 @@ const historyOptions = [
   { value: "cardiac_disease", label: "Cardiac disease" },
 ] as const;
 
+const nurseTabs = [
+  { status: "waiting_for_triage", label: "Waiting for triage", count: "bg-warning-soft text-warning", tab: "border-warning text-warning" },
+  { status: "waiting_for_investigation", label: "Waiting for investigation", count: "bg-panel-strong text-blue-strong", tab: "border-blue text-blue" },
+  { status: "to_doctor", label: "To doctor", count: "bg-blue text-white", tab: "border-blue text-blue" },
+] as const;
+
+type NurseTab = (typeof nurseTabs)[number]["status"];
+
 const pageSize = 10;
 
 type FormState = {
@@ -37,6 +45,7 @@ type FormState = {
   pulse: string;
   respiratory_rate: string;
   spo2: string;
+  blood_pressure: string;
   allergies: TriageAllergy[];
   medications: TriageMedication[];
   relevant_history: string[];
@@ -52,6 +61,7 @@ const emptyForm = (): FormState => ({
   pulse: "",
   respiratory_rate: "",
   spo2: "",
+  blood_pressure: "",
   allergies: [],
   medications: [],
   relevant_history: [],
@@ -70,12 +80,12 @@ export function TriagePage({ token, actor }: { token: string; actor: User }) {
     total: 0,
     page: 1,
     page_size: pageSize,
-    summary: { waiting_for_triage: 0, to_doctor: 0 },
+    summary: { waiting_for_triage: 0, waiting_for_investigation: 0, to_doctor: 0 },
   });
   const [page, setPage] = useState(1);
   const [query, setQuery] = useState("");
   const [search, setSearch] = useState("");
-  const [statusFilter, setStatusFilter] = useState<"" | VisitCareStatus>("");
+  const [statusFilter, setStatusFilter] = useState<NurseTab>("waiting_for_triage");
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [detail, setDetail] = useState<TriageDetail | null>(null);
   const [form, setForm] = useState<FormState>(emptyForm);
@@ -92,7 +102,7 @@ export function TriagePage({ token, actor }: { token: string; actor: User }) {
   const requestId = useRef(0);
   const selected = detail?.visit ?? null;
   const canEdit = canAct(actor, "triage", "update", selected ? { ownerId: selected.patient_added_by, clinicId: selected.clinic_id } : undefined);
-  const readonly = !canEdit || selected?.status === "to_doctor";
+  const readonly = !canEdit || selected?.status !== "waiting_for_triage";
   const pages = Math.max(1, Math.ceil(queue.total / pageSize));
   const start = queue.total === 0 ? 0 : (queue.page - 1) * pageSize + 1;
   const end = Math.min(queue.page * pageSize, queue.total);
@@ -304,36 +314,32 @@ export function TriagePage({ token, actor }: { token: string; actor: User }) {
 
   return (
     <section className="space-y-4">
-      {!selectedKey ? (
-        <header>
-          <h1 className="text-2xl font-bold tracking-tight text-ink">Patient Queue & Triage</h1>
-          <p className="mt-1 text-sm text-muted-strong">Choose a patient, complete triage, then send them to a doctor.</p>
-        </header>
-      ) : null}
+      <header>
+        <h1 className="text-2xl font-bold tracking-tight text-ink">Nurse Dashboard</h1>
+        <p className="mt-1 text-sm text-muted-strong">Choose a patient, complete triage, then send them to a doctor.</p>
+      </header>
 
-      {error ? <p className="rounded-xl border border-danger-line bg-danger-soft px-4 py-3 text-sm text-danger" role="alert">{error}</p> : null}
+      {error && !selectedKey ? <p className="rounded-xl border border-danger-line bg-danger-soft px-4 py-3 text-sm text-danger" role="alert">{error}</p> : null}
 
-      <div className={`grid gap-3 sm:grid-cols-2 ${selectedKey ? "max-lg:hidden" : ""}`}>
-        <SummaryTile
-          label="Waiting for Triage"
-          value={queue.summary.waiting_for_triage}
-          active={statusFilter === "waiting_for_triage"}
-          tone="waiting"
-          icon={<WaitingIcon />}
-          onClick={() => setStatusFilter((current) => (current === "waiting_for_triage" ? "" : "waiting_for_triage"))}
-        />
-        <SummaryTile
-          label="To See the Doctor"
-          value={queue.summary.to_doctor}
-          active={statusFilter === "to_doctor"}
-          tone="doctor"
-          icon={<DoctorIcon />}
-          onClick={() => setStatusFilter((current) => (current === "to_doctor" ? "" : "to_doctor"))}
-        />
-      </div>
-
-      <div className={`grid items-start gap-5 ${selectedKey ? "lg:grid-cols-[40rem_minmax(0,1fr)] xl:grid-cols-[40rem_minmax(0,1fr)_16rem]" : ""}`}>
-        <div className={`min-w-0 rounded-2xl bg-surface p-4 shadow-[0_8px_24px_rgba(16,42,67,0.06)] ${selectedKey ? "max-lg:hidden" : ""}`}>
+      <div className="min-w-0 rounded-2xl border border-line bg-surface p-4 shadow-card">
+          <div className="-mx-4 -mt-4 mb-4 flex flex-wrap gap-1 border-b border-line px-2" role="tablist">
+            {nurseTabs.map((tab) => {
+              const selected = statusFilter === tab.status;
+              return (
+                <button
+                  key={tab.status}
+                  type="button"
+                  role="tab"
+                  aria-selected={selected}
+                  className={`inline-flex items-center gap-2 border-b-2 px-3 py-3 text-sm font-semibold ${selected ? tab.tab : "border-transparent text-muted-strong hover:text-ink"}`}
+                  onClick={() => setStatusFilter(tab.status)}
+                >
+                  {tab.label}
+                  <span className={`min-w-6 rounded-full px-2 py-0.5 text-center text-xs font-bold tabular-nums ${tab.count}`}>{queue.summary[tab.status]}</span>
+                </button>
+              );
+            })}
+          </div>
           <div className="mb-3 flex items-center gap-2">
             <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-panel text-blue"><QueueIcon /></span>
             <div className="min-w-0 flex-1">
@@ -369,7 +375,10 @@ export function TriagePage({ token, actor }: { token: string; actor: User }) {
                 <div className="space-y-2">
                   {queue.items.map((item) => {
                     const active = selectedKey === itemKey(item);
-                    const elapsed = Math.max(0, now - new Date(item.created_at).getTime());
+                    const triageDone = item.status !== "waiting_for_triage" && item.triage_completed_at;
+                    const elapsed = triageDone
+                      ? Math.max(0, new Date(item.triage_completed_at!).getTime() - new Date(item.created_at).getTime())
+                      : Math.max(0, now - new Date(item.created_at).getTime());
                     const waiting = item.status === "waiting_for_triage" && !item.triage_id;
                     return (
                       <button
@@ -385,7 +394,7 @@ export function TriagePage({ token, actor }: { token: string; actor: User }) {
                         <span className="text-xs font-medium text-muted-strong">{formatRegistered(item.created_at)}</span>
                         <span>
                           <span className={`block font-mono text-sm font-semibold tabular-nums ${elapsed >= waitMinutes(waitSettings, item.clinic_id, "triage") * 60_000 ? "text-danger" : "text-ink"}`}>{clockLabel(elapsed)}</span>
-                          <span className="mt-0.5 block text-xs font-semibold text-blue">{waiting ? "Start" : "View"}</span>
+                          <span className={`mt-0.5 block text-xs font-semibold ${triageDone ? "text-success" : "text-blue"}`}>{triageDone ? "Finished" : waiting ? "Start" : "View"}</span>
                         </span>
                         <span className="justify-self-start">
                           <StatusBadge status={item.status} compact />
@@ -406,73 +415,100 @@ export function TriagePage({ token, actor }: { token: string; actor: User }) {
               <button type="button" className={secondary} disabled={page >= pages || loading} onClick={() => setPage((current) => Math.min(pages, current + 1))}>Next</button>
             </div>
           </div>
-        </div>
+      </div>
 
-        {selectedKey ? (
-          <>
-            <div className="min-w-0">
-              {detailLoading || !selected ? (
-                <div className="rounded-2xl bg-surface p-5 shadow-[0_8px_24px_rgba(16,42,67,0.06)]">
-                  <div className="flex items-center gap-3">
-                    <button type="button" className="grid h-10 w-10 place-items-center rounded-xl border border-line-strong text-ink hover:bg-surface-2" aria-label="Back to queue" onClick={closeAssessment}>
-                      <BackIcon />
-                    </button>
-                    <p className="text-sm text-muted">Loading assessment…</p>
-                  </div>
-                </div>
-              ) : (
-                <form id="triage-assessment-form" className="space-y-4" onSubmit={(event) => void sendToDoctor(event)}>
-                  <div className="rounded-2xl bg-surface p-4 shadow-[0_8px_24px_rgba(16,42,67,0.06)] sm:p-5">
-                    <div className="flex items-start gap-3">
-                      <button
-                        type="button"
-                        className="mt-0.5 grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-line-strong text-ink hover:bg-surface-2"
-                        aria-label="Back to queue"
-                        onClick={closeAssessment}
-                      >
-                        <BackIcon />
-                      </button>
-                      <div className="min-w-0 flex-1">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <h2 className="truncate text-lg font-bold text-ink sm:text-xl">{selected.patient_name}</h2>
-                          <StatusBadge status={selected.status} compact />
-                        </div>
-                        <p className="mt-1 text-sm leading-6 text-muted-strong">
-                          {selected.patient_mrn}
-                          <span className="text-muted"> · </span>
-                          Room {selected.hotel_room_no || "—"}
-                          {selected.patient_age_at_visit != null ? <><span className="text-muted"> · </span>{selected.patient_age_at_visit}y</> : null}
-                          {selected.patient_gender ? <><span className="text-muted"> · </span>{titleCase(selected.patient_gender)}</> : null}
-                          {selected.patient_nationality ? <><span className="text-muted"> · </span>{selected.patient_nationality}</> : null}
-                        </p>
-                        <Link className="mt-2 inline-flex text-sm font-semibold text-blue hover:underline" to={`/patients/${selected.patient_id}`}>
-                          View profile
-                        </Link>
-                      </div>
+      {selectedKey ? (
+        <div className="triage-dialog-backdrop fixed inset-0 z-50 grid place-items-center bg-shell/45 p-3 sm:p-4" role="presentation" onMouseDown={closeAssessment}>
+          <section
+            className="triage-dialog-panel flex max-h-[calc(100vh-1.5rem)] w-full max-w-6xl flex-col overflow-hidden rounded-2xl bg-canvas shadow-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="triage-assessment-title"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            {detailLoading || !selected ? (
+              <div className="flex items-center gap-3 p-5">
+                <p className="text-sm text-muted">Loading assessment…</p>
+                <button type="button" className="ml-auto grid h-9 w-9 place-items-center rounded-lg text-muted hover:bg-surface-2 hover:text-ink" aria-label="Close" onClick={closeAssessment}>
+                  <ClosePanelIcon />
+                </button>
+              </div>
+            ) : (
+              <form id="triage-assessment-form" className="flex min-h-0 flex-1 flex-col" onSubmit={(event) => void sendToDoctor(event)}>
+                <div className="flex items-start gap-3 border-b border-line-soft bg-surface px-4 py-4 sm:px-5">
+                  <span className="grid h-12 w-12 shrink-0 place-items-center rounded-full bg-panel text-sm font-bold text-blue">{initials(selected.patient_name)}</span>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-blue">Triage</p>
+                    <div className="mt-1 flex flex-wrap items-center gap-2">
+                      <h2 id="triage-assessment-title" className="truncate text-lg font-bold text-ink sm:text-xl">{selected.patient_name}</h2>
+                      <StatusBadge status={selected.status} compact />
                     </div>
+                    <p className="mt-1 text-sm leading-6 text-muted-strong">
+                      {selected.patient_mrn}
+                      <span className="text-muted"> · </span>
+                      Room {selected.hotel_room_no || "—"}
+                      {selected.patient_age_at_visit != null ? <><span className="text-muted"> · </span>{selected.patient_age_at_visit}y</> : null}
+                      {selected.patient_gender ? <><span className="text-muted"> · </span>{titleCase(selected.patient_gender)}</> : null}
+                      {selected.patient_nationality ? <><span className="text-muted"> · </span>{selected.patient_nationality}</> : null}
+                    </p>
+                    <Link className={`${secondary} mt-2 h-9 px-3 py-0 text-sm`} to={`/patients/${selected.patient_id}`}>
+                      View profile
+                    </Link>
                   </div>
+                  <button type="button" className="grid h-9 w-9 shrink-0 place-items-center rounded-lg text-muted hover:bg-surface-2 hover:text-ink" aria-label="Close" onClick={closeAssessment}>
+                    <ClosePanelIcon />
+                  </button>
+                </div>
+                {error ? <p className="border-b border-danger-line bg-danger-soft px-4 py-3 text-sm text-danger sm:px-5" role="alert">{error}</p> : null}
+                <div className="min-h-0 flex-1 overflow-y-auto">
+                  <div className="grid items-start gap-4 p-4 lg:grid-cols-[minmax(0,1fr)_17rem] lg:p-5">
+                    <div className="space-y-4">
+                  <Group title="Assessment" hint="What brought the patient in, and what the nurse found.">
+                    <div>
+                      <FieldLabel required>Chief complaint</FieldLabel>
+                      <textarea
+                        className={`${field} min-h-24`}
+                        value={form.chief_complaint}
+                        disabled={readonly}
+                        required
+                        onChange={(event) => setForm((current) => ({ ...current, chief_complaint: event.target.value }))}
+                        placeholder="Describe the main reason for the visit"
+                      />
+                    </div>
+                    <div>
+                      <FieldLabel required>Initial assessment</FieldLabel>
+                      <textarea
+                        className={`${field} min-h-24`}
+                        value={form.initial_assessment}
+                        disabled={readonly}
+                        required
+                        onChange={(event) => setForm((current) => ({ ...current, initial_assessment: event.target.value }))}
+                        placeholder="Nurse clinical notes"
+                      />
+                    </div>
+                  </Group>
 
-                  <Panel index="1" title="Chief Complaint" icon={<ComplaintIcon />} required>
-                    <textarea
-                      className={`${field} min-h-28`}
-                      value={form.chief_complaint}
-                      disabled={readonly}
-                      required
-                      onChange={(event) => setForm((current) => ({ ...current, chief_complaint: event.target.value }))}
-                      placeholder="Describe the main reason for the visit"
-                    />
-                  </Panel>
-
-                  <Panel index="2" title="Vital Signs" icon={<VitalsIcon />} required>
+                  <Group
+                    title="Vital signs"
+                    hint="Abnormal values turn red."
+                    action={readonly ? undefined : (
+                      <button type="button" className={`${secondary} h-8 px-3 py-0 text-xs`} onClick={() => setForm((current) => ({ ...current, ...normalVitals }))}>
+                        Set Normal
+                      </button>
+                    )}
+                  >
                     <div className="grid gap-3 sm:grid-cols-2">
                       <VitalField label="Temperature" unit="°C" icon={<TempIcon />} value={form.temperature_c} disabled={readonly} required alert={form.temperature_c !== "" && Number(form.temperature_c) >= 38} onChange={(value) => setForm((current) => ({ ...current, temperature_c: value }))} />
                       <VitalField label="Pulse" unit="/min" icon={<PulseIcon />} value={form.pulse} disabled={readonly} required alert={form.pulse !== "" && Number(form.pulse) >= 100} onChange={(value) => setForm((current) => ({ ...current, pulse: value }))} />
-                      <VitalField label="RR" unit="/min" icon={<LungsIcon />} value={form.respiratory_rate} disabled={readonly} required alert={form.respiratory_rate !== "" && Number(form.respiratory_rate) >= 22} onChange={(value) => setForm((current) => ({ ...current, respiratory_rate: value }))} />
+                      <VitalField label="Respiratory rate" unit="/min" icon={<LungsIcon />} value={form.respiratory_rate} disabled={readonly} required alert={form.respiratory_rate !== "" && Number(form.respiratory_rate) >= 22} onChange={(value) => setForm((current) => ({ ...current, respiratory_rate: value }))} />
+                      <VitalField label="Blood pressure" unit="mmHg" icon={<PulseIcon />} value={form.blood_pressure} disabled={readonly} required inputMode="text" placeholder="120/80" onChange={(value) => setForm((current) => ({ ...current, blood_pressure: value }))} />
                       <VitalField label="SpO2" unit="%" icon={<OxygenIcon />} value={form.spo2} disabled={readonly} required alert={form.spo2 !== "" && Number(form.spo2) < 94} onChange={(value) => setForm((current) => ({ ...current, spo2: value }))} />
                     </div>
-                  </Panel>
+                  </Group>
 
-                  <Panel index="3" title="Allergies" icon={<AllergyIcon />}>
+                  <Group title="History">
+                    <div>
+                      <FieldLabel>Allergies</FieldLabel>
                     <TagList
                       tone="danger"
                       items={form.allergies.map((item) => (item.reaction ? `${item.name} (${item.reaction})` : item.name))}
@@ -499,9 +535,9 @@ export function TriagePage({ token, actor }: { token: string; actor: User }) {
                         </button>
                       </div>
                     ) : null}
-                  </Panel>
-
-                  <Panel index="4" title="Current Medications" icon={<MedsIcon />}>
+                    </div>
+                    <div>
+                      <FieldLabel>Current medications</FieldLabel>
                     <TagList
                       tone="blue"
                       items={form.medications.map((item) => item.name)}
@@ -524,14 +560,14 @@ export function TriagePage({ token, actor }: { token: string; actor: User }) {
                         </button>
                       </div>
                     ) : null}
-                  </Panel>
-
-                  <Panel index="5" title="Relevant History" icon={<HistoryIcon />}>
+                    </div>
+                    <div>
+                      <FieldLabel>Relevant history</FieldLabel>
                     <div className="grid gap-2 sm:grid-cols-2">
                       {historyOptions.map((option) => {
                         const checked = form.relevant_history.includes(option.value);
                         return (
-                          <label key={option.value} className="flex items-center gap-2 rounded-lg border border-line-soft px-3 py-2 text-sm text-ink">
+                          <label key={option.value} className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-sm text-ink ${checked ? "border-panel-strong bg-panel" : "border-line-soft bg-surface"}`}>
                             <input
                               type="checkbox"
                               className="accent-[var(--blue)]"
@@ -551,7 +587,7 @@ export function TriagePage({ token, actor }: { token: string; actor: User }) {
                         );
                       })}
                       {form.relevant_history_items.map((item, index) => (
-                        <label key={`${item.name}-${index}`} className="flex items-center gap-2 rounded-lg border border-line-soft px-3 py-2 text-sm text-ink">
+                        <label key={`${item.name}-${index}`} className="flex items-center gap-2 rounded-lg border border-panel-strong bg-panel px-3 py-2 text-sm text-ink">
                           <input
                             type="checkbox"
                             className="accent-[var(--blue)]"
@@ -580,29 +616,21 @@ export function TriagePage({ token, actor }: { token: string; actor: User }) {
                               addHistoryItem();
                             }}
                           />
-                          <button type="button" className="shrink-0 text-xs font-semibold text-blue" onClick={addHistoryItem}>Add</button>
+                          <button type="button" className={`${secondary} h-8 shrink-0 px-3 py-0 text-xs`} onClick={addHistoryItem}>Add</button>
                         </label>
                       )}
                     </div>
-                  </Panel>
+                    </div>
+                  </Group>
 
-                  <Panel index="6" title="Initial Assessment (Nurse)" icon={<NotesIcon />} required>
-                    <textarea
-                      className={`${field} min-h-28`}
-                      value={form.initial_assessment}
-                      disabled={readonly}
-                      required
-                      onChange={(event) => setForm((current) => ({ ...current, initial_assessment: event.target.value }))}
-                      placeholder="Nurse clinical notes"
-                    />
-                  </Panel>
-
-                  <Panel index="7" title="Triage Category" icon={<CategoryIcon />} required>
+                  <Group title="Decision" hint="Set the urgency, then choose the doctor.">
+                    <div>
+                      <FieldLabel required>Triage category</FieldLabel>
                     <div className="grid gap-2 sm:grid-cols-3">
                       {([
-                        { value: "emergency", label: "Emergency", className: "border-danger/40 bg-danger-soft text-danger", icon: <AlertIcon /> },
-                        { value: "urgent", label: "Urgent", className: "border-amber-400/50 bg-amber-50 text-amber-800", icon: <UrgentIcon /> },
-                        { value: "normal", label: "Normal", className: "border-success/40 bg-success-soft text-success", icon: <CheckIcon /> },
+                        { value: "emergency", label: "Emergency", idle: "border-danger-line text-danger", active: "border-danger bg-danger text-white", icon: <AlertIcon /> },
+                        { value: "urgent", label: "Urgent", idle: "border-warning-line text-warning", active: "border-warning bg-warning text-white", icon: <UrgentIcon /> },
+                        { value: "normal", label: "Normal", idle: "border-line text-success", active: "border-success bg-success text-white", icon: <CheckIcon /> },
                       ] as const).map((option) => {
                         const active = form.triage_category === option.value;
                         return (
@@ -610,7 +638,7 @@ export function TriagePage({ token, actor }: { token: string; actor: User }) {
                             key={option.value}
                             type="button"
                             disabled={readonly}
-                            className={`inline-flex items-center justify-center gap-2 rounded-xl border px-3 py-4 text-sm font-bold transition ${option.className} ${active ? "ring-2 ring-blue ring-offset-2" : "opacity-80 hover:opacity-100"}`}
+                            className={`inline-flex items-center justify-center gap-2 rounded-xl border px-3 py-3 text-sm font-semibold transition disabled:opacity-60 ${active ? option.active : `bg-surface hover:bg-surface-2 ${option.idle}`}`}
                             onClick={() => setForm((current) => ({ ...current, triage_category: option.value }))}
                           >
                             {option.icon}
@@ -619,14 +647,13 @@ export function TriagePage({ token, actor }: { token: string; actor: User }) {
                         );
                       })}
                     </div>
-                  </Panel>
-
-                  <Panel index="8" title="Assign to" icon={<AssignIcon />} required>
-                    <label className={label}>Doctor
+                    </div>
+                    <div>
+                      <FieldLabel required>Doctor</FieldLabel>
                       <select
                         className={field}
                         value={form.assigned_doctor_id}
-                        disabled={!canEdit}
+                        disabled={!canEdit || (selected != null && selected.status !== "waiting_for_triage" && selected.status !== "to_doctor")}
                         required
                         onChange={(event) => setForm((current) => ({ ...current, assigned_doctor_id: event.target.value }))}
                       >
@@ -634,14 +661,40 @@ export function TriagePage({ token, actor }: { token: string; actor: User }) {
                           <option key={option.value || "empty"} value={option.value}>{option.label}</option>
                         ))}
                       </select>
-                    </label>
                     {doctors.length === 0 ? (
                       <p className="mt-2 text-xs text-muted">No doctors found for this clinic. Assign clinic access to a Doctor user.</p>
                     ) : selected?.status === "to_doctor" ? (
                       <p className="mt-2 text-xs text-muted">The visit is still waiting to be seen, so you can assign a different doctor.</p>
                     ) : null}
-                  </Panel>
-
+                    </div>
+                  </Group>
+                    </div>
+                    <aside className="hidden lg:block">
+                      <div className="sticky top-0 rounded-2xl border border-line-soft bg-surface p-4">
+                        <h3 className="text-sm font-semibold text-ink">Triage summary</h3>
+                        <CategoryBanner category={form.triage_category || null} />
+                        <ul className="mt-4 space-y-3">
+                          <VitalSummaryRow label="Temperature" icon={<TempIcon />} value={form.temperature_c ? `${form.temperature_c} °C` : "—"} alert={Number(form.temperature_c) >= 38} />
+                          <VitalSummaryRow label="Pulse" icon={<PulseIcon />} value={form.pulse ? `${form.pulse} /min` : "—"} alert={Number(form.pulse) >= 100} />
+                          <VitalSummaryRow label="RR" icon={<LungsIcon />} value={form.respiratory_rate ? `${form.respiratory_rate} /min` : "—"} alert={Number(form.respiratory_rate) >= 22} />
+                          <VitalSummaryRow label="Blood pressure" icon={<PulseIcon />} value={form.blood_pressure ? `${form.blood_pressure} mmHg` : "—"} />
+                          <VitalSummaryRow label="SpO2" icon={<OxygenIcon />} value={form.spo2 ? `${form.spo2} %` : "—"} alert={form.spo2 !== "" && Number(form.spo2) < 94} />
+                        </ul>
+                        <div className="mt-5">
+                          <p className="text-xs font-semibold uppercase tracking-wide text-muted">Key points</p>
+                          {keyPoints.length === 0 ? (
+                            <p className="mt-2 text-sm text-muted">Complete the assessment to see highlights.</p>
+                          ) : (
+                            <ul className="mt-2 list-disc space-y-1.5 pl-4 text-sm text-muted-strong">
+                              {keyPoints.map((point) => <li key={point}>{point}</li>)}
+                            </ul>
+                          )}
+                        </div>
+                      </div>
+                    </aside>
+                  </div>
+                </div>
+                <div className="shrink-0 border-t border-line bg-surface px-4 py-3 sm:px-5">
                   <TriageActions
                     readonly={readonly}
                     saving={saving}
@@ -649,37 +702,12 @@ export function TriagePage({ token, actor }: { token: string; actor: User }) {
                     doctorChanged={selected?.status === "to_doctor" && form.assigned_doctor_id !== (selected.assigned_doctor_id ?? "")}
                     onChangeDoctor={() => void changeDoctor()}
                   />
-                </form>
-              )}
-            </div>
-
-            <aside className="hidden xl:block">
-              <div className="sticky top-24 space-y-4">
-                <div className="rounded-2xl bg-surface p-5 shadow-[0_8px_24px_rgba(16,42,67,0.06)]">
-                  <h3 className="text-sm font-semibold text-ink">Triage summary</h3>
-                  <CategoryBanner category={form.triage_category || null} />
-                  <ul className="mt-4 space-y-3">
-                    <VitalSummaryRow label="Temperature" icon={<TempIcon />} value={form.temperature_c ? `${form.temperature_c} °C` : "—"} alert={Number(form.temperature_c) >= 38} />
-                    <VitalSummaryRow label="Pulse" icon={<PulseIcon />} value={form.pulse ? `${form.pulse} /min` : "—"} alert={Number(form.pulse) >= 100} />
-                    <VitalSummaryRow label="RR" icon={<LungsIcon />} value={form.respiratory_rate ? `${form.respiratory_rate} /min` : "—"} alert={Number(form.respiratory_rate) >= 22} />
-                    <VitalSummaryRow label="SpO2" icon={<OxygenIcon />} value={form.spo2 ? `${form.spo2} %` : "—"} alert={form.spo2 !== "" && Number(form.spo2) < 94} />
-                  </ul>
-                  <div className="mt-5">
-                    <p className="text-xs font-semibold uppercase tracking-wide text-muted">Key points</p>
-                    {keyPoints.length === 0 ? (
-                      <p className="mt-2 text-sm text-muted">Complete the assessment to see highlights.</p>
-                    ) : (
-                      <ul className="mt-2 list-disc space-y-1.5 pl-4 text-sm text-muted-strong">
-                        {keyPoints.map((point) => <li key={point}>{point}</li>)}
-                      </ul>
-                    )}
-                  </div>
                 </div>
-              </div>
-            </aside>
-          </>
-        ) : null}
-      </div>
+              </form>
+            )}
+          </section>
+        </div>
+      ) : null}
     </section>
   );
 }
@@ -691,7 +719,7 @@ function itemKey(item: { patient_id: string; id: string }) {
 function missingFields(form: FormState) {
   const missing: string[] = [];
   if (!form.chief_complaint.trim()) missing.push("Chief complaint");
-  if (!form.temperature_c.trim() || !form.pulse.trim() || !form.respiratory_rate.trim() || !form.spo2.trim()) missing.push("Vital signs");
+  if (!form.temperature_c.trim() || !form.pulse.trim() || !form.respiratory_rate.trim() || !form.blood_pressure.trim() || !form.spo2.trim()) missing.push("Vital signs");
   if (!form.initial_assessment.trim()) missing.push("Nurse assessment");
   if (!form.triage_category) missing.push("Triage category");
   if (!form.assigned_doctor_id) missing.push("Doctor");
@@ -713,8 +741,7 @@ function TriageActions({
 }) {
   const ready = missing.length === 0;
   return (
-    <div className="sticky bottom-3 z-20 rounded-2xl border border-line bg-surface p-3 shadow-[0_12px_32px_rgba(16,42,67,0.12)]">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <p className="min-w-0 text-sm text-muted-strong">
           {readonly
             ? doctorChanged
@@ -739,7 +766,6 @@ function TriageActions({
             </button>
           )}
         </div>
-      </div>
     </div>
   );
 }
@@ -749,6 +775,8 @@ function validateRequired(form: FormState) {
   if (!form.temperature_c.trim()) return "Enter temperature";
   if (!form.pulse.trim()) return "Enter pulse";
   if (!form.respiratory_rate.trim()) return "Enter respiratory rate";
+  if (!form.respiratory_rate.trim()) return "Enter respiratory rate";
+  if (!/^\d{2,3}\/\d{2,3}$/.test(form.blood_pressure.trim())) return "Enter blood pressure as systolic/diastolic, for example 120/80";
   if (!form.spo2.trim()) return "Enter SpO2";
   if ([form.temperature_c, form.pulse, form.respiratory_rate, form.spo2].some((value) => !Number.isFinite(Number(value)))) {
     return "Vital signs must be valid numbers";
@@ -773,6 +801,7 @@ function formFromTriage(detail: TriageDetail): FormState {
     pulse: triage.pulse == null ? "" : String(triage.pulse),
     respiratory_rate: triage.respiratory_rate == null ? "" : String(triage.respiratory_rate),
     spo2: triage.spo2 == null ? "" : String(triage.spo2),
+    blood_pressure: triage.blood_pressure ?? "",
     allergies: Array.isArray(triage.allergies) ? triage.allergies : [],
     medications: Array.isArray(triage.medications) ? triage.medications : [],
     relevant_history: (triage.relevant_history ?? []).filter((item) => item !== "other"),
@@ -796,6 +825,7 @@ function payloadFromForm(form: FormState) {
     pulse: numberOrNull(form.pulse) === null ? null : Math.round(numberOrNull(form.pulse)!),
     respiratory_rate: numberOrNull(form.respiratory_rate) === null ? null : Math.round(numberOrNull(form.respiratory_rate)!),
     spo2: numberOrNull(form.spo2) === null ? null : Math.round(numberOrNull(form.spo2)!),
+    blood_pressure: form.blood_pressure.trim() || null,
     allergies: form.allergies,
     medications: form.medications,
     relevant_history: form.relevant_history.filter((item) => item !== "other"),
@@ -841,74 +871,62 @@ function clockLabel(ms: number) {
   return hours > 0 ? `${hours}:${clock}` : clock;
 }
 
+function initials(name: string) {
+  return name.trim().split(/\s+/).slice(0, 2).map((part) => part[0]?.toUpperCase() ?? "").join("") || "?";
+}
+
 function titleCase(value: string) {
   return value.slice(0, 1).toUpperCase() + value.slice(1);
 }
 
 function statusLabel(status: VisitCareStatus) {
-  return status === "waiting_for_triage" ? "Waiting for Triage" : "To See the Doctor";
+  if (status === "waiting_for_triage") return "Waiting for Triage";
+  if (status === "waiting_for_investigation") return "Waiting for investigation";
+  return "To See the Doctor";
 }
 
 function StatusBadge({ status, compact = false }: { status: VisitCareStatus; compact?: boolean }) {
   const waiting = status === "waiting_for_triage";
+  const investigation = status === "waiting_for_investigation";
+  const tone = waiting ? "bg-warning-soft text-warning" : "bg-panel text-blue";
+  const compactLabel = waiting ? "Waiting for Triage" : investigation ? "Waiting for investigation" : "To doctor";
   return (
-    <span className={`inline-flex w-max shrink-0 items-center gap-1 whitespace-nowrap rounded-full px-2.5 py-1 text-[11px] font-semibold leading-none ${waiting ? "bg-danger-soft text-danger" : "bg-success-soft text-success"}`}>
-      {waiting ? <WaitingIcon /> : <DoctorIcon />}
-      {compact ? (waiting ? "Waiting for Triage" : "To doctor") : statusLabel(status)}
+    <span className={`inline-flex w-max shrink-0 items-center gap-1 whitespace-nowrap rounded-full px-2.5 py-1 text-[11px] font-semibold leading-none ${tone}`}>
+      {waiting || investigation ? <WaitingIcon /> : <DoctorIcon />}
+      {compact ? compactLabel : statusLabel(status)}
     </span>
   );
 }
 
-function SummaryTile({
-  label: title,
-  value,
-  active,
-  tone,
-  icon,
-  onClick,
-}: {
-  label: string;
-  value: number;
-  active: boolean;
-  tone: "waiting" | "doctor";
-  icon: ReactNode;
-  onClick: () => void;
-}) {
-  const toneClass = tone === "waiting"
-    ? "border-danger/20 bg-danger-soft"
-    : "border-success/20 bg-success-soft";
-  const valueClass = tone === "waiting" ? "text-danger" : "text-success";
-  const iconClass = tone === "waiting" ? "bg-white/70 text-danger" : "bg-white/70 text-success";
+const normalVitals = {
+  temperature_c: "36.8",
+  pulse: "72",
+  respiratory_rate: "16",
+  blood_pressure: "120/80",
+  spo2: "98",
+};
+
+function Group({ title, hint, action, children }: { title: string; hint?: string; action?: ReactNode; children: ReactNode }) {
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={`rounded-2xl border px-5 py-4 text-left shadow-sm transition ${toneClass} ${active ? "ring-2 ring-blue ring-offset-2" : "hover:brightness-[0.98]"}`}
-    >
-      <div className="flex items-start justify-between gap-3">
-        <p className="text-xs font-semibold uppercase tracking-wide text-muted-strong">{title}</p>
-        <span className={`grid h-9 w-9 place-items-center rounded-xl ${iconClass}`}>{icon}</span>
+    <section className="rounded-2xl border border-line-soft bg-surface p-4 sm:p-5">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h3 className="text-sm font-semibold text-ink">{title}</h3>
+          {hint ? <p className="mt-0.5 text-xs text-muted">{hint}</p> : null}
+        </div>
+        {action}
       </div>
-      <p className={`mt-2 text-4xl font-bold tracking-tight ${valueClass}`}>{value}</p>
-    </button>
+      <div className="mt-4 space-y-4">{children}</div>
+    </section>
   );
 }
 
-function Panel({ index, title, icon, required, children }: { index: string; title: string; icon: ReactNode; required?: boolean; children: ReactNode }) {
+function FieldLabel({ children, required }: { children: ReactNode; required?: boolean }) {
   return (
-    <div className="rounded-2xl bg-surface p-5 shadow-[0_8px_24px_rgba(16,42,67,0.06)]">
-      <div className="mb-3 flex items-center gap-3">
-        <span className="grid h-8 w-8 place-items-center rounded-full bg-blue text-white shadow-sm">{icon}</span>
-        <div className="min-w-0">
-          <p className="text-[11px] font-semibold uppercase tracking-wide text-muted">Section {index}</p>
-          <h3 className="font-semibold text-blue">
-            {title}
-            {required ? <span className="ml-2 text-xs font-semibold text-danger">Required</span> : null}
-          </h3>
-        </div>
-      </div>
+    <p className="mb-1.5 text-sm font-medium text-muted-strong">
       {children}
-    </div>
+      {required ? <span className="ml-1 text-danger">*</span> : null}
+    </p>
   );
 }
 
@@ -920,6 +938,8 @@ function VitalField({
   disabled,
   required,
   alert,
+  inputMode = "decimal",
+  placeholder,
   onChange,
 }: {
   label: string;
@@ -929,6 +949,8 @@ function VitalField({
   disabled?: boolean;
   required?: boolean;
   alert?: boolean;
+  inputMode?: "decimal" | "text";
+  placeholder?: string;
   onChange: (value: string) => void;
 }) {
   return (
@@ -938,7 +960,7 @@ function VitalField({
         {title}{required ? <span className="text-danger"> *</span> : null}
       </span>
       <span className="relative mt-1 block">
-        <input className={`${field} pr-14 ${alert ? "border-danger text-danger" : ""}`} inputMode="decimal" value={value} disabled={disabled} required={required} onChange={(event) => onChange(event.target.value)} />
+        <input className={`${field} pr-14 ${alert ? "border-danger bg-danger-soft text-danger" : ""}`} inputMode={inputMode} placeholder={placeholder} value={value} disabled={disabled} required={required} onChange={(event) => onChange(event.target.value)} />
         <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-xs font-semibold text-muted">{unit}</span>
       </span>
     </label>
@@ -985,7 +1007,7 @@ function CategoryBanner({ category }: { category: TriageCategory | null }) {
   const tone = category === "emergency"
     ? "bg-danger-soft text-danger"
     : category === "urgent"
-      ? "bg-amber-50 text-amber-800"
+      ? "bg-warning-soft text-warning"
       : "bg-success-soft text-success";
   return (
     <div className={`mt-3 rounded-xl px-4 py-3 ${tone}`}>
@@ -1061,18 +1083,6 @@ function ClosePanelIcon() {
   return <Icon><path d="M6 6l12 12" /><path d="M18 6l-12 12" /></Icon>;
 }
 
-function BackIcon() {
-  return <Icon><path d="M15 6l-6 6 6 6" /><path d="M9 12h10" /></Icon>;
-}
-
-function ComplaintIcon() {
-  return <Icon><path d="M5 5h14v10H9l-4 4V5z" /><path d="M8 9h8" /><path d="M8 12h5" /></Icon>;
-}
-
-function VitalsIcon() {
-  return <Icon><path d="M3 12h3l2-5 3 10 2-5h8" /></Icon>;
-}
-
 function TempIcon() {
   return <Icon><path d="M10 14.5V6a2 2 0 1 1 4 0v8.5a3 3 0 1 1-4 0z" /><path d="M12 17v-6" /></Icon>;
 }
@@ -1095,22 +1105,6 @@ function AllergyIcon() {
 
 function MedsIcon() {
   return <Icon><rect x="8" y="3" width="8" height="18" rx="4" /><path d="M8 12h8" /></Icon>;
-}
-
-function HistoryIcon() {
-  return <Icon><path d="M4 5h16v14H4z" /><path d="M8 9h8" /><path d="M8 13h5" /><path d="M8 17h6" /></Icon>;
-}
-
-function NotesIcon() {
-  return <Icon><path d="M7 3h7l4 4v14H7z" /><path d="M14 3v4h4" /><path d="M9 12h6" /><path d="M9 16h4" /></Icon>;
-}
-
-function CategoryIcon() {
-  return <Icon><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9L12 3z" /><path d="M12 12l8-4.5" /><path d="M12 12v9" /><path d="M12 12L4 7.5" /></Icon>;
-}
-
-function AssignIcon() {
-  return <Icon><path d="M16 19v-1a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v1" /><circle cx="10" cy="8" r="3" /><path d="M19 8v6" /><path d="M16 11h6" /></Icon>;
 }
 
 function AlertIcon() {

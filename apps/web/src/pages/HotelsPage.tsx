@@ -38,7 +38,7 @@ export function HotelsPage({ token, actor }: { token: string; actor: User }) {
       <DataTable>
         <thead className="bg-surface-2"><tr><th className={th}>Name</th><th className={th}>City</th><th className={th}>Area</th><th className={th}>Added by</th><th className={th}>Actions</th></tr></thead>
         <tbody>
-          {filtered.length === 0 ? <tr><td className="px-4 py-8 text-muted" colSpan={5}>{rows.length === 0 ? "No hotels yet." : "No hotels match these filters."}</td></tr> : filtered.map((row) => (
+          {filtered.length === 0 ? <tr><td className="px-4 py-10 text-center text-sm text-muted" colSpan={5}>{rows.length === 0 ? "No hotels yet." : "No hotels match these filters."}</td></tr> : filtered.map((row) => (
             <tr key={row.id} className="cursor-pointer border-t border-line-soft hover:bg-surface-2" onClick={() => navigate(`/hotels/${row.id}`)}>
               <td className="px-4 py-3 font-semibold">{row.name}</td>
               <td className="px-4 py-3">{row.location.city}</td>
