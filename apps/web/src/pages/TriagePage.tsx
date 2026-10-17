@@ -90,7 +90,7 @@ export function TriagePage({ token, actor }: { token: string; actor: User }) {
   const [detail, setDetail] = useState<TriageDetail | null>(null);
   const [form, setForm] = useState<FormState>(emptyForm);
   const [doctors, setDoctors] = useState<{ id: string; name: string }[]>([]);
-  const [allergyDraft, setAllergyDraft] = useState({ name: "", reaction: "" });
+  const [allergyDraft, setAllergyDraft] = useState("");
   const [medicationDraft, setMedicationDraft] = useState("");
   const [historyDraft, setHistoryDraft] = useState("");
   const [now, setNow] = useState(() => Date.now());
@@ -503,24 +503,23 @@ export function TriagePage({ token, actor }: { token: string; actor: User }) {
                       <FieldLabel>Allergies</FieldLabel>
                     <TagList
                       tone="danger"
-                      items={form.allergies.map((item) => (item.reaction ? `${item.name} (${item.reaction})` : item.name))}
+                      items={form.allergies.map((item) => item.name)}
                       onRemove={readonly ? undefined : (index) => setForm((current) => ({ ...current, allergies: current.allergies.filter((_, i) => i !== index) }))}
                     />
                     {!readonly ? (
-                      <div className="mt-3 grid gap-2 sm:grid-cols-[1fr_1fr_auto]">
-                        <input className={field} value={allergyDraft.name} placeholder="Allergy" onChange={(event) => setAllergyDraft((current) => ({ ...current, name: event.target.value }))} />
-                        <input className={field} value={allergyDraft.reaction} placeholder="Reaction (optional)" onChange={(event) => setAllergyDraft((current) => ({ ...current, reaction: event.target.value }))} />
+                      <div className="mt-3 grid gap-2 sm:grid-cols-[1fr_auto]">
+                        <input className={field} value={allergyDraft} placeholder="Allergy" onChange={(event) => setAllergyDraft(event.target.value)} />
                         <button
                           type="button"
                           className={secondary}
                           onClick={() => {
-                            const name = allergyDraft.name.trim();
+                            const name = allergyDraft.trim();
                             if (!name) return;
                             setForm((current) => ({
                               ...current,
-                              allergies: [...current.allergies, { name, reaction: allergyDraft.reaction.trim() || undefined }],
+                              allergies: [...current.allergies, { name }],
                             }));
-                            setAllergyDraft({ name: "", reaction: "" });
+                            setAllergyDraft("");
                           }}
                         >
                           Add allergy

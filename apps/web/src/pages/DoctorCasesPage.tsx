@@ -4,6 +4,7 @@ import { api, visitStatusLabel, visitTypeLabel, waitMinutes, type DoctorCaseDeta
 import { canAct } from "../access";
 import { useActiveClinic } from "../ClinicWorkspace";
 import { DataTable, Page, field, messageOf, secondary, th } from "./ui";
+import { encounterStepSaved } from "./EncounterPage";
 
 const pageSize = 10;
 const emptySummary: DoctorCaseSummary = {
@@ -248,7 +249,7 @@ export function DoctorCasesPage({ token, actor }: { token: string; actor: User }
                         >
                           <EyeIcon />
                         </button>
-                        <StartEncounterLink to={`/patients/to-doctor/${row.id}/encounter`} label={closedCase(row.status) ? "View encounter" : "Start encounter"} onClick={(event) => event.stopPropagation()} />
+                        <StartEncounterLink to={`/patients/to-doctor/${row.id}/encounter`} label={encounterActionLabel(row.status, row.id)} onClick={(event) => event.stopPropagation()} />
                       </div>
                     </td>
                   </tr>
@@ -281,6 +282,11 @@ export function DoctorCasesPage({ token, actor }: { token: string; actor: User }
 
 function closedCase(status: VisitCareStatus) {
   return status === "diagnosed" || status === "waiting_for_investigation";
+}
+
+function encounterActionLabel(status: VisitCareStatus, visitId: string) {
+  if (closedCase(status)) return "View encounter";
+  return encounterStepSaved(visitId) ? "Proceed encounter" : "Start encounter";
 }
 
 function QueueStatus({ status }: { status: VisitCareStatus }) {
@@ -405,7 +411,7 @@ function TriageRecord({
               ) : <span />}
               <div className="flex items-center justify-end gap-2">
                 <button type="button" className={`${secondary} h-9 px-4 py-0`} onClick={onClose}>Close</button>
-                <StartEncounterLink to={`/patients/to-doctor/${detail.id}/encounter`} label={closedCase(detail.status) ? "View encounter" : "Start encounter"} />
+                <StartEncounterLink to={`/patients/to-doctor/${detail.id}/encounter`} label={encounterActionLabel(detail.status, detail.id)} />
               </div>
             </div>
           </div>

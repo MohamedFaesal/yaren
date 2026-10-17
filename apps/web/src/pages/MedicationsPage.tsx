@@ -17,6 +17,7 @@ const dosageForms = [
   "Infusion Solution",
   "Infusion Concentrate",
   "Inhaler",
+  "Nebule",
   "Cream",
   "Ointment",
   "Gel",
@@ -134,7 +135,7 @@ export function MedicationsPage({ token, actor }: { token: string; actor: User }
           ) : items.map((row) => (
             <tr key={row.id} className="border-t border-line-soft">
               <td className="px-4 py-3 font-semibold">{row.name}</td>
-              <td className="px-4 py-3">{row.strength}</td>
+              <td className="px-4 py-3">{row.strength || "—"}</td>
               <td className="px-4 py-3 text-sm text-muted-strong">{row.dosage_form}</td>
               <td className="px-4 py-3 text-sm text-muted-strong">{(row.routes?.map((item) => item.route) ?? [row.route]).join(", ")}</td>
               <td className="px-4 py-3 text-sm text-muted-strong"><ProcedureServices medication={row} /></td>
@@ -169,7 +170,7 @@ export function MedicationsPage({ token, actor }: { token: string; actor: User }
       <ConfirmDialog
         open={pendingDelete != null}
         title="Remove medication"
-        body={pendingDelete ? `${pendingDelete.name} ${pendingDelete.strength} will no longer appear when writing an order. Orders already written keep their text.` : ""}
+        body={pendingDelete ? `${[pendingDelete.name, pendingDelete.strength].filter((part) => part.trim()).join(" ")} will no longer appear when writing an order. Orders already written keep their text.` : ""}
         confirmLabel="Remove"
         pending={deleting}
         error={deleteError}
@@ -276,8 +277,8 @@ function MedicationDialog({
               <input className={field} name="name" value={name} onChange={(event) => { setName(event.target.value); fields.clearField("name"); }} required />
             </Field>
             <div className="grid gap-4 sm:grid-cols-2">
-              <Field label="Strength" error={fields.errorOf("strength")}>
-                <input className={field} name="strength" value={strength} placeholder="500 mg" onChange={(event) => { setStrength(event.target.value); fields.clearField("strength"); }} required />
+              <Field label={<>Strength <span className="font-medium text-muted">Optional</span></>} error={fields.errorOf("strength")}>
+                <input className={field} name="strength" value={strength} placeholder="500 mg" onChange={(event) => { setStrength(event.target.value); fields.clearField("strength"); }} />
               </Field>
               <Field label="Dosage form" error={fields.errorOf("dosage_form")}>
                 <SearchSelect

@@ -19,6 +19,7 @@ const dosageForms = [
   "Infusion Solution",
   "Infusion Concentrate",
   "Inhaler",
+  "Nebule",
   "Cream",
   "Ointment",
   "Gel",
@@ -47,7 +48,7 @@ const routeAssignmentSchema = z.object({
 
 const medicationSchema = z.object({
   name: z.string().trim().min(1, "Enter the active ingredient").max(160),
-  strength: z.string().trim().min(1, "Enter the strength").max(80),
+  strength: z.string().trim().max(80).optional().transform((value) => value ?? ""),
   dosage_form: z.enum(dosageForms, { error: "Choose a dosage form" }),
   route: z.enum(routes).optional(),
   routes: z.array(routeAssignmentSchema).max(routes.length).optional(),
@@ -309,7 +310,7 @@ async function assertProcedureServices(db: pg.Pool, serviceIds: string[]) {
 }
 
 function label(row: { name: string; strength: string; dosage_form: string }) {
-  return `${row.name} ${row.strength} ${row.dosage_form}`;
+  return [row.name, row.strength, row.dosage_form].filter((part) => part.trim()).join(" ");
 }
 
 function changes(current: { name: string; strength: string; dosage_form: string; route: string; routes?: MedicationRoute[] } | null, next: z.infer<typeof medicationSchema>) {
