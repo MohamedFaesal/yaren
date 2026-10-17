@@ -543,14 +543,14 @@ export function EncounterPage({ token }: { token: string }) {
                   <div className="flex flex-wrap items-end justify-between gap-3">
                     <div>
                       <h4 className="text-base font-bold text-ink">Medication Orders <span className="text-xs font-medium text-muted">Optional</span></h4>
-                      <p className="text-sm text-muted">Choose a medication from the list. Strength, form, and route fill in. Dose, frequency, and duration stay with this order.</p>
+                      <p className="text-sm text-muted">Choose a medication from the list. Strength, form, and route fill in. The unit price follows this visit&apos;s currency ({visit.currency === "EGP" ? "EGP" : "EUR"}).</p>
                     </div>
                     {locked ? null : (
                       <button type="button" className={primary} onClick={() => update({ medication_orders: [...form.medication_orders, emptyOrder()] })}>+ Add Medication Order</button>
                     )}
                   </div>
                   <OrderTable
-                    headers={["#", "Route of Administration", "Medication (Active Ingredient)", "Strength", "Dosage Form", "Prescribed Dose", "Frequency", "Duration", "Instructions / Notes", "Actions"]}
+                    headers={["#", "Route of Administration", "Medication (Active Ingredient)", "Unit price", "Strength", "Dosage Form", "Prescribed Dose", "Frequency", "Duration", "Instructions / Notes", "Actions"]}
                     empty="No medication orders yet."
                     rows={form.medication_orders}
                     render={(row, index) => (
@@ -578,6 +578,7 @@ export function EncounterPage({ token }: { token: string }) {
                             }}
                           />
                         </td>
+                        <td className="whitespace-nowrap px-2 py-2 tabular-nums">{orderUnitPrice(catalog, row, visit.currency)}</td>
                         <td className="px-2 py-2"><input className={cell} disabled={locked} value={row.strength} onChange={(event) => patchOrder(form, update, row.id, { strength: event.target.value })} /></td>
                         <td className="min-w-[12rem] px-2 py-2">
                           <SearchSelect
@@ -783,6 +784,14 @@ function dosageFormOptions(current: string) {
   const options = dosageForms.map((item) => ({ value: item, label: item }));
   if (current && !dosageForms.includes(current)) options.unshift({ value: current, label: current });
   return options;
+}
+
+function orderUnitPrice(catalog: CatalogMedication[], row: MedicationOrder, currency: "EGP" | "EUR" | undefined) {
+  const selected = currency === "EGP" ? "EGP" : "EUR";
+  const item = catalog.find((entry) => entry.id === row.medication_id);
+  if (!item) return "—";
+  const amount = selected === "EUR" ? item.unit_price_eur : item.unit_price_egp;
+  return amount == null ? "—" : `${selected} ${formatPrice(amount)}`;
 }
 
 function medicationOptions(catalog: CatalogMedication[], row: MedicationOrder) {

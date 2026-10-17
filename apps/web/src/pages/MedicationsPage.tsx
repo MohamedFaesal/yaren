@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import { api, type CatalogMedication, type MedicalService, type User } from "../api";
+import { api, formatPrice, type CatalogMedication, type MedicalService, type User } from "../api";
 import { canManageSettings } from "../access";
 import { useToast } from "../toast";
 import { ConfirmDialog, DataTable, Field, Filters, IconAction, Page, PlusIcon, SearchSelect, field, label, messageOf, primary, secondary, th, useFieldErrors } from "./ui";
@@ -125,19 +125,23 @@ export function MedicationsPage({ token, actor }: { token: string; actor: User }
             <th className={th}>Strength</th>
             <th className={th}>Dosage form</th>
             <th className={th}>Routes</th>
+            <th className={th}>Unit price (EGP)</th>
+            <th className={th}>Unit price (EUR)</th>
             <th className={th}>Procedure services</th>
             {canManage ? <th className={th}>Actions</th> : null}
           </tr>
         </thead>
         <tbody>
           {items.length === 0 ? (
-            <tr><td className="px-4 py-10 text-center text-sm text-muted" colSpan={canManage ? 6 : 5}>{loading ? "Loading medications…" : search || dosageForm ? "No medications match this search." : "No medications yet."}</td></tr>
+            <tr><td className="px-4 py-10 text-center text-sm text-muted" colSpan={canManage ? 8 : 7}>{loading ? "Loading medications…" : search || dosageForm ? "No medications match this search." : "No medications yet."}</td></tr>
           ) : items.map((row) => (
             <tr key={row.id} className="border-t border-line-soft">
               <td className="px-4 py-3 font-semibold">{row.name}</td>
               <td className="px-4 py-3">{row.strength || "—"}</td>
               <td className="px-4 py-3 text-sm text-muted-strong">{row.dosage_form}</td>
               <td className="px-4 py-3 text-sm text-muted-strong">{(row.routes?.map((item) => item.route) ?? [row.route]).join(", ")}</td>
+              <td className="px-4 py-3 tabular-nums">{row.unit_price_egp == null ? "—" : formatPrice(row.unit_price_egp)}</td>
+              <td className="px-4 py-3 tabular-nums">{row.unit_price_eur == null ? "—" : formatPrice(row.unit_price_eur)}</td>
               <td className="px-4 py-3 text-sm text-muted-strong"><ProcedureServices medication={row} /></td>
               {canManage ? (
                 <td className="px-4 py-3">
@@ -197,6 +201,8 @@ function MedicationDialog({
   const [name, setName] = useState(medication?.name ?? "");
   const [strength, setStrength] = useState(medication?.strength ?? "");
   const [dosageForm, setDosageForm] = useState(medication?.dosage_form ?? "Tablet");
+  const [priceEgp, setPriceEgp] = useState(priceInput(medication?.unit_price_egp));
+  const [priceEur, setPriceEur] = useState(priceInput(medication?.unit_price_eur));
   const [assigned, setAssigned] = useState<{ route: string; serviceIds: string[] }[]>(
     medication?.routes?.length
       ? medication.routes.map((item) => ({ route: item.route, serviceIds: item.services.map((service) => service.id) }))
@@ -231,12 +237,23 @@ function MedicationDialog({
   async function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!fields.validateForm(event.currentTarget)) return;
+    const unitPriceEgp = readPrice(priceEgp);
+    const unitPriceEur = readPrice(priceEur);
+    if (unitPriceEgp === undefined || unitPriceEur === undefined) {
+      fields.setErrors({
+        ...(unitPriceEgp === undefined ? { unit_price_egp: "Enter a price of 0 or more" } : {}),
+        ...(unitPriceEur === undefined ? { unit_price_eur: "Enter a price of 0 or more" } : {}),
+      });
+      return;
+    }
     setPending(true);
     setError(null);
     const body = {
       name: name.trim(),
       strength: strength.trim(),
       dosage_form: dosageForm,
+      unit_price_egp: unitPriceEgp,
+      unit_price_eur: unitPriceEur,
       routes: assigned.map((item) => ({ route: item.route, service_ids: item.serviceIds })),
     };
     try {
@@ -290,6 +307,14 @@ function MedicationDialog({
                   options={dosageFormOptions(dosageForm)}
                   onChange={(value) => { setDosageForm(value); fields.clearField("dosage_form"); }}
                 />
+              </Field>
+            </div>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <Field label={<>Unit price (EGP) <span className="font-medium text-muted">Optional</span></>} error={fields.errorOf("unit_price_egp")}>
+                <input className={field} name="unit_price_egp" inputMode="decimal" value={priceEgp} placeholder="0.00" onChange={(event) => { setPriceEgp(event.target.value); fields.clearField("unit_price_egp"); }} />
+              </Field>
+              <Field label={<>Unit price (EUR) <span className="font-medium text-muted">Optional</span></>} error={fields.errorOf("unit_price_eur")}>
+                <input className={field} name="unit_price_eur" inputMode="decimal" value={priceEur} placeholder="0.00" onChange={(event) => { setPriceEur(event.target.value); fields.clearField("unit_price_eur"); }} />
               </Field>
             </div>
             <div>
@@ -392,6 +417,18 @@ function ProcedureServices({ medication }: { medication: CatalogMedication }) {
       ))}
     </div>
   );
+}
+
+function priceInput(value: number | null | undefined) {
+  return value == null ? "" : value.toFixed(2);
+}
+
+function readPrice(value: string) {
+  const trimmed = value.trim().replace(/,/g, "");
+  if (!trimmed) return null;
+  const amount = Number(trimmed);
+  if (!Number.isFinite(amount) || amount < 0) return undefined;
+  return Math.round(amount * 100) / 100;
 }
 
 function dosageFormOptions(current: string) {

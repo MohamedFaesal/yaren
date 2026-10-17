@@ -141,6 +141,7 @@ type CaseRow = {
   status_changed_at: string;
   hotel_room_no: string | null;
   clinic_id: string;
+  currency: "EGP" | "EUR";
   clinic_name: string;
   hotel_name: string;
   patient_name: string;
@@ -277,7 +278,7 @@ async function loadCase(pool: pg.Pool, user: { sub: string; type: string; role: 
   }
   if (!isUuid(id)) throw new ApplicationError(404, "not_found", "Case was not found");
   const found = await pool.query(
-    `SELECT v.id, v.patient_id, v.status, v.visit_type, v.status_changed_at, v.hotel_room_no, v.clinic_id, v.assigned_doctor_id,
+    `SELECT v.id, v.patient_id, v.status, v.visit_type, v.currency, v.status_changed_at, v.hotel_room_no, v.clinic_id, v.assigned_doctor_id,
             c.name AS clinic_name, h.name AS hotel_name,
             p.name AS patient_name, p.mrn AS patient_mrn, p.gender AS patient_gender,
             p.nationality AS patient_nationality,

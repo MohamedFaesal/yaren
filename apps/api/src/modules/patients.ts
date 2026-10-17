@@ -21,6 +21,7 @@ import { fileUrl, removeUpload, saveVisitDocument } from "../uploads.js";
 const genders = ["male", "female"] as const;
 const visitStatuses = ["waiting_for_triage", "to_doctor", "seen", "waiting_for_investigation", "diagnosed", "pending_payment"] as const;
 const visitTypes = ["new", "follow-up"] as const;
+const visitCurrencies = ["EGP", "EUR"] as const;
 const visitSorts = ["created_at", "updated_at"] as const;
 const contactMethods = ["phone", "email", "whatsapp"] as const;
 const relationships = ["spouse", "son", "daughter", "father", "mother", "cousin", "grandfather", "grandmother", "girlfriend", "boyfriend"] as const;
@@ -57,6 +58,7 @@ const visitBodySchema = z.object({
   hotel_room_no: z.string().trim().min(1, "Enter the hotel room number"),
   clinic_id: z.string().uuid(),
   visit_type: z.enum(visitTypes, { error: "Choose a visit type" }),
+  currency: z.enum(visitCurrencies, { error: "Choose a currency" }),
   professional_service_id: z.string().uuid({ error: "Choose a professional medical service" }),
 }).superRefine((value, context) => {
   if (value.hotel_checkout_date && !/^\d{4}-\d{2}-\d{2}$/.test(value.hotel_checkout_date)) {
@@ -93,7 +95,7 @@ const patientColumns = `p.id, p.name, p.mrn, p.birthdate::text AS birthdate, p.n
 const visitColumns = `v.id, v.patient_id, v.passport_number, v.preferred_contact_method,
   v.emergency_contact_name, v.emergency_contact_phone, v.emergency_contact_relationship,
   v.hotel_checkin_date::text AS hotel_checkin_date, v.hotel_checkout_date::text AS hotel_checkout_date,
-  v.hotel_room_no, v.visit_type, v.professional_service_id, ps.name AS professional_service_name, ps.code AS professional_service_code,
+  v.hotel_room_no, v.visit_type, v.currency, v.professional_service_id, ps.name AS professional_service_name, ps.code AS professional_service_code,
   v.clinic_id, c.name AS clinic_name, h.name AS hotel_name,
   v.status, v.status_changed_at, v.assigned_doctor_id, d.name AS assigned_doctor_name,
   EXTRACT(YEAR FROM age((v.created_at AT TIME ZONE 'UTC')::date, p.birthdate))::int AS patient_age_at_visit,
@@ -543,11 +545,11 @@ export function registerPatients(app: FastifyInstance, pool: pg.Pool) {
       `UPDATE patient_visits
        SET passport_number = $3, preferred_contact_method = $4, emergency_contact_name = $5, emergency_contact_phone = $6,
            emergency_contact_relationship = $7, hotel_checkin_date = $8::date, hotel_checkout_date = $9::date,
-           hotel_room_no = $10, clinic_id = $11, visit_type = $12, professional_service_id = $13, updated_at = now()
+           hotel_room_no = $10, clinic_id = $11, visit_type = $12, currency = $13, professional_service_id = $14, updated_at = now()
        WHERE id = $1 AND patient_id = $2 AND deleted_at IS NULL`,
       [
         id, patientId, body.passport_number, body.preferred_contact_method, body.emergency_contact_name, body.emergency_contact_phone,
-        body.emergency_contact_relationship, body.hotel_checkin_date, body.hotel_checkout_date, body.hotel_room_no, body.clinic_id, body.visit_type, body.professional_service_id,
+        body.emergency_contact_relationship, body.hotel_checkin_date, body.hotel_checkout_date, body.hotel_room_no, body.clinic_id, body.visit_type, body.currency, body.professional_service_id,
       ],
     );
     const next = await findVisit(pool, patientId, id);
@@ -563,6 +565,7 @@ export function registerPatients(app: FastifyInstance, pool: pg.Pool) {
         changed("Hotel check-out", previous.hotel_checkout_date, body.hotel_checkout_date),
         changed("Hotel room", previous.hotel_room_no, body.hotel_room_no),
         changed("Visit type", visitTypeLabel(previous.visit_type), visitTypeLabel(body.visit_type)),
+        changed("Currency", previous.currency, body.currency),
         changed("Professional medical service", previous.professional_service_name, next.professional_service_name),
         changed("Clinic", previous.clinic_name, next.clinic_name),
       ].filter((item) => item !== null),
@@ -918,13 +921,14 @@ async function insertVisit(
     `INSERT INTO patient_visits (
        patient_id, passport_number, preferred_contact_method, emergency_contact_name, emergency_contact_phone,
        emergency_contact_relationship, hotel_checkin_date, hotel_checkout_date, hotel_room_no, clinic_id,
-       visit_type, professional_service_id, status, status_changed_at
-     ) VALUES ($1, $2, $3, $4, $5, $6, $7::date, $8::date, $9, $10, $11, $12, 'waiting_for_triage', now())
+       visit_type, currency, professional_service_id, status, status_changed_at
+     ) VALUES ($1, $2, $3, $4, $5, $6, $7::date, $8::date, $9, $10, $11, $12, $13, 'waiting_for_triage', now())
      RETURNING id`,
     [
       patientId, passportNumber, visit.preferred_contact_method, visit.emergency_contact_name, visit.emergency_contact_phone,
       visit.emergency_contact_relationship, visit.hotel_checkin_date, visit.hotel_checkout_date, visit.hotel_room_no, visit.clinic_id,
       visit.visit_type,
+      visit.currency,
       visit.professional_service_id,
     ],
   );
@@ -984,6 +988,7 @@ async function findVisit(pool: pg.Pool, patientId: string, id: string) {
     hotel_checkout_date: string | null;
     hotel_room_no: string | null;
     visit_type: string;
+    currency: "EGP" | "EUR";
     professional_service_name: string | null;
     status: string;
     patient_name: string;

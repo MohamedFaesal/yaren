@@ -127,6 +127,7 @@ export type PatientVisit = {
   hotel_checkout_date: string | null;
   hotel_room_no: string | null;
   visit_type?: VisitType;
+  currency?: "EGP" | "EUR";
   professional_service_id?: string | null;
   professional_service_name?: string | null;
   professional_service_code?: string | null;
@@ -254,6 +255,7 @@ export type DoctorCase = {
   patient_name: string;
   patient_mrn: string;
   visit_type?: VisitType;
+  currency?: "EGP" | "EUR";
   triage_category: TriageCategory | null;
   chief_complaint: string | null;
   triage_completed_at: string | null;
@@ -310,6 +312,8 @@ export type CatalogMedication = {
   strength: string;
   dosage_form: string;
   route: string;
+  unit_price_egp: number | null;
+  unit_price_eur: number | null;
   routes?: {
     route: string;
     services: { id: string; name: string; code: string; unit: string; price: number | null }[];

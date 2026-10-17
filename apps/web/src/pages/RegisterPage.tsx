@@ -22,7 +22,7 @@ const sectionFields: Record<RegisterSection, string[]> = {
     "emergency_contact_phone",
     "emergency_contact_relationship",
   ],
-  hotel: ["clinic_id", "visit_type", "professional_service_id", "hotel_room_no", "hotel_checkin_date", "hotel_checkout_date"],
+  hotel: ["clinic_id", "visit_type", "currency", "professional_service_id", "hotel_room_no", "hotel_checkin_date", "hotel_checkout_date"],
   consent: visitDocumentMeta.map((item) => `document_${item.type}`),
 };
 
@@ -75,6 +75,7 @@ export function RegisterPage({ token, actor }: { token: string; actor: User }) {
   const [checkout, setCheckout] = useState("");
   const [room, setRoom] = useState("");
   const [visitType, setVisitType] = useState("");
+  const [currency, setCurrency] = useState("EUR");
   const [professionalServiceId, setProfessionalServiceId] = useState("");
   const [professionalServices, setProfessionalServices] = useState<MedicalService[]>([]);
   const [clinicId, setClinicId] = useState("");
@@ -210,6 +211,7 @@ export function RegisterPage({ token, actor }: { token: string; actor: User }) {
       hotel_checkout_date: checkout,
       hotel_room_no: room,
       visit_type: visitType,
+      currency,
       professional_service_id: professionalServiceId,
       clinic_id: clinicId,
     };
@@ -451,6 +453,7 @@ export function RegisterPage({ token, actor }: { token: string; actor: User }) {
                       value={selectedClinic ? `${selectedClinic.name} · ${selectedClinic.hotel_name}` : ""}
                     />
                     <SectionSummaryItem label="Type" value={visitType === "follow-up" ? "Follow-up" : visitType === "new" ? "New" : ""} />
+                    <SectionSummaryItem label="Currency" value={currency} />
                     <SectionSummaryItem label="Service" value={professionalServices.find((service) => service.id === professionalServiceId)?.code ?? ""} />
                     <SectionSummaryItem label="Room" value={room} />
                     <SectionSummaryItem label="Check-in" value={checkin} />
@@ -497,6 +500,20 @@ export function RegisterPage({ token, actor }: { token: string; actor: User }) {
                     <input name="visit_type" className="pointer-events-none absolute h-0 w-0 opacity-0" value={visitType} required tabIndex={-1} onChange={() => undefined} />
                     {fields.errorOf("visit_type") ? <p className="mt-1 text-xs font-medium text-danger">{fields.errorOf("visit_type")}</p> : null}
                   </div>
+                  <Field label="Currency" error={fields.errorOf("currency")}>
+                    <SearchSelect
+                      name="currency"
+                      value={currency}
+                      onChange={(value) => { setCurrency(value); fields.clearField("currency"); }}
+                      options={[
+                        { value: "EUR", label: "EUR" },
+                        { value: "EGP", label: "EGP" },
+                      ]}
+                      placeholder="Choose currency"
+                      disabled={!canRegister}
+                      required
+                    />
+                  </Field>
                   <Field className="md:col-span-2" label="Professional medical service" error={fields.errorOf("professional_service_id")}>
                     <SearchSelect
                       name="professional_service_id"

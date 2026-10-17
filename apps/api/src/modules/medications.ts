@@ -46,10 +46,17 @@ const routeAssignmentSchema = z.object({
   service_ids: z.array(z.string().uuid()).max(30).optional().transform((value) => value ?? []),
 });
 
+const optionalPrice = z.number().min(0, "Enter a price of 0 or more").max(9_999_999_999.99).refine(
+  (value) => Number.isFinite(value) && Math.abs(value * 100 - Math.round(value * 100)) < 1e-6,
+  "Use up to two decimal places",
+).nullable().optional().transform((value) => value ?? null);
+
 const medicationSchema = z.object({
   name: z.string().trim().min(1, "Enter the active ingredient").max(160),
   strength: z.string().trim().max(80).optional().transform((value) => value ?? ""),
   dosage_form: z.enum(dosageForms, { error: "Choose a dosage form" }),
+  unit_price_egp: optionalPrice,
+  unit_price_eur: optionalPrice,
   route: z.enum(routes).optional(),
   routes: z.array(routeAssignmentSchema).max(routes.length).optional(),
 }).superRefine((value, context) => {
@@ -70,6 +77,8 @@ const medicationSchema = z.object({
     name: value.name,
     strength: value.strength,
     dosage_form: value.dosage_form,
+    unit_price_egp: value.unit_price_egp,
+    unit_price_eur: value.unit_price_eur,
     route: assigned[0]?.route ?? value.route!,
     routes: assigned.map((item) => ({ route: item.route, service_ids: [...new Set(item.service_ids)] })),
   };
@@ -81,6 +90,8 @@ type MedicationRow = {
   strength: string;
   dosage_form: string;
   route: string;
+  unit_price_egp: string | null;
+  unit_price_eur: string | null;
 };
 
 type MedicationRoute = {
@@ -111,7 +122,7 @@ export function registerMedications(app: FastifyInstance, pool: pg.Pool) {
       )`);
     }
     const result = await pool.query<MedicationRow>(
-      `SELECT id, name, strength, dosage_form, route
+      `SELECT id, name, strength, dosage_form, route, unit_price_egp, unit_price_eur
        FROM medications
        WHERE ${clauses.join(" AND ")}
        ORDER BY lower(name) ASC, lower(strength) ASC, dosage_form ASC`,
@@ -133,10 +144,10 @@ export function registerMedications(app: FastifyInstance, pool: pg.Pool) {
     try {
       await client.query("BEGIN");
       const created = await client.query<{ id: string }>(
-        `INSERT INTO medications (name, strength, dosage_form, route, updated_by)
-         VALUES ($1, $2, $3, $4, $5)
+        `INSERT INTO medications (name, strength, dosage_form, route, unit_price_egp, unit_price_eur, updated_by)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
          RETURNING id`,
-        [body.name, body.strength, body.dosage_form, body.route, request.user.sub],
+        [body.name, body.strength, body.dosage_form, body.route, body.unit_price_egp, body.unit_price_eur, request.user.sub],
       );
       const id = created.rows[0]?.id;
       if (!id) throw new ApplicationError(500, "internal_error", "Unexpected server error");
@@ -171,9 +182,9 @@ export function registerMedications(app: FastifyInstance, pool: pg.Pool) {
       await client.query("BEGIN");
       await client.query(
         `UPDATE medications
-         SET name = $2, strength = $3, dosage_form = $4, route = $5, updated_at = now(), updated_by = $6
+         SET name = $2, strength = $3, dosage_form = $4, route = $5, unit_price_egp = $6, unit_price_eur = $7, updated_at = now(), updated_by = $8
          WHERE id = $1 AND deleted_at IS NULL`,
-        [id, body.name, body.strength, body.dosage_form, body.route, request.user.sub],
+        [id, body.name, body.strength, body.dosage_form, body.route, body.unit_price_egp, body.unit_price_eur, request.user.sub],
       );
       await replaceRoutes(client, id, body.routes);
       await client.query("COMMIT");
@@ -214,7 +225,7 @@ export function registerMedications(app: FastifyInstance, pool: pg.Pool) {
 
 async function findMedication(pool: pg.Pool, id: string) {
   const result = await pool.query<MedicationRow>(
-    `SELECT id, name, strength, dosage_form, route FROM medications WHERE id = $1 AND deleted_at IS NULL`,
+    `SELECT id, name, strength, dosage_form, route, unit_price_egp, unit_price_eur FROM medications WHERE id = $1 AND deleted_at IS NULL`,
     [id],
   );
   const row = result.rows[0];
@@ -230,7 +241,13 @@ function present(row: MedicationRow, assigned: MedicationRoute[]) {
     return routes.indexOf(left.route as (typeof routes)[number]) - routes.indexOf(right.route as (typeof routes)[number]);
   });
   const routesForRow = ordered.length > 0 ? ordered : [{ route: row.route, services: [] }];
-  return { ...row, route: row.route, routes: routesForRow };
+  return {
+    ...row,
+    unit_price_egp: money(row.unit_price_egp),
+    unit_price_eur: money(row.unit_price_eur),
+    route: row.route,
+    routes: routesForRow,
+  };
 }
 
 async function loadRoutes(db: pg.Pool | pg.PoolClient, medicationIds: string[]) {
@@ -313,14 +330,27 @@ function label(row: { name: string; strength: string; dosage_form: string }) {
   return [row.name, row.strength, row.dosage_form].filter((part) => part.trim()).join(" ");
 }
 
-function changes(current: { name: string; strength: string; dosage_form: string; route: string; routes?: MedicationRoute[] } | null, next: z.infer<typeof medicationSchema>) {
+function changes(current: { name: string; strength: string; dosage_form: string; route: string; unit_price_egp: number | null; unit_price_eur: number | null; routes?: MedicationRoute[] } | null, next: z.infer<typeof medicationSchema>) {
   const previousRoutes = current?.routes?.map((item) => item.route).join(", ") || current?.route || null;
   return [
     changed("Active ingredient", current?.name ?? null, next.name),
     changed("Strength", current?.strength ?? null, next.strength),
     changed("Dosage form", current?.dosage_form ?? null, next.dosage_form),
+    changed("Unit price (EGP)", formatMoney(current?.unit_price_egp), formatMoney(next.unit_price_egp)),
+    changed("Unit price (EUR)", formatMoney(current?.unit_price_eur), formatMoney(next.unit_price_eur)),
     changed("Routes", previousRoutes, next.routes.map((item) => item.route).join(", ")),
   ].filter((item) => item !== null);
+}
+
+function money(value: string | null) {
+  if (value == null || value === "") return null;
+  const amount = Number(value);
+  return Number.isFinite(amount) ? amount : null;
+}
+
+function formatMoney(value: number | null | undefined) {
+  if (value == null) return null;
+  return value.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
 function readListQuery(query: unknown) {

@@ -44,6 +44,7 @@ export function VisitFormPage({ token, actor }: { token: string; actor: User }) 
   const [checkout, setCheckout] = useState("");
   const [room, setRoom] = useState("");
   const [visitType, setVisitType] = useState("");
+  const [currency, setCurrency] = useState("EUR");
   const [professionalServiceId, setProfessionalServiceId] = useState("");
   const [professionalServices, setProfessionalServices] = useState<MedicalService[]>([]);
   const [clinicId, setClinicId] = useState("");
@@ -104,6 +105,7 @@ export function VisitFormPage({ token, actor }: { token: string; actor: User }) 
       setCheckout(visit.hotel_checkout_date ?? "");
       setRoom(visit.hotel_room_no ?? "");
       setVisitType(visit.visit_type ?? "");
+      setCurrency(visit.currency ?? "EUR");
       setProfessionalServiceId(visit.professional_service_id ?? "");
       setClinicId(visit.clinic_id);
     }).catch((caught) => setError(messageOf(caught)));
@@ -148,6 +150,7 @@ export function VisitFormPage({ token, actor }: { token: string; actor: User }) 
                 hotel_checkout_date: checkout,
                 hotel_room_no: room,
                 visit_type: visitType,
+                currency,
                 professional_service_id: professionalServiceId,
                 clinic_id: clinicId,
               };
@@ -205,6 +208,20 @@ export function VisitFormPage({ token, actor }: { token: string; actor: User }) 
                     { value: "follow-up", label: "Follow-up" },
                   ]}
                   placeholder="New or follow-up"
+                  disabled={!canWrite}
+                  required
+                />
+              </Field>
+              <Field label="Currency" error={fields.errorOf("currency")}>
+                <SearchSelect
+                  name="currency"
+                  value={currency}
+                  onChange={(value) => { setCurrency(value); fields.clearField("currency"); }}
+                  options={[
+                    { value: "EUR", label: "EUR" },
+                    { value: "EGP", label: "EGP" },
+                  ]}
+                  placeholder="Choose currency"
                   disabled={!canWrite}
                   required
                 />
