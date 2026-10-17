@@ -150,7 +150,7 @@ export function VisitFormPage({ token, actor }: { token: string; actor: User }) 
                 hotel_checkout_date: checkout,
                 hotel_room_no: room,
                 visit_type: visitType,
-                currency,
+                ...(id ? {} : { currency }),
                 professional_service_id: professionalServiceId,
                 clinic_id: clinicId,
               };
@@ -212,20 +212,26 @@ export function VisitFormPage({ token, actor }: { token: string; actor: User }) 
                   required
                 />
               </Field>
-              <Field label="Currency" error={fields.errorOf("currency")}>
-                <SearchSelect
-                  name="currency"
-                  value={currency}
-                  onChange={(value) => { setCurrency(value); fields.clearField("currency"); }}
-                  options={[
-                    { value: "EUR", label: "EUR" },
-                    { value: "EGP", label: "EGP" },
-                  ]}
-                  placeholder="Choose currency"
-                  disabled={!canWrite}
-                  required
-                />
-              </Field>
+              {id ? (
+                <Field label="Currency">
+                  <input className={field} value={currency || "EUR"} readOnly disabled />
+                </Field>
+              ) : (
+                <Field label="Currency" error={fields.errorOf("currency")}>
+                  <SearchSelect
+                    name="currency"
+                    value={currency}
+                    onChange={(value) => { setCurrency(value); fields.clearField("currency"); }}
+                    options={[
+                      { value: "EUR", label: "EUR" },
+                      { value: "EGP", label: "EGP" },
+                    ]}
+                    placeholder="Choose currency"
+                    disabled={!canWrite}
+                    required
+                  />
+                </Field>
+              )}
               <Field className="md:col-span-2" label="Professional medical service" error={fields.errorOf("professional_service_id")}>
                 <SearchSelect
                   name="professional_service_id"

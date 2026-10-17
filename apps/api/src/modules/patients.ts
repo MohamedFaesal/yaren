@@ -522,7 +522,7 @@ export function registerPatients(app: FastifyInstance, pool: pg.Pool) {
 
   app.patch("/api/patients/:patientId/visits/:id", { preHandler: authenticate }, async (request) => {
     const { patientId, id } = request.params as { patientId: string; id: string };
-    const body = parse(visitSchema, request.body);
+    const body = parse(visitSchema.omit({ currency: true }), request.body);
     const previous = await findVisit(pool, patientId, id);
     if (!previous) throw new ApplicationError(404, "not_found", "Visit was not found");
     await assertClinicExists(pool, body.clinic_id);
@@ -545,11 +545,11 @@ export function registerPatients(app: FastifyInstance, pool: pg.Pool) {
       `UPDATE patient_visits
        SET passport_number = $3, preferred_contact_method = $4, emergency_contact_name = $5, emergency_contact_phone = $6,
            emergency_contact_relationship = $7, hotel_checkin_date = $8::date, hotel_checkout_date = $9::date,
-           hotel_room_no = $10, clinic_id = $11, visit_type = $12, currency = $13, professional_service_id = $14, updated_at = now()
+           hotel_room_no = $10, clinic_id = $11, visit_type = $12, professional_service_id = $13, updated_at = now()
        WHERE id = $1 AND patient_id = $2 AND deleted_at IS NULL`,
       [
         id, patientId, body.passport_number, body.preferred_contact_method, body.emergency_contact_name, body.emergency_contact_phone,
-        body.emergency_contact_relationship, body.hotel_checkin_date, body.hotel_checkout_date, body.hotel_room_no, body.clinic_id, body.visit_type, body.currency, body.professional_service_id,
+        body.emergency_contact_relationship, body.hotel_checkin_date, body.hotel_checkout_date, body.hotel_room_no, body.clinic_id, body.visit_type, body.professional_service_id,
       ],
     );
     const next = await findVisit(pool, patientId, id);
@@ -565,7 +565,6 @@ export function registerPatients(app: FastifyInstance, pool: pg.Pool) {
         changed("Hotel check-out", previous.hotel_checkout_date, body.hotel_checkout_date),
         changed("Hotel room", previous.hotel_room_no, body.hotel_room_no),
         changed("Visit type", visitTypeLabel(previous.visit_type), visitTypeLabel(body.visit_type)),
-        changed("Currency", previous.currency, body.currency),
         changed("Professional medical service", previous.professional_service_name, next.professional_service_name),
         changed("Clinic", previous.clinic_name, next.clinic_name),
       ].filter((item) => item !== null),

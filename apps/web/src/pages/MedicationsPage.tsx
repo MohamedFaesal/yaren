@@ -38,7 +38,7 @@ const dosageForms = [
   "Sachet",
   "Mouthwash",
 ];
-const routes = ["IV Infusion / Drip", "IM injection", "Oral", "SC injection", "Inhalation / Nebulization", "Topical"];
+const routes = ["IV Infusion / Drip", "IV Injection", "IM injection", "Oral", "SC injection", "Inhalation / Nebulization", "Topical"];
 
 export function MedicationsPage({ token, actor }: { token: string; actor: User }) {
   const toast = useToast();

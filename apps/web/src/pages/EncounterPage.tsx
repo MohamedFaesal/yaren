@@ -26,7 +26,7 @@ const tabs: { id: EncounterTab; label: string }[] = [
   { id: "plan", label: "Management Plan" },
 ];
 
-const routes = ["IV Infusion / Drip", "IM injection", "Oral", "SC injection", "Inhalation / Nebulization", "Topical"];
+const routes = ["IV Infusion / Drip", "IV Injection", "IM injection", "Oral", "SC injection", "Inhalation / Nebulization", "Topical"];
 const dosageForms = [
   "Tablet",
   "Capsule",

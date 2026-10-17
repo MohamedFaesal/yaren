@@ -5,7 +5,7 @@ import { ApplicationError } from "@yaren/shared-kernel";
 import { authenticate, parse } from "../http.js";
 import { changed, noteActivity } from "./activity.js";
 
-const routes = ["IV Infusion / Drip", "IM injection", "Oral", "SC injection", "Inhalation / Nebulization", "Topical"] as const;
+const routes = ["IV Infusion / Drip", "IV Injection", "IM injection", "Oral", "SC injection", "Inhalation / Nebulization", "Topical"] as const;
 const dosageForms = [
   "Tablet",
   "Capsule",
