@@ -84,8 +84,15 @@ const encounterSchema = z.object({
     strength: z.string().trim().max(80).optional().transform((value) => value ?? ""),
     dosage_form: z.string().trim().max(80).optional().transform((value) => value ?? ""),
     dose: z.string().trim().max(80).optional().transform((value) => value ?? ""),
+    dose_value: z.number().positive().max(100000).nullable().optional().transform((value) => value ?? null),
+    dose_unit: z.enum(["", "mg", "g", "mcg", "mL", "Ampule", "Vial", "Nebule", "Syringe"]).optional().transform((value) => value ?? ""),
     frequency: z.string().trim().max(80).optional().transform((value) => value ?? ""),
     duration: z.string().trim().max(80).optional().transform((value) => value ?? ""),
+    duration_value: z.number().int().min(1).max(10000).nullable().optional().transform((value) => value ?? null),
+    duration_unit: z.enum(["", "minutes", "hours", "days"]).optional().transform((value) => value ?? ""),
+    flow_rate: z.string().trim().max(80).optional().transform((value) => value ?? ""),
+    flow_rate_value: z.number().positive().max(100000).nullable().optional().transform((value) => value ?? null),
+    flow_rate_unit: z.enum(["", "mL/hr", "drops/min", "mL/min", "mg/hr", "mcg/min"]).optional().transform((value) => value ?? ""),
     instructions: z.string().trim().max(500).optional().transform((value) => value ?? ""),
   })).max(40).optional().transform((value) => value ?? []),
   procedure_orders: z.array(z.object({
@@ -95,6 +102,7 @@ const encounterSchema = z.object({
     code: z.string().trim().max(32).optional().transform((value) => value ?? ""),
     unit: z.string().trim().max(40).optional().transform((value) => value ?? ""),
     price: z.number().min(0).nullable().optional().transform((value) => value ?? null),
+    quantity: z.number().int().min(1).max(999).optional().transform((value) => value ?? 1),
     notes: z.string().trim().max(500).optional().transform((value) => value ?? ""),
     linked_medication_order_id: z.string().uuid().nullable().optional().transform((value) => value ?? null),
   })).max(40).optional().transform((value) => value ?? []),
@@ -351,13 +359,14 @@ async function applyRouteProcedures<T extends EncounterBody>(db: pg.Pool | pg.Po
       unit: string;
       price: string | null;
     }>(
-      `SELECT mr.medication_id, mr.route, s.id, s.name, s.code, s.unit, COALESCE(csp.price, s.price) AS price
+      `SELECT mr.medication_id, mr.route, s.id, s.name, s.code, s.unit,
+              CASE WHEN p.nationality = 'Egyptian' THEN s.unit_price_egp ELSE s.unit_price_eur END AS price
        FROM medication_routes mr
        JOIN medication_route_services mrs ON mrs.medication_route_id = mr.id
        JOIN medical_services s ON s.id = mrs.service_id AND s.deleted_at IS NULL
-         AND s.service_type = 'Medical Procedures Services'
+         AND s.service_type = 'Procedures & Interventions Services'
        JOIN patient_visits v ON v.id = $2::uuid
-       LEFT JOIN clinic_service_prices csp ON csp.service_id = s.id AND csp.clinic_id = v.clinic_id
+       JOIN patients p ON p.id = v.patient_id
        WHERE mr.medication_id = ANY($1::uuid[])`,
       [medicationIds, visitId],
     );
@@ -374,34 +383,55 @@ async function applyRouteProcedures<T extends EncounterBody>(db: pg.Pool | pg.Po
       linked.set(key, list);
     }
   }
-  const neededByOrder = new Map<string, { id: string; name: string; code: string; unit: string; price: number | null }[]>();
-  const neededIds = new Set<string>();
+  const manual = body.procedure_orders.filter((item) => !item.linked_medication_order_id);
+  const linkedOrders: EncounterBody["procedure_orders"] = [];
   for (const order of orders) {
     const services = linked.get(`${order.medication_id}\n${order.route}`) ?? [];
-    neededByOrder.set(order.id, services);
-    for (const service of services) neededIds.add(service.id);
-  }
-  const procedures = body.procedure_orders.filter((item) => {
-    if (!item.linked_medication_order_id) return true;
-    if (item.procedure_id && neededIds.has(item.procedure_id)) return true;
-    return false;
-  });
-  for (const [orderId, services] of neededByOrder) {
+    const quantity = administrationQuantity(order);
     for (const service of services) {
-      if (procedures.some((item) => item.procedure_id === service.id)) continue;
-      procedures.push({
-        id: randomUUID(),
+      const previous = body.procedure_orders.find((item) => item.linked_medication_order_id === order.id && item.procedure_id === service.id);
+      linkedOrders.push({
+        id: previous?.id ?? randomUUID(),
         procedure_id: service.id,
         name: service.name,
         code: service.code,
         unit: service.unit,
         price: service.price,
-        notes: "",
-        linked_medication_order_id: orderId,
+        quantity,
+        notes: previous?.notes ?? "",
+        linked_medication_order_id: order.id,
       });
     }
   }
-  return { ...body, procedure_orders: procedures };
+  return { ...body, procedure_orders: [...manual, ...linkedOrders] };
+}
+
+function administrationQuantity(order: { route: string; duration_value: number | null; duration_unit: string; dose_value: number | null; dose_unit: string; flow_rate_value: number | null; flow_rate_unit: string }) {
+  if (order.route === "IV Infusion / Drip") {
+    const fromRate = infusionHours(order.dose_value, order.dose_unit, order.flow_rate_value, order.flow_rate_unit);
+    if (fromRate != null) return Math.max(1, Math.ceil(fromRate));
+  }
+  const hourly = order.route === "IV Infusion / Drip" || order.route === "Inhalation / Nebulization";
+  if (!hourly || (order.duration_unit !== "minutes" && order.duration_unit !== "hours") || order.duration_value == null || order.duration_value <= 0) return 1;
+  const hours = order.duration_unit === "minutes" ? order.duration_value / 60 : order.duration_value;
+  return Math.max(1, Math.ceil(hours));
+}
+
+/** Hours needed to give the dose at the stated rate. Null when the units cannot be combined. Drops use a 20-drop/mL giving set. */
+function infusionHours(doseValue: number | null, doseUnit: string, flowValue: number | null, flowUnit: string) {
+  if (doseValue == null || doseValue <= 0 || flowValue == null || flowValue <= 0) return null;
+  const perHour = flowUnit === "mL/hr" || flowUnit === "mg/hr" ? flowValue
+    : flowUnit === "mL/min" || flowUnit === "mcg/min" ? flowValue * 60
+    : flowUnit === "drops/min" ? (flowValue / 20) * 60
+    : null;
+  if (perHour == null || perHour <= 0) return null;
+  const amount = doseUnit === "mL" && (flowUnit === "mL/hr" || flowUnit === "mL/min" || flowUnit === "drops/min") ? doseValue
+    : doseUnit === "mg" && flowUnit === "mg/hr" ? doseValue
+    : doseUnit === "g" && flowUnit === "mg/hr" ? doseValue * 1000
+    : doseUnit === "mcg" && flowUnit === "mcg/min" ? doseValue
+    : doseUnit === "mg" && flowUnit === "mcg/min" ? doseValue * 1000
+    : null;
+  return amount == null ? null : amount / perHour;
 }
 
 async function saveEncounter(db: pg.Pool | pg.PoolClient, visitId: string, body: EncounterBody, finishedBy: string | null) {

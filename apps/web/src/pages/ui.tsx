@@ -691,8 +691,8 @@ export function SearchSelect({
                 >
                   {option.icon}
                   <span className="min-w-0">
-                    <span className={`block ${option.value === value ? "font-semibold" : ""}`}>{option.label}</span>
-                    {option.hint ? <span className="block text-xs font-normal text-muted">{option.hint}</span> : null}
+                    <span className={`block text-base font-semibold leading-snug ${option.value === value ? "text-ink" : ""}`}>{option.label}</span>
+                    {option.hint ? <span className="mt-0.5 block text-xs font-medium text-muted">{option.hint}</span> : null}
                   </span>
                 </button>
               </li>

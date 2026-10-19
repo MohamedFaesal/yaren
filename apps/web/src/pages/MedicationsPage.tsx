@@ -214,7 +214,7 @@ function MedicationDialog({
 
   useEffect(() => {
     let cancelled = false;
-    api<{ items: MedicalService[] }>(`/api/services?service_type=${encodeURIComponent("Medical Procedures Services")}`, {}, token)
+    api<{ items: MedicalService[] }>(`/api/services?service_type=${encodeURIComponent("Procedures & Interventions Services")}`, {}, token)
       .then((data) => {
         if (!cancelled) setProcedures(data.items);
       })
@@ -287,7 +287,7 @@ function MedicationDialog({
       >
         <div className="min-h-0 flex-1 overflow-y-auto p-5">
           <h2 id="medication-dialog-title" className="text-lg font-semibold text-ink">{medication ? "Edit medication" : "Add medication"}</h2>
-          <p className="mt-1 text-sm text-muted">This is shared by every clinic. Each route can have its own medical procedure services. Choosing the medication and route on an order adds those services to Surgical Procedures.</p>
+          <p className="mt-1 text-sm text-muted">This price list is the same for every clinic. Each route can have its own medical procedure services. Choosing the medication and route on an order adds those services to Procedures & Interventions.</p>
           {error ? <p className="mt-3 text-sm text-danger">{error}</p> : null}
           <div className="mt-4 grid gap-4">
             <Field label="Active ingredient" error={fields.errorOf("name")}>
@@ -345,13 +345,13 @@ function MedicationDialog({
             {assigned.map((entry) => (
               <div key={entry.route} className="rounded-xl border border-line-soft bg-canvas p-3">
                 <p className="text-sm font-semibold text-ink">{entry.route}</p>
-                <p className="mt-1 text-xs text-muted">Medical procedure services for this route.</p>
+                <p className="mt-1 text-xs text-muted">Procedures and interventions for this route.</p>
                 <div className="mt-3">
                   <p className={label}>Add a service</p>
                   <SearchSelect
                     fixedMenu
                     value=""
-                    placeholder="Search medical procedure services"
+                    placeholder="Search procedures and interventions"
                     options={procedures
                       .filter((service) => !entry.serviceIds.includes(service.id))
                       .map((service) => ({

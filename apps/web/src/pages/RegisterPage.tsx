@@ -6,7 +6,8 @@ import { useActiveClinic } from "../ClinicWorkspace";
 import { nationalityOption } from "../nationalities";
 import { useToast } from "../toast";
 import { type VisitDocumentMeta, type VisitDocumentType, visitDocumentAccept, visitDocumentIssue, visitDocumentMeta, visitDocumentSizeLabel } from "../visitDocuments";
-import { Card, CollapsibleSection, Field, Page, PlusIcon, RemoveButton, SearchSelect, SectionSummaryItem, Summary, field, label, messageOf, primary, secondary, useFieldErrors } from "./ui";
+import { DocumentScanDialog } from "./DocumentScanDialog";
+import { Card, CollapsibleSection, Field, Page, PlusIcon, RemoveButton, SearchSelect, SectionSummaryItem, Summary, field, messageOf, primary, secondary, useFieldErrors } from "./ui";
 
 type RegisterSection = "patient" | "contact" | "hotel" | "consent";
 
@@ -22,7 +23,7 @@ const sectionFields: Record<RegisterSection, string[]> = {
     "emergency_contact_phone",
     "emergency_contact_relationship",
   ],
-  hotel: ["clinic_id", "visit_type", "currency", "professional_service_id", "hotel_room_no", "hotel_checkin_date", "hotel_checkout_date"],
+  hotel: ["clinic_id", "professional_service_id", "hotel_room_no", "hotel_checkin_date", "hotel_checkout_date"],
   consent: visitDocumentMeta.map((item) => `document_${item.type}`),
 };
 
@@ -74,8 +75,6 @@ export function RegisterPage({ token, actor }: { token: string; actor: User }) {
   const [checkin, setCheckin] = useState("");
   const [checkout, setCheckout] = useState("");
   const [room, setRoom] = useState("");
-  const [visitType, setVisitType] = useState("");
-  const [currency, setCurrency] = useState("EUR");
   const [professionalServiceId, setProfessionalServiceId] = useState("");
   const [professionalServices, setProfessionalServices] = useState<MedicalService[]>([]);
   const [clinicId, setClinicId] = useState("");
@@ -210,8 +209,6 @@ export function RegisterPage({ token, actor }: { token: string; actor: User }) {
       hotel_checkin_date: checkin,
       hotel_checkout_date: checkout,
       hotel_room_no: room,
-      visit_type: visitType,
-      currency,
       professional_service_id: professionalServiceId,
       clinic_id: clinicId,
     };
@@ -452,9 +449,7 @@ export function RegisterPage({ token, actor }: { token: string; actor: User }) {
                       label="Clinic"
                       value={selectedClinic ? `${selectedClinic.name} · ${selectedClinic.hotel_name}` : ""}
                     />
-                    <SectionSummaryItem label="Type" value={visitType === "follow-up" ? "Follow-up" : visitType === "new" ? "New" : ""} />
-                    <SectionSummaryItem label="Currency" value={currency} />
-                    <SectionSummaryItem label="Service" value={professionalServices.find((service) => service.id === professionalServiceId)?.code ?? ""} />
+                    <SectionSummaryItem label="Visit type" value={professionalServices.find((service) => service.id === professionalServiceId)?.name ?? ""} />
                     <SectionSummaryItem label="Room" value={room} />
                     <SectionSummaryItem label="Check-in" value={checkin} />
                     <SectionSummaryItem label="Check-out" value={checkout} />
@@ -473,54 +468,13 @@ export function RegisterPage({ token, actor }: { token: string; actor: User }) {
                       required
                     />
                   </Field>
-                  <div className="relative md:col-span-2">
-                    <p className={label} id="visit-type-label">Visit type</p>
-                    <div className="mt-1 grid grid-cols-2 gap-2" role="radiogroup" aria-labelledby="visit-type-label">
-                      {([
-                        { value: "new", title: "New", detail: "First visit for this stay" },
-                        { value: "follow-up", title: "Follow-up", detail: "Returning for the same care" },
-                      ] as const).map((option) => {
-                        const selected = visitType === option.value;
-                        return (
-                          <button
-                            key={option.value}
-                            type="button"
-                            role="radio"
-                            aria-checked={selected}
-                            disabled={!canRegister}
-                            className={`rounded-xl border px-3 py-3 text-left transition disabled:opacity-60 ${selected ? "border-blue bg-panel ring-2 ring-blue" : "border-line-strong bg-surface hover:border-blue hover:bg-surface-2"} ${fields.errorOf("visit_type") && !selected ? "border-danger" : ""}`}
-                            onClick={() => { setVisitType(option.value); fields.clearField("visit_type"); }}
-                          >
-                            <span className="block text-sm font-semibold text-ink">{option.title}</span>
-                            <span className="mt-0.5 block text-xs text-muted">{option.detail}</span>
-                          </button>
-                        );
-                      })}
-                    </div>
-                    <input name="visit_type" className="pointer-events-none absolute h-0 w-0 opacity-0" value={visitType} required tabIndex={-1} onChange={() => undefined} />
-                    {fields.errorOf("visit_type") ? <p className="mt-1 text-xs font-medium text-danger">{fields.errorOf("visit_type")}</p> : null}
-                  </div>
-                  <Field label="Currency" error={fields.errorOf("currency")}>
-                    <SearchSelect
-                      name="currency"
-                      value={currency}
-                      onChange={(value) => { setCurrency(value); fields.clearField("currency"); }}
-                      options={[
-                        { value: "EUR", label: "EUR" },
-                        { value: "EGP", label: "EGP" },
-                      ]}
-                      placeholder="Choose currency"
-                      disabled={!canRegister}
-                      required
-                    />
-                  </Field>
-                  <Field className="md:col-span-2" label="Professional medical service" error={fields.errorOf("professional_service_id")}>
+                  <Field className="md:col-span-2" label="Visit type" error={fields.errorOf("professional_service_id")}>
                     <SearchSelect
                       name="professional_service_id"
                       value={professionalServiceId}
                       onChange={(value) => { setProfessionalServiceId(value); fields.clearField("professional_service_id"); }}
-                      options={professionalServices.map((service) => ({ value: service.id, label: service.code, hint: service.name }))}
-                      placeholder={clinicId ? "Choose a professional service" : "Choose a clinic first"}
+                      options={professionalServices.map((service) => ({ value: service.id, label: service.name, hint: service.code }))}
+                      placeholder={clinicId ? "Choose a visit type" : "Choose a clinic first"}
                       disabled={!canRegister || !clinicId}
                       fixedMenu
                       required
@@ -551,7 +505,7 @@ export function RegisterPage({ token, actor }: { token: string; actor: User }) {
                 )}
               >
                 <div className="space-y-5">
-                  <p className="text-sm text-muted-strong">PDF, JPEG, PNG, or WebP. Each file must be {visitDocumentSizeLabel} or smaller.</p>
+                  <p className="text-sm text-muted-strong">PDF, JPEG, PNG, or WebP. Each file must be {visitDocumentSizeLabel} or smaller. Browse a file or scan it from the scanner.</p>
                   <DocumentGroup
                     title="Required"
                     hint="Attach both forms before registering."
@@ -822,6 +776,7 @@ function DocumentDrop({
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [over, setOver] = useState(false);
+  const [scanning, setScanning] = useState(false);
   const tone = error
     ? "border-danger bg-danger-soft"
     : file
@@ -863,6 +818,14 @@ function DocumentDrop({
           ) : null}
           <button
             type="button"
+            className="rounded-lg bg-blue px-3 py-1.5 text-sm font-semibold text-white"
+            disabled={disabled}
+            onClick={() => setScanning(true)}
+          >
+            Scan
+          </button>
+          <button
+            type="button"
             className="rounded-lg border border-line-strong bg-surface px-3 py-1.5 text-sm font-semibold text-ink"
             disabled={disabled}
             onClick={() => inputRef.current?.click()}
@@ -885,6 +848,16 @@ function DocumentDrop({
           event.currentTarget.value = "";
         }}
       />
+      {scanning ? (
+        <DocumentScanDialog
+          title={item.label}
+          onClose={() => setScanning(false)}
+          onUse={(next) => {
+            onPick(next);
+            setScanning(false);
+          }}
+        />
+      ) : null}
     </div>
   );
 }

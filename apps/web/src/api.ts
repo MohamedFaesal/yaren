@@ -134,6 +134,7 @@ export type PatientVisit = {
   clinic_id: string;
   clinic_name: string;
   hotel_name: string;
+  patient_nationality?: string;
   status?: VisitCareStatus;
   status_changed_at?: string;
   assigned_doctor_id?: string | null;
@@ -316,7 +317,7 @@ export type CatalogMedication = {
   unit_price_eur: number | null;
   routes?: {
     route: string;
-    services: { id: string; name: string; code: string; unit: string; price: number | null }[];
+    services: { id: string; name: string; code: string; unit: string; price: number | null; unit_price_egp?: number | null; unit_price_eur?: number | null }[];
   }[];
 };
 
@@ -328,8 +329,15 @@ export type MedicationOrder = {
   strength: string;
   dosage_form: string;
   dose: string;
+  dose_value: number | null;
+  dose_unit: "" | "mg" | "g" | "mcg" | "mL" | "Ampule" | "Vial" | "Nebule" | "Syringe";
   frequency: string;
   duration: string;
+  duration_value: number | null;
+  duration_unit: "" | "minutes" | "hours" | "days";
+  flow_rate: string;
+  flow_rate_value: number | null;
+  flow_rate_unit: "" | "mL/hr" | "drops/min" | "mL/min" | "mg/hr" | "mcg/min";
   instructions: string;
 };
 
@@ -340,6 +348,7 @@ export type ProcedureOrder = {
   code: string;
   unit: string;
   price: number | null;
+  quantity: number;
   notes: string;
   linked_medication_order_id?: string | null;
 };
@@ -400,6 +409,8 @@ export type MedicalService = {
   shared_price: number;
   clinic_price: number | null;
   price: number;
+  unit_price_egp: number | null;
+  unit_price_eur: number | null;
 };
 
 export function formatPrice(value: number) {

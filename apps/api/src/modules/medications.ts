@@ -96,7 +96,7 @@ type MedicationRow = {
 
 type MedicationRoute = {
   route: string;
-  services: { id: string; name: string; code: string; unit: string; price: number | null }[];
+  services: { id: string; name: string; code: string; unit: string; price: number | null; unit_price_egp: number | null; unit_price_eur: number | null }[];
 };
 
 export function registerMedications(app: FastifyInstance, pool: pg.Pool) {
@@ -261,8 +261,10 @@ async function loadRoutes(db: pg.Pool | pg.PoolClient, medicationIds: string[]) 
     code: string | null;
     unit: string | null;
     price: string | null;
+    unit_price_egp: string | null;
+    unit_price_eur: string | null;
   }>(
-    `SELECT mr.medication_id, mr.route, s.id AS service_id, s.name, s.code, s.unit, s.price
+    `SELECT mr.medication_id, mr.route, s.id AS service_id, s.name, s.code, s.unit, s.price, s.unit_price_egp, s.unit_price_eur
      FROM medication_routes mr
      LEFT JOIN medication_route_services mrs ON mrs.medication_route_id = mr.id
      LEFT JOIN medical_services s ON s.id = mrs.service_id AND s.deleted_at IS NULL
@@ -284,7 +286,9 @@ async function loadRoutes(db: pg.Pool | pg.PoolClient, medicationIds: string[]) 
         name: row.name,
         code: row.code,
         unit: row.unit ?? "",
-        price: row.price == null ? null : Number(row.price),
+        price: row.unit_price_eur == null ? (row.price == null ? null : Number(row.price)) : Number(row.unit_price_eur),
+        unit_price_egp: row.unit_price_egp == null ? null : Number(row.unit_price_egp),
+        unit_price_eur: row.unit_price_eur == null ? null : Number(row.unit_price_eur),
       });
     }
   }
@@ -318,11 +322,11 @@ async function assertProcedureServices(db: pg.Pool, serviceIds: string[]) {
   if (ids.length === 0) return;
   const result = await db.query<{ id: string }>(
     `SELECT id FROM medical_services
-     WHERE id = ANY($1::uuid[]) AND deleted_at IS NULL AND service_type = 'Medical Procedures Services'`,
+     WHERE id = ANY($1::uuid[]) AND deleted_at IS NULL AND service_type = 'Procedures & Interventions Services'`,
     [ids],
   );
   if (result.rows.length !== ids.length) {
-    throw new ApplicationError(422, "invalid_body", "Choose a medical procedure service");
+    throw new ApplicationError(422, "invalid_body", "Choose a procedure or intervention");
   }
 }
 

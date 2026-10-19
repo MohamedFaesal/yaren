@@ -216,7 +216,7 @@ function VisitDetails({
           ),
         },
         { label: "Type", value: visitTypeLabel(visit.visit_type) },
-        { label: "Currency", value: visit.currency ?? "EUR" },
+        { label: "Currency", value: visit.patient_nationality === "Egyptian" ? "EGP" : "EUR" },
         { label: "Professional medical service", value: visit.professional_service_code ? `${visit.professional_service_code}${visit.professional_service_name ? ` · ${visit.professional_service_name}` : ""}` : "—" },
         { label: "Clinic", value: visit.clinic_name },
         { label: "Hotel", value: visit.hotel_name },

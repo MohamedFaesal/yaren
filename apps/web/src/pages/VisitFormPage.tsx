@@ -5,6 +5,7 @@ import { canAct } from "../access";
 import { useActiveClinic } from "../ClinicWorkspace";
 import { useToast } from "../toast";
 import { type VisitDocumentType, visitDocumentAccept, visitDocumentIssue, visitDocumentMeta, visitDocumentSizeLabel } from "../visitDocuments";
+import { DocumentScanDialog } from "./DocumentScanDialog";
 import { Card, Field, Page, PlusIcon, RemoveButton, SearchSelect, Section, Summary, field, messageOf, primary, secondary, useFieldErrors } from "./ui";
 
 const contactOptions = [
@@ -43,12 +44,11 @@ export function VisitFormPage({ token, actor }: { token: string; actor: User }) 
   const [checkin, setCheckin] = useState("");
   const [checkout, setCheckout] = useState("");
   const [room, setRoom] = useState("");
-  const [visitType, setVisitType] = useState("");
-  const [currency, setCurrency] = useState("EUR");
   const [professionalServiceId, setProfessionalServiceId] = useState("");
   const [professionalServices, setProfessionalServices] = useState<MedicalService[]>([]);
   const [clinicId, setClinicId] = useState("");
   const [documents, setDocuments] = useState<Partial<Record<VisitDocumentType, File | null>>>({});
+  const [scanType, setScanType] = useState<VisitDocumentType | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
   const { clinicId: activeClinicId } = useActiveClinic();
@@ -104,8 +104,6 @@ export function VisitFormPage({ token, actor }: { token: string; actor: User }) 
       setCheckin(visit.hotel_checkin_date ?? "");
       setCheckout(visit.hotel_checkout_date ?? "");
       setRoom(visit.hotel_room_no ?? "");
-      setVisitType(visit.visit_type ?? "");
-      setCurrency(visit.currency ?? "EUR");
       setProfessionalServiceId(visit.professional_service_id ?? "");
       setClinicId(visit.clinic_id);
     }).catch((caught) => setError(messageOf(caught)));
@@ -149,8 +147,6 @@ export function VisitFormPage({ token, actor }: { token: string; actor: User }) 
                 hotel_checkin_date: checkin,
                 hotel_checkout_date: checkout,
                 hotel_room_no: room,
-                visit_type: visitType,
-                ...(id ? {} : { currency }),
                 professional_service_id: professionalServiceId,
                 clinic_id: clinicId,
               };
@@ -198,47 +194,13 @@ export function VisitFormPage({ token, actor }: { token: string; actor: User }) 
                   required
                 />
               </Field>
-              <Field label="Visit type" error={fields.errorOf("visit_type")}>
-                <SearchSelect
-                  name="visit_type"
-                  value={visitType}
-                  onChange={(value) => { setVisitType(value); fields.clearField("visit_type"); }}
-                  options={[
-                    { value: "new", label: "New" },
-                    { value: "follow-up", label: "Follow-up" },
-                  ]}
-                  placeholder="New or follow-up"
-                  disabled={!canWrite}
-                  required
-                />
-              </Field>
-              {id ? (
-                <Field label="Currency">
-                  <input className={field} value={currency || "EUR"} readOnly disabled />
-                </Field>
-              ) : (
-                <Field label="Currency" error={fields.errorOf("currency")}>
-                  <SearchSelect
-                    name="currency"
-                    value={currency}
-                    onChange={(value) => { setCurrency(value); fields.clearField("currency"); }}
-                    options={[
-                      { value: "EUR", label: "EUR" },
-                      { value: "EGP", label: "EGP" },
-                    ]}
-                    placeholder="Choose currency"
-                    disabled={!canWrite}
-                    required
-                  />
-                </Field>
-              )}
-              <Field className="md:col-span-2" label="Professional medical service" error={fields.errorOf("professional_service_id")}>
+              <Field className="md:col-span-2" label="Visit type" error={fields.errorOf("professional_service_id")}>
                 <SearchSelect
                   name="professional_service_id"
                   value={professionalServiceId}
                   onChange={(value) => { setProfessionalServiceId(value); fields.clearField("professional_service_id"); }}
-                  options={professionalServices.map((service) => ({ value: service.id, label: service.code, hint: service.name }))}
-                  placeholder={clinicId ? "Choose a professional service" : "Choose a clinic first"}
+                  options={professionalServices.map((service) => ({ value: service.id, label: service.name, hint: service.code }))}
+                  placeholder={clinicId ? "Choose a visit type" : "Choose a clinic first"}
                   disabled={!canWrite || !clinicId}
                   fixedMenu
                   required
@@ -276,7 +238,7 @@ export function VisitFormPage({ token, actor }: { token: string; actor: User }) 
               <>
                 <div className="mt-6"><Section index="3" title="Consent & Privacy" /></div>
                 <div className="space-y-3">
-                  <p className="text-sm text-muted-strong">PDF, JPEG, PNG, or WebP. Each file must be {visitDocumentSizeLabel} or smaller. Required forms must be attached before creating the visit.</p>
+                  <p className="text-sm text-muted-strong">PDF, JPEG, PNG, or WebP. Each file must be {visitDocumentSizeLabel} or smaller. Browse a file or scan it from the scanner. Required forms must be attached before creating the visit.</p>
                   {visitDocumentMeta.map((item) => {
                     const selected = documents[item.type] ?? null;
                     const fieldName = `document_${item.type}`;
@@ -288,8 +250,16 @@ export function VisitFormPage({ token, actor }: { token: string; actor: User }) 
                           {item.required ? "" : " (optional)"}
                         </p>
                         <div className="mt-1 flex flex-wrap items-center gap-3">
+                          <button
+                            type="button"
+                            className="rounded-lg bg-blue px-3 py-2.5 text-sm font-semibold text-white disabled:opacity-60"
+                            disabled={!canWrite}
+                            onClick={() => setScanType(item.type)}
+                          >
+                            Scan
+                          </button>
                           <label className={`${secondary} cursor-pointer ${!canWrite ? "pointer-events-none opacity-60" : ""}`}>
-                            Choose file
+                            Browse
                             <input
                               className="sr-only"
                               name={fieldName}
@@ -327,6 +297,23 @@ export function VisitFormPage({ token, actor }: { token: string; actor: User }) 
                       </div>
                     );
                   })}
+                  {scanType ? (
+                    <DocumentScanDialog
+                      title={visitDocumentMeta.find((item) => item.type === scanType)?.label ?? "document"}
+                      onClose={() => setScanType(null)}
+                      onUse={(file) => {
+                        const fieldName = `document_${scanType}`;
+                        const issue = visitDocumentIssue(file);
+                        if (issue) {
+                          fields.setErrors((current) => ({ ...current, [fieldName]: issue }));
+                          return;
+                        }
+                        setDocuments((current) => ({ ...current, [scanType]: file }));
+                        fields.clearField(fieldName);
+                        setScanType(null);
+                      }}
+                    />
+                  ) : null}
                 </div>
               </>
             ) : null}

@@ -286,7 +286,7 @@ function closedCase(status: VisitCareStatus) {
 
 function encounterActionLabel(status: VisitCareStatus, visitId: string) {
   if (closedCase(status)) return "View encounter";
-  return encounterStepSaved(visitId) ? "Proceed encounter" : "Start encounter";
+  return encounterStepSaved(visitId) ? "Resume Encounter" : "Start encounter";
 }
 
 function QueueStatus({ status }: { status: VisitCareStatus }) {

@@ -1,22 +1,18 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { api, formatPrice, type MedicalService, type User } from "../api";
 import { canManageSettings } from "../access";
-import { useActiveClinic } from "../ClinicWorkspace";
 import { useToast } from "../toast";
 import { ConfirmDialog, DataTable, Field, Filters, IconAction, Page, PlusIcon, SearchSelect, field, messageOf, primary, secondary, th, useFieldErrors } from "./ui";
 
 const serviceTypes = [
   "Professional Services",
-  "Administrative & Coordination Services",
-  "Medical Procedures Services",
-  "Surgical Procedures Services",
+  "Administrative, Coordination and Other Services",
+  "Procedures & Interventions Services",
   "Investigations [Laboratory & Imaging] Services",
-  "Others",
 ];
 
 export function ServicesPage({ token, actor }: { token: string; actor: User }) {
   const toast = useToast();
-  const { clinicId } = useActiveClinic();
   const canManage = canManageSettings(actor);
   const [items, setItems] = useState<MedicalService[]>([]);
   const [categories, setCategories] = useState<string[]>([]);
@@ -46,7 +42,6 @@ export function ServicesPage({ token, actor }: { token: string; actor: User }) {
     if (search) params.set("q", search);
     if (serviceType) params.set("service_type", serviceType);
     if (category) params.set("category", category);
-    if (clinicId) params.set("clinic_id", clinicId);
     setLoading(true);
     setError(null);
     api<{ items: MedicalService[]; categories: string[]; units: string[] }>(`/api/services?${params}`, {}, token)
@@ -63,16 +58,16 @@ export function ServicesPage({ token, actor }: { token: string; actor: User }) {
       .finally(() => {
         if (id === requestId.current) setLoading(false);
       });
-  }, [token, search, serviceType, category, clinicId, reloadKey]);
+  }, [token, search, serviceType, category, reloadKey]);
 
-  const columns = 6 + (clinicId ? 1 : 0) + (canManage ? 1 : 0);
+  const columns = 7 + (canManage ? 1 : 0);
 
   async function remove(service: MedicalService) {
     setDeleting(true);
     setDeleteError(null);
     try {
       await api(`/api/services/${service.id}`, { method: "DELETE" }, token);
-      toast.success("Service removed", `${service.name} was removed from professional services.`);
+      toast.success("Service removed", `${service.name} was removed from clinic services.`);
       setPendingDelete(null);
       setReloadKey((current) => current + 1);
     } catch (caught) {
@@ -84,9 +79,9 @@ export function ServicesPage({ token, actor }: { token: string; actor: User }) {
 
   return (
     <Page
-      title="Professional Services"
-      description={clinicId ? "Prices for this clinic. A service without its own price uses the shared amount." : "Shared prices used by every clinic that does not set its own."}
-      crumbs={[{ label: "Care" }, { label: "Professional Services" }]}
+      title="Clinic Services"
+      description="Professional services are used on visit registration. Administrative services are used at checkout. Prices are the same for every clinic, in EGP and euro."
+      crumbs={[{ label: "Care" }, { label: "Clinic Services" }]}
       action={canManage ? <button type="button" className={primary} onClick={() => setEditor({ service: null })}><PlusIcon />Add service</button> : null}
     >
       {error ? <p className="mb-4 text-sm text-danger">{error}</p> : null}
@@ -118,14 +113,14 @@ export function ServicesPage({ token, actor }: { token: string; actor: User }) {
             <th className={th}>Category</th>
             <th className={th}>Service</th>
             <th className={th}>Unit</th>
-            <th className={th}>Price</th>
-            {clinicId ? <th className={th}>Source</th> : null}
+            <th className={th}>Unit price (EGP)</th>
+            <th className={th}>Unit price (EUR)</th>
             {canManage ? <th className={th}>Actions</th> : null}
           </tr>
         </thead>
         <tbody>
           {items.length === 0 ? (
-            <tr><td className="px-4 py-10 text-center text-sm text-muted" colSpan={columns}>{loading ? "Loading professional services…" : search || serviceType || category ? "No services match this search." : "No services yet."}</td></tr>
+            <tr><td className="px-4 py-10 text-center text-sm text-muted" colSpan={columns}>{loading ? "Loading clinic services…" : search || serviceType || category ? "No services match this search." : "No services yet."}</td></tr>
           ) : items.map((row) => (
             <tr key={row.id} className="border-t border-line-soft">
               <td className="px-4 py-3 font-mono text-xs font-semibold">{row.code}</td>
@@ -136,14 +131,8 @@ export function ServicesPage({ token, actor }: { token: string; actor: User }) {
                 {row.description ? <span className="mt-0.5 block text-sm text-muted">{row.description}</span> : null}
               </td>
               <td className="px-4 py-3 text-sm text-muted-strong">{row.unit}</td>
-              <td className="px-4 py-3 tabular-nums">{formatPrice(row.price)}</td>
-              {clinicId ? (
-                <td className="px-4 py-3">
-                  {row.clinic_price == null
-                    ? <span className="text-sm text-muted">Shared</span>
-                    : <span className="inline-flex rounded-full bg-panel px-2.5 py-1 text-xs font-semibold text-blue">This clinic</span>}
-                </td>
-              ) : null}
+              <td className="px-4 py-3 tabular-nums">{row.unit_price_egp == null ? "—" : formatPrice(row.unit_price_egp)}</td>
+              <td className="px-4 py-3 tabular-nums">{row.unit_price_eur == null ? "—" : formatPrice(row.unit_price_eur)}</td>
               {canManage ? (
                 <td className="px-4 py-3">
                   <div className="flex gap-2">
@@ -159,7 +148,6 @@ export function ServicesPage({ token, actor }: { token: string; actor: User }) {
       {editor ? (
         <ServiceDialog
           token={token}
-          clinicId={clinicId}
           service={editor.service}
           categories={categories}
           units={units}
@@ -181,6 +169,16 @@ export function ServicesPage({ token, actor }: { token: string; actor: User }) {
   );
 }
 
+function readPrice(value: string) {
+  const trimmed = value.trim().replace(/,/g, "");
+  if (!trimmed) return null;
+  const amount = Number(trimmed);
+  if (!Number.isFinite(amount) || amount < 0) return undefined;
+  const cents = Math.round(amount * 100);
+  if (Math.abs(amount * 100 - cents) > 1e-6) return undefined;
+  return cents / 100;
+}
+
 function selectOptions(values: string[], current: string) {
   const options = current && !values.includes(current) ? [current, ...values] : values;
   return options.map((item) => ({ value: item, label: item }));
@@ -188,7 +186,6 @@ function selectOptions(values: string[], current: string) {
 
 function ServiceDialog({
   token,
-  clinicId,
   service,
   categories,
   units,
@@ -196,7 +193,6 @@ function ServiceDialog({
   onSaved,
 }: {
   token: string;
-  clinicId: string;
   service: MedicalService | null;
   categories: string[];
   units: string[];
@@ -205,14 +201,14 @@ function ServiceDialog({
 }) {
   const toast = useToast();
   const fields = useFieldErrors();
-  const clinicPrice = Boolean(clinicId && service);
   const [name, setName] = useState(service?.name ?? "");
   const [serviceType, setServiceType] = useState(service?.service_type ?? "Professional Services");
   const [category, setCategory] = useState(service?.category || categories[0] || "");
   const [unit, setUnit] = useState(service?.unit || units[0] || "");
   const [code, setCode] = useState(service?.code ?? "");
   const [description, setDescription] = useState(service?.description ?? "");
-  const [price, setPrice] = useState(service ? formatPrice(service.price) : "0.00");
+  const [priceEgp, setPriceEgp] = useState(service?.unit_price_egp == null ? "" : formatPrice(service.unit_price_egp));
+  const [priceEur, setPriceEur] = useState(service?.unit_price_eur == null ? "" : formatPrice(service.unit_price_eur));
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
 
@@ -227,57 +223,40 @@ function ServiceDialog({
   async function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!fields.validateForm(event.currentTarget)) return;
-    const amount = Number(price.replace(/,/g, ""));
-    if (!Number.isFinite(amount) || amount < 0) {
-      fields.setErrors({ price: "Enter a price of 0 or more." });
-      return;
-    }
-    const cents = Math.round(amount * 100);
-    if (Math.abs(amount * 100 - cents) > 1e-6) {
-      fields.setErrors({ price: "Use up to two decimal places." });
+    const unitPriceEgp = readPrice(priceEgp);
+    const unitPriceEur = readPrice(priceEur);
+    if (unitPriceEgp === undefined || unitPriceEur === undefined) {
+      fields.setErrors({
+        ...(unitPriceEgp === undefined ? { unit_price_egp: "Enter a price of 0 or more." } : {}),
+        ...(unitPriceEur === undefined ? { unit_price_eur: "Enter a price of 0 or more." } : {}),
+      });
       return;
     }
     setPending(true);
     setError(null);
-    const body = clinicPrice
-      ? { clinic_id: clinicId, description: description.trim(), price: cents / 100 }
-      : {
-          name: name.trim(),
-          service_type: serviceType,
-          category: category.trim(),
-          unit: unit.trim(),
-          code: code.trim(),
-          description: description.trim(),
-          price: cents / 100,
-        };
+    const body = {
+      name: name.trim(),
+      service_type: serviceType,
+      category: category.trim(),
+      unit: unit.trim(),
+      code: code.trim(),
+      description: description.trim(),
+      unit_price_egp: unitPriceEgp,
+      unit_price_eur: unitPriceEur,
+    };
     try {
       if (service) {
         await api(`/api/services/${service.id}`, { method: "PATCH", body: JSON.stringify(body) }, token);
-        toast.success("Price saved", clinicPrice ? `${service.name} now has a price for this clinic.` : `${name.trim()} was updated.`);
+        toast.success("Service saved", `${name.trim()} was updated.`);
       } else {
         await api("/api/services", { method: "POST", body: JSON.stringify(body) }, token);
-        toast.success("Service added", `${name.trim()} was added to professional services.`);
+        toast.success("Service added", `${name.trim()} was added to clinic services.`);
       }
       onSaved();
     } catch (caught) {
       const message = messageOf(caught);
       const mapped = fields.applyServerMessage(message);
       setError(Object.keys(mapped).length ? null : message);
-    } finally {
-      setPending(false);
-    }
-  }
-
-  async function useShared() {
-    if (!service || !clinicId) return;
-    setPending(true);
-    setError(null);
-    try {
-      await api(`/api/services/${service.id}/clinics/${clinicId}`, { method: "DELETE" }, token);
-      toast.success("Using shared price", `${service.name} now uses the price for all clinics.`);
-      onSaved();
-    } catch (caught) {
-      setError(messageOf(caught));
     } finally {
       setPending(false);
     }
@@ -294,71 +273,63 @@ function ServiceDialog({
         onMouseDown={(event) => event.stopPropagation()}
         onSubmit={(event) => void save(event)}
       >
-        <h2 id="service-dialog-title" className="text-lg font-semibold text-ink">
-          {service ? (clinicPrice ? service.name : "Edit service") : "Add service"}
-        </h2>
-        <p className="mt-1 text-sm text-muted">
-          {clinicPrice ? "This price applies only to the clinic selected in the header. Other clinics keep the shared price." : "These details and the price are shared by every clinic until a clinic sets its own price."}
-        </p>
+        <h2 id="service-dialog-title" className="text-lg font-semibold text-ink">{service ? "Edit service" : "Add service"}</h2>
+        <p className="mt-1 text-sm text-muted">These details and both prices are the same for every clinic.</p>
         {error ? <p className="mt-3 text-sm text-danger">{error}</p> : null}
         <div className="mt-4 grid gap-4">
-          {clinicPrice ? null : (
-            <>
-              <Field label="Type" error={fields.errorOf("service_type")}>
-                <SearchSelect
-                  name="service_type"
-                  required
-                  value={serviceType}
-                  placeholder="Search type"
-                  options={serviceTypes.map((item) => ({ value: item, label: item }))}
-                  onChange={(value) => { setServiceType(value); fields.clearField("service_type"); }}
-                />
-              </Field>
-              <Field label="Category" error={fields.errorOf("category")}>
-                <SearchSelect
-                  name="category"
-                  required
-                  value={category}
-                  placeholder="Choose a category"
-                  options={selectOptions(categories, category)}
-                  onChange={(value) => { setCategory(value); fields.clearField("category"); }}
-                />
-              </Field>
-              <Field label="Service name" error={fields.errorOf("name")}>
-                <input className={field} name="name" value={name} onChange={(event) => { setName(event.target.value); fields.clearField("name"); }} required />
-              </Field>
-              <div className="grid gap-4 sm:grid-cols-2">
-                <Field label="Unit" error={fields.errorOf("unit")}>
-                  <SearchSelect
-                    name="unit"
-                    required
-                    value={unit}
-                    placeholder="Choose a unit"
-                    options={selectOptions(units, unit)}
-                    onChange={(value) => { setUnit(value); fields.clearField("unit"); }}
-                  />
-                </Field>
-                <Field label="Service code" error={fields.errorOf("code")}>
-                  <input className={field} name="code" value={code} onChange={(event) => { setCode(event.target.value); fields.clearField("code"); }} placeholder="YAR-CONS-001" required />
-                </Field>
-              </div>
-            </>
-          )}
+          <Field label="Type" error={fields.errorOf("service_type")}>
+            <SearchSelect
+              name="service_type"
+              required
+              value={serviceType}
+              placeholder="Search type"
+              options={serviceTypes.map((item) => ({ value: item, label: item }))}
+              onChange={(value) => { setServiceType(value); fields.clearField("service_type"); }}
+            />
+          </Field>
+          <Field label="Category" error={fields.errorOf("category")}>
+            <SearchSelect
+              name="category"
+              required
+              value={category}
+              placeholder="Choose a category"
+              options={selectOptions(categories, category)}
+              onChange={(value) => { setCategory(value); fields.clearField("category"); }}
+            />
+          </Field>
+          <Field label="Service name" error={fields.errorOf("name")}>
+            <input className={field} name="name" value={name} onChange={(event) => { setName(event.target.value); fields.clearField("name"); }} required />
+          </Field>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field label="Unit" error={fields.errorOf("unit")}>
+              <SearchSelect
+                name="unit"
+                required
+                value={unit}
+                placeholder="Choose a unit"
+                options={selectOptions(units, unit)}
+                onChange={(value) => { setUnit(value); fields.clearField("unit"); }}
+              />
+            </Field>
+            <Field label="Service code" error={fields.errorOf("code")}>
+              <input className={field} name="code" value={code} onChange={(event) => { setCode(event.target.value); fields.clearField("code"); }} placeholder="YAR-CONS-001" required />
+            </Field>
+          </div>
           <Field label="Description" error={fields.errorOf("description")}>
             <textarea className={`${field} min-h-20`} name="description" value={description} maxLength={500} onChange={(event) => { setDescription(event.target.value); fields.clearField("description"); }} placeholder="Optional" />
           </Field>
-          <Field label="Price" error={fields.errorOf("price")}>
-            <input className={field} name="price" inputMode="decimal" value={price} onChange={(event) => { setPrice(event.target.value); fields.clearField("price"); }} placeholder="0.00" required />
-          </Field>
-        </div>
-        <div className="mt-5 flex flex-wrap items-center justify-between gap-2">
-          {clinicPrice && service?.clinic_price != null ? (
-            <button type="button" className={secondary} disabled={pending} onClick={() => void useShared()}>Use shared price</button>
-          ) : <span />}
-          <div className="flex gap-2">
-            <button type="button" className={secondary} disabled={pending} onClick={onClose}>Cancel</button>
-            <button type="submit" className={primary} disabled={pending}>{pending ? "Saving…" : "Save"}</button>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field label={<>Unit price (EGP) <span className="font-medium text-muted">Optional</span></>} error={fields.errorOf("unit_price_egp")}>
+              <input className={field} name="unit_price_egp" inputMode="decimal" value={priceEgp} onChange={(event) => { setPriceEgp(event.target.value); fields.clearField("unit_price_egp"); }} placeholder="0.00" />
+            </Field>
+            <Field label={<>Unit price (EUR) <span className="font-medium text-muted">Optional</span></>} error={fields.errorOf("unit_price_eur")}>
+              <input className={field} name="unit_price_eur" inputMode="decimal" value={priceEur} onChange={(event) => { setPriceEur(event.target.value); fields.clearField("unit_price_eur"); }} placeholder="0.00" />
+            </Field>
           </div>
+        </div>
+        <div className="mt-5 flex justify-end gap-2">
+          <button type="button" className={secondary} disabled={pending} onClick={onClose}>Cancel</button>
+          <button type="submit" className={primary} disabled={pending}>{pending ? "Saving…" : "Save"}</button>
         </div>
       </form>
     </div>

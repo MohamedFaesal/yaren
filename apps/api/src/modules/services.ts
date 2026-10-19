@@ -5,10 +5,10 @@ import { ApplicationError } from "@yaren/shared-kernel";
 import { authenticate, parse } from "../http.js";
 import { changed, noteActivity } from "./activity.js";
 
-const priceSchema = z.number().min(0, "Enter a price of 0 or more").max(9_999_999_999.99).refine(
+const optionalPrice = z.number().min(0, "Enter a price of 0 or more").max(9_999_999_999.99).refine(
   (value) => Number.isFinite(value) && Math.abs(value * 100 - Math.round(value * 100)) < 1e-6,
   "Use up to two decimal places",
-);
+).nullable().optional();
 
 const descriptionSchema = z.string().trim().max(500, "Description must be 500 characters or fewer").nullish().transform((value) => {
   if (value === undefined) return undefined;
@@ -17,11 +17,9 @@ const descriptionSchema = z.string().trim().max(500, "Description must be 500 ch
 
 const serviceTypes = [
   "Professional Services",
-  "Administrative & Coordination Services",
-  "Medical Procedures Services",
-  "Surgical Procedures Services",
+  "Administrative, Coordination and Other Services",
+  "Procedures & Interventions Services",
   "Investigations [Laboratory & Imaging] Services",
-  "Others",
 ] as const;
 const serviceTypeSchema = z.enum(serviceTypes, { error: "Choose a service type" });
 
@@ -36,7 +34,8 @@ const createSchema = z.object({
   category: categorySchema,
   unit: unitSchema,
   code: codeSchema,
-  price: priceSchema,
+  unit_price_egp: optionalPrice,
+  unit_price_eur: optionalPrice,
 });
 
 const updateSchema = z.object({
@@ -47,7 +46,8 @@ const updateSchema = z.object({
   category: categorySchema.optional(),
   unit: unitSchema.optional(),
   code: codeSchema.optional(),
-  price: priceSchema,
+  unit_price_egp: optionalPrice,
+  unit_price_eur: optionalPrice,
 });
 
 type ServiceRow = {
@@ -60,6 +60,8 @@ type ServiceRow = {
   code: string;
   shared_price: string;
   clinic_price: string | null;
+  unit_price_egp: string | null;
+  unit_price_eur: string | null;
 };
 
 export function registerServices(app: FastifyInstance, pool: pg.Pool) {
@@ -67,11 +69,6 @@ export function registerServices(app: FastifyInstance, pool: pg.Pool) {
     const query = readListQuery(request.query);
     const values: unknown[] = [];
     const clauses = ["s.deleted_at IS NULL"];
-    let clinicJoin = "FALSE";
-    if (query.clinicId) {
-      values.push(query.clinicId);
-      clinicJoin = `csp.clinic_id = $${values.length}`;
-    }
     if (query.serviceTypes.length > 0) {
       values.push(query.serviceTypes);
       clauses.push(`s.service_type = ANY($${values.length}::text[])`);
@@ -93,9 +90,8 @@ export function registerServices(app: FastifyInstance, pool: pg.Pool) {
     }
     const result = await pool.query<ServiceRow>(
       `SELECT s.id, s.name, s.description, s.service_type, s.category, s.unit, s.code,
-              s.price AS shared_price, csp.price AS clinic_price
+              s.price AS shared_price, NULL::numeric AS clinic_price, s.unit_price_egp, s.unit_price_eur
        FROM medical_services s
-       LEFT JOIN clinic_service_prices csp ON csp.service_id = s.id AND ${clinicJoin}
        WHERE ${clauses.join(" AND ")}
        ORDER BY s.position ASC, lower(s.name) ASC`,
       values,
@@ -123,13 +119,15 @@ export function registerServices(app: FastifyInstance, pool: pg.Pool) {
   app.post("/api/services", { preHandler: authenticate }, async (request, reply) => {
     assertManager(request.user.type);
     const body = parse(createSchema, request.body);
-    const price = money(body.price);
+    const priceEgp = money(body.unit_price_egp);
+    const priceEur = money(body.unit_price_eur);
+    const price = priceEur ?? priceEgp ?? 0;
     try {
       const created = await pool.query<{ id: string }>(
-        `INSERT INTO medical_services (name, description, service_type, category, unit, code, price, position, updated_by)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, (SELECT COALESCE(MAX(position), 0) + 1 FROM medical_services), $8)
+        `INSERT INTO medical_services (name, description, service_type, category, unit, code, price, unit_price_egp, unit_price_eur, position, updated_by)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, (SELECT COALESCE(MAX(position), 0) + 1 FROM medical_services), $10)
          RETURNING id`,
-        [body.name, body.description, body.service_type, body.category, body.unit, body.code, price, request.user.sub],
+        [body.name, body.description, body.service_type, body.category, body.unit, body.code, price, priceEgp, priceEur, request.user.sub],
       );
       const id = created.rows[0]?.id;
       if (!id) throw new ApplicationError(500, "internal_error", "Unexpected server error");
@@ -144,10 +142,11 @@ export function registerServices(app: FastifyInstance, pool: pg.Pool) {
           changed("Unit", null, body.unit),
           changed("Code", null, body.code),
           changed("Description", null, body.description),
-          changed("Price", null, formatPrice(price)),
+          changed("Unit price (EGP)", null, formatMoney(priceEgp)),
+          changed("Unit price (EUR)", null, formatMoney(priceEur)),
         ].filter((item) => item !== null),
       });
-      const row = await findService(pool, id, null);
+      const row = await findService(pool, id);
       return reply.status(201).send(row);
     } catch (error) {
       if (isUnique(error)) throw new ApplicationError(409, "name_taken", "A service with this name already exists");
@@ -159,39 +158,8 @@ export function registerServices(app: FastifyInstance, pool: pg.Pool) {
     assertManager(request.user.type);
     const id = readId(request.params);
     const body = parse(updateSchema, request.body);
-    const clinicId = body.clinic_id ?? null;
-    const price = money(body.price);
-    const current = await findService(pool, id, clinicId);
+    const current = await findService(pool, id);
     if (!current) throw new ApplicationError(404, "not_found", "Service was not found");
-
-    if (clinicId) {
-      await assertClinic(pool, clinicId);
-      const description = body.description === undefined ? current.description : body.description;
-      await pool.query(
-        `INSERT INTO clinic_service_prices (service_id, clinic_id, price, updated_by)
-         VALUES ($1, $2, $3, $4)
-         ON CONFLICT (service_id, clinic_id) DO UPDATE
-         SET price = EXCLUDED.price, updated_at = now(), updated_by = EXCLUDED.updated_by`,
-        [id, clinicId, price, request.user.sub],
-      );
-      await pool.query(
-        `UPDATE medical_services
-         SET description = $2, updated_at = now(), updated_by = $3
-         WHERE id = $1 AND deleted_at IS NULL`,
-        [id, description, request.user.sub],
-      );
-      const clinic = await clinicName(pool, clinicId);
-      noteActivity(request, {
-        entity: "service",
-        entityId: id,
-        summary: `Updated the price of ${current.name} for ${clinic.name}`,
-        changes: [
-          changed("Description", current.description, description),
-          changed("Price", formatPrice(current.price), formatPrice(price)),
-        ].filter((item) => item !== null),
-      });
-      return findService(pool, id, clinicId);
-    }
 
     const name = body.name ?? current.name;
     const description = body.description === undefined ? current.description : body.description;
@@ -199,13 +167,16 @@ export function registerServices(app: FastifyInstance, pool: pg.Pool) {
     const category = body.category ?? current.category;
     const unit = body.unit ?? current.unit;
     const code = body.code ?? current.code;
+    const priceEgp = body.unit_price_egp === undefined ? current.unit_price_egp : body.unit_price_egp;
+    const priceEur = body.unit_price_eur === undefined ? current.unit_price_eur : body.unit_price_eur;
+    const price = priceEur ?? priceEgp ?? 0;
     try {
       await pool.query(
         `UPDATE medical_services
          SET name = $2, description = $3, service_type = $4, category = $5, unit = $6, code = $7,
-             price = $8, updated_at = now(), updated_by = $9
+             price = $8, unit_price_egp = $9, unit_price_eur = $10, updated_at = now(), updated_by = $11
          WHERE id = $1 AND deleted_at IS NULL`,
-        [id, name, description, serviceType, category, unit, code, price, request.user.sub],
+        [id, name, description, serviceType, category, unit, code, price, priceEgp, priceEur, request.user.sub],
       );
     } catch (error) {
       if (isUnique(error)) throw new ApplicationError(409, "name_taken", "A service with this name already exists");
@@ -222,16 +193,17 @@ export function registerServices(app: FastifyInstance, pool: pg.Pool) {
         changed("Unit", current.unit, unit),
         changed("Code", current.code, code),
         changed("Description", current.description, description),
-        changed("Price", formatPrice(current.shared_price), formatPrice(price)),
+        changed("Unit price (EGP)", formatMoney(current.unit_price_egp), formatMoney(priceEgp)),
+        changed("Unit price (EUR)", formatMoney(current.unit_price_eur), formatMoney(priceEur)),
       ].filter((item) => item !== null),
     });
-    return findService(pool, id, null);
+    return findService(pool, id);
   });
 
   app.delete("/api/services/:id", { preHandler: authenticate }, async (request, reply) => {
     assertManager(request.user.type);
     const id = readId(request.params);
-    const current = await findService(pool, id, null);
+    const current = await findService(pool, id);
     if (!current) throw new ApplicationError(404, "not_found", "Service was not found");
     const client = await pool.connect();
     try {
@@ -257,34 +229,12 @@ export function registerServices(app: FastifyInstance, pool: pg.Pool) {
     });
     return reply.status(204).send();
   });
-
-  app.delete("/api/services/:id/clinics/:clinicId", { preHandler: authenticate }, async (request, reply) => {
-    assertManager(request.user.type);
-    const { id, clinicId } = request.params as { id: string; clinicId: string };
-    if (!z.string().uuid().safeParse(id).success) throw new ApplicationError(404, "not_found", "Service was not found");
-    if (!z.string().uuid().safeParse(clinicId).success) throw new ApplicationError(404, "not_found", "Clinic was not found");
-    const current = await findService(pool, id, clinicId);
-    if (!current) throw new ApplicationError(404, "not_found", "Service was not found");
-    const clinic = await clinicName(pool, clinicId);
-    const removed = await pool.query(
-      "DELETE FROM clinic_service_prices WHERE service_id = $1 AND clinic_id = $2",
-      [id, clinicId],
-    );
-    if ((removed.rowCount ?? 0) > 0) {
-      noteActivity(request, {
-        entity: "service",
-        entityId: id,
-        summary: `${current.name} at ${clinic.name} now uses the shared price`,
-        changes: [changed("Price", formatPrice(current.price), formatPrice(current.shared_price))].filter((item) => item !== null),
-      });
-    }
-    return reply.status(204).send();
-  });
 }
 
 function present(row: ServiceRow) {
   const shared = Number(row.shared_price);
-  const clinic = row.clinic_price == null ? null : Number(row.clinic_price);
+  const unitPriceEgp = moneyOrNull(row.unit_price_egp);
+  const unitPriceEur = moneyOrNull(row.unit_price_eur);
   return {
     id: row.id,
     name: row.name,
@@ -294,8 +244,10 @@ function present(row: ServiceRow) {
     unit: row.unit,
     code: row.code,
     shared_price: shared,
-    clinic_price: clinic,
-    price: clinic ?? shared,
+    clinic_price: null,
+    price: unitPriceEur ?? unitPriceEgp ?? shared,
+    unit_price_egp: unitPriceEgp,
+    unit_price_eur: unitPriceEur,
   };
 }
 
@@ -321,28 +273,16 @@ function readId(params: unknown) {
   return id;
 }
 
-async function findService(pool: pg.Pool, id: string, clinicId: string | null) {
+async function findService(pool: pg.Pool, id: string) {
   const result = await pool.query<ServiceRow>(
-    `SELECT s.id, s.name, s.description, s.service_type, s.category, s.unit, s.code, s.price AS shared_price, csp.price AS clinic_price
+    `SELECT s.id, s.name, s.description, s.service_type, s.category, s.unit, s.code, s.price AS shared_price, NULL::numeric AS clinic_price,
+            s.unit_price_egp, s.unit_price_eur
      FROM medical_services s
-     LEFT JOIN clinic_service_prices csp ON csp.service_id = s.id AND csp.clinic_id = $2
      WHERE s.id = $1 AND s.deleted_at IS NULL`,
-    [id, clinicId],
+    [id],
   );
   const row = result.rows[0];
   return row ? present(row) : undefined;
-}
-
-async function assertClinic(pool: pg.Pool, clinicId: string) {
-  const result = await pool.query("SELECT id FROM clinics WHERE id = $1 AND deleted_at IS NULL", [clinicId]);
-  if (!result.rows[0]) throw new ApplicationError(422, "unknown_clinic", "Choose a clinic that exists");
-}
-
-async function clinicName(pool: pg.Pool, clinicId: string) {
-  const result = await pool.query<{ name: string }>("SELECT name FROM clinics WHERE id = $1 AND deleted_at IS NULL", [clinicId]);
-  const clinic = result.rows[0];
-  if (!clinic) throw new ApplicationError(404, "not_found", "Clinic was not found");
-  return clinic;
 }
 
 function assertManager(type: string) {
@@ -351,8 +291,16 @@ function assertManager(type: string) {
   }
 }
 
-function money(value: number) {
-  return Math.round(value * 100) / 100;
+function money(value: number | null | undefined) {
+  return value == null ? null : Math.round(value * 100) / 100;
+}
+
+function moneyOrNull(value: string | null) {
+  return value == null ? null : Number(value);
+}
+
+function formatMoney(value: number | null) {
+  return value == null ? null : formatPrice(value);
 }
 
 function formatPrice(value: number) {
