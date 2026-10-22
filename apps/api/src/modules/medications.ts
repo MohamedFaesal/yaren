@@ -57,6 +57,7 @@ const medicationSchema = z.object({
   dosage_form: z.enum(dosageForms, { error: "Choose a dosage form" }),
   unit_price_egp: optionalPrice,
   unit_price_eur: optionalPrice,
+  is_diluent: z.boolean().optional().transform((value) => value ?? false),
   route: z.enum(routes).optional(),
   routes: z.array(routeAssignmentSchema).max(routes.length).optional(),
 }).superRefine((value, context) => {
@@ -79,6 +80,7 @@ const medicationSchema = z.object({
     dosage_form: value.dosage_form,
     unit_price_egp: value.unit_price_egp,
     unit_price_eur: value.unit_price_eur,
+    is_diluent: value.is_diluent,
     route: assigned[0]?.route ?? value.route!,
     routes: assigned.map((item) => ({ route: item.route, service_ids: [...new Set(item.service_ids)] })),
   };
@@ -92,11 +94,12 @@ type MedicationRow = {
   route: string;
   unit_price_egp: string | null;
   unit_price_eur: string | null;
+  is_diluent: boolean;
 };
 
 type MedicationRoute = {
   route: string;
-  services: { id: string; name: string; code: string; unit: string; price: number | null; unit_price_egp: number | null; unit_price_eur: number | null }[];
+  services: { id: string; name: string; code: string; unit: string; price: number | null; unit_price_egp: number | null; unit_price_eur: number | null; charge_once_per_plan: boolean }[];
 };
 
 export function registerMedications(app: FastifyInstance, pool: pg.Pool) {
@@ -122,7 +125,7 @@ export function registerMedications(app: FastifyInstance, pool: pg.Pool) {
       )`);
     }
     const result = await pool.query<MedicationRow>(
-      `SELECT id, name, strength, dosage_form, route, unit_price_egp, unit_price_eur
+      `SELECT id, name, strength, dosage_form, route, unit_price_egp, unit_price_eur, is_diluent
        FROM medications
        WHERE ${clauses.join(" AND ")}
        ORDER BY lower(name) ASC, lower(strength) ASC, dosage_form ASC`,
@@ -144,10 +147,10 @@ export function registerMedications(app: FastifyInstance, pool: pg.Pool) {
     try {
       await client.query("BEGIN");
       const created = await client.query<{ id: string }>(
-        `INSERT INTO medications (name, strength, dosage_form, route, unit_price_egp, unit_price_eur, updated_by)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)
+        `INSERT INTO medications (name, strength, dosage_form, route, unit_price_egp, unit_price_eur, is_diluent, updated_by)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
          RETURNING id`,
-        [body.name, body.strength, body.dosage_form, body.route, body.unit_price_egp, body.unit_price_eur, request.user.sub],
+        [body.name, body.strength, body.dosage_form, body.route, body.unit_price_egp, body.unit_price_eur, body.is_diluent, request.user.sub],
       );
       const id = created.rows[0]?.id;
       if (!id) throw new ApplicationError(500, "internal_error", "Unexpected server error");
@@ -182,9 +185,9 @@ export function registerMedications(app: FastifyInstance, pool: pg.Pool) {
       await client.query("BEGIN");
       await client.query(
         `UPDATE medications
-         SET name = $2, strength = $3, dosage_form = $4, route = $5, unit_price_egp = $6, unit_price_eur = $7, updated_at = now(), updated_by = $8
+         SET name = $2, strength = $3, dosage_form = $4, route = $5, unit_price_egp = $6, unit_price_eur = $7, is_diluent = $8, updated_at = now(), updated_by = $9
          WHERE id = $1 AND deleted_at IS NULL`,
-        [id, body.name, body.strength, body.dosage_form, body.route, body.unit_price_egp, body.unit_price_eur, request.user.sub],
+        [id, body.name, body.strength, body.dosage_form, body.route, body.unit_price_egp, body.unit_price_eur, body.is_diluent, request.user.sub],
       );
       await replaceRoutes(client, id, body.routes);
       await client.query("COMMIT");
@@ -225,7 +228,7 @@ export function registerMedications(app: FastifyInstance, pool: pg.Pool) {
 
 async function findMedication(pool: pg.Pool, id: string) {
   const result = await pool.query<MedicationRow>(
-    `SELECT id, name, strength, dosage_form, route, unit_price_egp, unit_price_eur FROM medications WHERE id = $1 AND deleted_at IS NULL`,
+    `SELECT id, name, strength, dosage_form, route, unit_price_egp, unit_price_eur, is_diluent FROM medications WHERE id = $1 AND deleted_at IS NULL`,
     [id],
   );
   const row = result.rows[0];
@@ -263,8 +266,9 @@ async function loadRoutes(db: pg.Pool | pg.PoolClient, medicationIds: string[]) 
     price: string | null;
     unit_price_egp: string | null;
     unit_price_eur: string | null;
+    charge_once_per_plan: boolean;
   }>(
-    `SELECT mr.medication_id, mr.route, s.id AS service_id, s.name, s.code, s.unit, s.price, s.unit_price_egp, s.unit_price_eur
+    `SELECT mr.medication_id, mr.route, s.id AS service_id, s.name, s.code, s.unit, s.price, s.unit_price_egp, s.unit_price_eur, s.charge_once_per_plan
      FROM medication_routes mr
      LEFT JOIN medication_route_services mrs ON mrs.medication_route_id = mr.id
      LEFT JOIN medical_services s ON s.id = mrs.service_id AND s.deleted_at IS NULL
@@ -289,6 +293,7 @@ async function loadRoutes(db: pg.Pool | pg.PoolClient, medicationIds: string[]) 
         price: row.unit_price_eur == null ? (row.price == null ? null : Number(row.price)) : Number(row.unit_price_eur),
         unit_price_egp: row.unit_price_egp == null ? null : Number(row.unit_price_egp),
         unit_price_eur: row.unit_price_eur == null ? null : Number(row.unit_price_eur),
+        charge_once_per_plan: row.charge_once_per_plan,
       });
     }
   }
@@ -334,7 +339,7 @@ function label(row: { name: string; strength: string; dosage_form: string }) {
   return [row.name, row.strength, row.dosage_form].filter((part) => part.trim()).join(" ");
 }
 
-function changes(current: { name: string; strength: string; dosage_form: string; route: string; unit_price_egp: number | null; unit_price_eur: number | null; routes?: MedicationRoute[] } | null, next: z.infer<typeof medicationSchema>) {
+function changes(current: { name: string; strength: string; dosage_form: string; route: string; unit_price_egp: number | null; unit_price_eur: number | null; is_diluent?: boolean; routes?: MedicationRoute[] } | null, next: z.infer<typeof medicationSchema>) {
   const previousRoutes = current?.routes?.map((item) => item.route).join(", ") || current?.route || null;
   return [
     changed("Active ingredient", current?.name ?? null, next.name),
@@ -342,6 +347,7 @@ function changes(current: { name: string; strength: string; dosage_form: string;
     changed("Dosage form", current?.dosage_form ?? null, next.dosage_form),
     changed("Unit price (EGP)", formatMoney(current?.unit_price_egp), formatMoney(next.unit_price_egp)),
     changed("Unit price (EUR)", formatMoney(current?.unit_price_eur), formatMoney(next.unit_price_eur)),
+    changed("Diluent", current?.is_diluent ? "Yes" : "No", next.is_diluent ? "Yes" : "No"),
     changed("Routes", previousRoutes, next.routes.map((item) => item.route).join(", ")),
   ].filter((item) => item !== null);
 }

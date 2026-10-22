@@ -93,6 +93,12 @@ const encounterSchema = z.object({
     flow_rate: z.string().trim().max(80).optional().transform((value) => value ?? ""),
     flow_rate_value: z.number().positive().max(100000).nullable().optional().transform((value) => value ?? null),
     flow_rate_unit: z.enum(["", "mL/hr", "drops/min", "mL/min", "mg/hr", "mcg/min"]).optional().transform((value) => value ?? ""),
+    diluent_medication_id: z.string().uuid().nullable().optional().transform((value) => value ?? null),
+    diluent_volume_value: z.number().positive().max(100000).nullable().optional().transform((value) => value ?? null),
+    infusion_duration_value: z.number().positive().max(1000).nullable().optional().transform((value) => value ?? null),
+    infusion_input: z.enum(["rate", "duration"]).optional().transform((value) => value ?? "rate"),
+    monitoring_duration_value: z.number().positive().max(1000).nullable().optional().transform((value) => value ?? null),
+    monitoring_duration_unit: z.enum(["", "minutes", "hours"]).optional().transform((value) => value ?? ""),
     instructions: z.string().trim().max(500).optional().transform((value) => value ?? ""),
   })).max(40).optional().transform((value) => value ?? []),
   procedure_orders: z.array(z.object({
@@ -102,9 +108,10 @@ const encounterSchema = z.object({
     code: z.string().trim().max(32).optional().transform((value) => value ?? ""),
     unit: z.string().trim().max(40).optional().transform((value) => value ?? ""),
     price: z.number().min(0).nullable().optional().transform((value) => value ?? null),
-    quantity: z.number().int().min(1).max(999).optional().transform((value) => value ?? 1),
+    quantity: z.number().positive().max(999).optional().transform((value) => value == null ? 1 : Math.round(value * 10000) / 10000),
     notes: z.string().trim().max(500).optional().transform((value) => value ?? ""),
     linked_medication_order_id: z.string().uuid().nullable().optional().transform((value) => value ?? null),
+    billing_scope: z.enum(["order", "plan"]).optional().transform((value) => value ?? "order"),
   })).max(40).optional().transform((value) => value ?? []),
   patient_advices: z.array(z.object({
     id: z.string().uuid(),
@@ -348,7 +355,7 @@ function resolveDiagnosis(body: EncounterBody): EncounterBody {
 async function applyRouteProcedures<T extends EncounterBody>(db: pg.Pool | pg.PoolClient, visitId: string, body: T): Promise<T> {
   const orders = body.medication_orders.filter((order) => order.medication_id && order.route);
   const medicationIds = [...new Set(orders.map((order) => order.medication_id).filter((id): id is string => Boolean(id)))];
-  const linked = new Map<string, { id: string; name: string; code: string; unit: string; price: number | null }[]>();
+  const linked = new Map<string, { id: string; name: string; code: string; unit: string; price: number | null; charge_once_per_plan: boolean }[]>();
   if (medicationIds.length > 0) {
     const result = await db.query<{
       medication_id: string;
@@ -358,8 +365,9 @@ async function applyRouteProcedures<T extends EncounterBody>(db: pg.Pool | pg.Po
       code: string;
       unit: string;
       price: string | null;
+      charge_once_per_plan: boolean;
     }>(
-      `SELECT mr.medication_id, mr.route, s.id, s.name, s.code, s.unit,
+      `SELECT mr.medication_id, mr.route, s.id, s.name, s.code, s.unit, s.charge_once_per_plan,
               CASE WHEN p.nationality = 'Egyptian' THEN s.unit_price_egp ELSE s.unit_price_eur END AS price
        FROM medication_routes mr
        JOIN medication_route_services mrs ON mrs.medication_route_id = mr.id
@@ -379,16 +387,22 @@ async function applyRouteProcedures<T extends EncounterBody>(db: pg.Pool | pg.Po
         code: row.code,
         unit: row.unit,
         price: row.price == null ? null : Number(row.price),
+        charge_once_per_plan: row.charge_once_per_plan,
       });
       linked.set(key, list);
     }
   }
-  const manual = body.procedure_orders.filter((item) => !item.linked_medication_order_id);
+  const manual = body.procedure_orders.filter((item) => !item.linked_medication_order_id && item.billing_scope !== "plan");
   const linkedOrders: EncounterBody["procedure_orders"] = [];
+  const planServices = new Map<string, { id: string; name: string; code: string; unit: string; price: number | null }>();
   for (const order of orders) {
     const services = linked.get(`${order.medication_id}\n${order.route}`) ?? [];
-    const quantity = administrationQuantity(order);
     for (const service of services) {
+      if (service.charge_once_per_plan) {
+        planServices.set(service.id, service);
+        continue;
+      }
+      const quantity = quantityForLinkedService(order, service);
       const previous = body.procedure_orders.find((item) => item.linked_medication_order_id === order.id && item.procedure_id === service.id);
       linkedOrders.push({
         id: previous?.id ?? randomUUID(),
@@ -400,10 +414,67 @@ async function applyRouteProcedures<T extends EncounterBody>(db: pg.Pool | pg.Po
         quantity,
         notes: previous?.notes ?? "",
         linked_medication_order_id: order.id,
+        billing_scope: "order",
       });
     }
   }
-  return { ...body, procedure_orders: [...manual, ...linkedOrders] };
+  const planOrders: EncounterBody["procedure_orders"] = [];
+  for (const service of planServices.values()) {
+    if (manual.some((item) => item.procedure_id === service.id)) continue;
+    const previous = body.procedure_orders.find((item) => item.billing_scope === "plan" && item.procedure_id === service.id);
+    planOrders.push({
+      id: previous?.id ?? randomUUID(),
+      procedure_id: service.id,
+      name: service.name,
+      code: service.code,
+      unit: service.unit,
+      price: service.price,
+      quantity: 1,
+      notes: previous?.notes ?? "",
+      linked_medication_order_id: null,
+      billing_scope: "plan",
+    });
+  }
+  return { ...body, procedure_orders: [...manual, ...planOrders, ...linkedOrders] };
+}
+
+function quantityForLinkedService(order: {
+  route: string;
+  duration_value: number | null;
+  duration_unit: string;
+  dose_value: number | null;
+  dose_unit: string;
+  flow_rate_value: number | null;
+  flow_rate_unit: string;
+  infusion_duration_value: number | null;
+  monitoring_duration_value: number | null;
+  monitoring_duration_unit: string;
+}, service: { code: string; name: string; unit: string }) {
+  if (isMonitoringService(service)) {
+    const hours = monitoringHours(order.monitoring_duration_value, order.monitoring_duration_unit);
+    return hours == null ? 1 : hours;
+  }
+  if (isHourlyService(service)) return administrationQuantity(order);
+  if (isPerProcedure(service)) return 1;
+  return administrationQuantity(order);
+}
+
+function isMonitoringService(service: { code: string; name: string }) {
+  return service.code === "YRN-MP-006" || /monitor/i.test(service.name);
+}
+
+function isPerProcedure(service: { unit: string }) {
+  return /per procedure/i.test(service.unit);
+}
+
+function isHourlyService(service: { name: string; unit: string }) {
+  return /per hour/i.test(`${service.name} ${service.unit}`);
+}
+
+function monitoringHours(value: number | null, unit: string) {
+  if (value == null || value <= 0) return null;
+  const hours = unit === "minutes" ? value / 60 : value;
+  return Math.round(hours * 10000) / 10000;
 }
 
 function administrationQuantity(order: { route: string; duration_value: number | null; duration_unit: string; dose_value: number | null; dose_unit: string; flow_rate_value: number | null; flow_rate_unit: string }) {

@@ -315,9 +315,10 @@ export type CatalogMedication = {
   route: string;
   unit_price_egp: number | null;
   unit_price_eur: number | null;
+  is_diluent: boolean;
   routes?: {
     route: string;
-    services: { id: string; name: string; code: string; unit: string; price: number | null; unit_price_egp?: number | null; unit_price_eur?: number | null }[];
+    services: { id: string; name: string; code: string; unit: string; price: number | null; unit_price_egp?: number | null; unit_price_eur?: number | null; charge_once_per_plan?: boolean }[];
   }[];
 };
 
@@ -338,6 +339,12 @@ export type MedicationOrder = {
   flow_rate: string;
   flow_rate_value: number | null;
   flow_rate_unit: "" | "mL/hr" | "drops/min" | "mL/min" | "mg/hr" | "mcg/min";
+  diluent_medication_id: string | null;
+  diluent_volume_value: number | null;
+  infusion_duration_value: number | null;
+  infusion_input: "rate" | "duration";
+  monitoring_duration_value: number | null;
+  monitoring_duration_unit: "" | "minutes" | "hours";
   instructions: string;
 };
 
@@ -351,6 +358,7 @@ export type ProcedureOrder = {
   quantity: number;
   notes: string;
   linked_medication_order_id?: string | null;
+  billing_scope?: "order" | "plan";
 };
 
 export type PatientAdvice = {
@@ -411,6 +419,7 @@ export type MedicalService = {
   price: number;
   unit_price_egp: number | null;
   unit_price_eur: number | null;
+  charge_once_per_plan: boolean;
 };
 
 export function formatPrice(value: number) {

@@ -36,6 +36,7 @@ const createSchema = z.object({
   code: codeSchema,
   unit_price_egp: optionalPrice,
   unit_price_eur: optionalPrice,
+  charge_once_per_plan: z.boolean().optional().transform((value) => value ?? false),
 });
 
 const updateSchema = z.object({
@@ -48,6 +49,7 @@ const updateSchema = z.object({
   code: codeSchema.optional(),
   unit_price_egp: optionalPrice,
   unit_price_eur: optionalPrice,
+  charge_once_per_plan: z.boolean().optional(),
 });
 
 type ServiceRow = {
@@ -62,6 +64,7 @@ type ServiceRow = {
   clinic_price: string | null;
   unit_price_egp: string | null;
   unit_price_eur: string | null;
+  charge_once_per_plan: boolean;
 };
 
 export function registerServices(app: FastifyInstance, pool: pg.Pool) {
@@ -90,7 +93,8 @@ export function registerServices(app: FastifyInstance, pool: pg.Pool) {
     }
     const result = await pool.query<ServiceRow>(
       `SELECT s.id, s.name, s.description, s.service_type, s.category, s.unit, s.code,
-              s.price AS shared_price, NULL::numeric AS clinic_price, s.unit_price_egp, s.unit_price_eur
+              s.price AS shared_price, NULL::numeric AS clinic_price, s.unit_price_egp, s.unit_price_eur,
+              s.charge_once_per_plan
        FROM medical_services s
        WHERE ${clauses.join(" AND ")}
        ORDER BY s.position ASC, lower(s.name) ASC`,
@@ -124,10 +128,10 @@ export function registerServices(app: FastifyInstance, pool: pg.Pool) {
     const price = priceEur ?? priceEgp ?? 0;
     try {
       const created = await pool.query<{ id: string }>(
-        `INSERT INTO medical_services (name, description, service_type, category, unit, code, price, unit_price_egp, unit_price_eur, position, updated_by)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, (SELECT COALESCE(MAX(position), 0) + 1 FROM medical_services), $10)
+        `INSERT INTO medical_services (name, description, service_type, category, unit, code, price, unit_price_egp, unit_price_eur, charge_once_per_plan, position, updated_by)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, (SELECT COALESCE(MAX(position), 0) + 1 FROM medical_services), $11)
          RETURNING id`,
-        [body.name, body.description, body.service_type, body.category, body.unit, body.code, price, priceEgp, priceEur, request.user.sub],
+        [body.name, body.description, body.service_type, body.category, body.unit, body.code, price, priceEgp, priceEur, body.charge_once_per_plan, request.user.sub],
       );
       const id = created.rows[0]?.id;
       if (!id) throw new ApplicationError(500, "internal_error", "Unexpected server error");
@@ -144,6 +148,7 @@ export function registerServices(app: FastifyInstance, pool: pg.Pool) {
           changed("Description", null, body.description),
           changed("Unit price (EGP)", null, formatMoney(priceEgp)),
           changed("Unit price (EUR)", null, formatMoney(priceEur)),
+          changed("Charge once per plan", null, body.charge_once_per_plan ? "Yes" : "No"),
         ].filter((item) => item !== null),
       });
       const row = await findService(pool, id);
@@ -169,14 +174,15 @@ export function registerServices(app: FastifyInstance, pool: pg.Pool) {
     const code = body.code ?? current.code;
     const priceEgp = body.unit_price_egp === undefined ? current.unit_price_egp : body.unit_price_egp;
     const priceEur = body.unit_price_eur === undefined ? current.unit_price_eur : body.unit_price_eur;
+    const chargeOnce = body.charge_once_per_plan ?? current.charge_once_per_plan;
     const price = priceEur ?? priceEgp ?? 0;
     try {
       await pool.query(
         `UPDATE medical_services
          SET name = $2, description = $3, service_type = $4, category = $5, unit = $6, code = $7,
-             price = $8, unit_price_egp = $9, unit_price_eur = $10, updated_at = now(), updated_by = $11
+             price = $8, unit_price_egp = $9, unit_price_eur = $10, charge_once_per_plan = $11, updated_at = now(), updated_by = $12
          WHERE id = $1 AND deleted_at IS NULL`,
-        [id, name, description, serviceType, category, unit, code, price, priceEgp, priceEur, request.user.sub],
+        [id, name, description, serviceType, category, unit, code, price, priceEgp, priceEur, chargeOnce, request.user.sub],
       );
     } catch (error) {
       if (isUnique(error)) throw new ApplicationError(409, "name_taken", "A service with this name already exists");
@@ -195,6 +201,7 @@ export function registerServices(app: FastifyInstance, pool: pg.Pool) {
         changed("Description", current.description, description),
         changed("Unit price (EGP)", formatMoney(current.unit_price_egp), formatMoney(priceEgp)),
         changed("Unit price (EUR)", formatMoney(current.unit_price_eur), formatMoney(priceEur)),
+        changed("Charge once per plan", current.charge_once_per_plan ? "Yes" : "No", chargeOnce ? "Yes" : "No"),
       ].filter((item) => item !== null),
     });
     return findService(pool, id);
@@ -248,6 +255,7 @@ function present(row: ServiceRow) {
     price: unitPriceEur ?? unitPriceEgp ?? shared,
     unit_price_egp: unitPriceEgp,
     unit_price_eur: unitPriceEur,
+    charge_once_per_plan: row.charge_once_per_plan,
   };
 }
 
@@ -276,7 +284,7 @@ function readId(params: unknown) {
 async function findService(pool: pg.Pool, id: string) {
   const result = await pool.query<ServiceRow>(
     `SELECT s.id, s.name, s.description, s.service_type, s.category, s.unit, s.code, s.price AS shared_price, NULL::numeric AS clinic_price,
-            s.unit_price_egp, s.unit_price_eur
+            s.unit_price_egp, s.unit_price_eur, s.charge_once_per_plan
      FROM medical_services s
      WHERE s.id = $1 AND s.deleted_at IS NULL`,
     [id],

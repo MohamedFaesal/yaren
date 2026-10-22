@@ -209,6 +209,7 @@ function ServiceDialog({
   const [description, setDescription] = useState(service?.description ?? "");
   const [priceEgp, setPriceEgp] = useState(service?.unit_price_egp == null ? "" : formatPrice(service.unit_price_egp));
   const [priceEur, setPriceEur] = useState(service?.unit_price_eur == null ? "" : formatPrice(service.unit_price_eur));
+  const [chargeOnce, setChargeOnce] = useState(service?.charge_once_per_plan ?? false);
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
 
@@ -243,6 +244,7 @@ function ServiceDialog({
       description: description.trim(),
       unit_price_egp: unitPriceEgp,
       unit_price_eur: unitPriceEur,
+      charge_once_per_plan: serviceType === "Procedures & Interventions Services" && chargeOnce,
     };
     try {
       if (service) {
@@ -326,6 +328,15 @@ function ServiceDialog({
               <input className={field} name="unit_price_eur" inputMode="decimal" value={priceEur} onChange={(event) => { setPriceEur(event.target.value); fields.clearField("unit_price_eur"); }} placeholder="0.00" />
             </Field>
           </div>
+          {serviceType === "Procedures & Interventions Services" ? (
+            <label className="flex items-start gap-2 rounded-lg border border-line-soft bg-surface-2 px-3 py-2.5 text-sm text-ink">
+              <input type="checkbox" className="mt-0.5" checked={chargeOnce} onChange={(event) => setChargeOnce(event.target.checked)} />
+              <span>
+                <span className="font-medium">Charge once per management plan</span>
+                <span className="mt-0.5 block text-xs text-muted">Several medication orders share one line. Leave this off to charge the service on every order, such as I.V. infusion.</span>
+              </span>
+            </label>
+          ) : null}
         </div>
         <div className="mt-5 flex justify-end gap-2">
           <button type="button" className={secondary} disabled={pending} onClick={onClose}>Cancel</button>

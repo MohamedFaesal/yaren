@@ -203,6 +203,7 @@ function MedicationDialog({
   const [dosageForm, setDosageForm] = useState(medication?.dosage_form ?? "Tablet");
   const [priceEgp, setPriceEgp] = useState(priceInput(medication?.unit_price_egp));
   const [priceEur, setPriceEur] = useState(priceInput(medication?.unit_price_eur));
+  const [isDiluent, setIsDiluent] = useState(medication?.is_diluent ?? false);
   const [assigned, setAssigned] = useState<{ route: string; serviceIds: string[] }[]>(
     medication?.routes?.length
       ? medication.routes.map((item) => ({ route: item.route, serviceIds: item.services.map((service) => service.id) }))
@@ -254,6 +255,7 @@ function MedicationDialog({
       dosage_form: dosageForm,
       unit_price_egp: unitPriceEgp,
       unit_price_eur: unitPriceEur,
+      is_diluent: isDiluent,
       routes: assigned.map((item) => ({ route: item.route, service_ids: item.serviceIds })),
     };
     try {
@@ -317,6 +319,13 @@ function MedicationDialog({
                 <input className={field} name="unit_price_eur" inputMode="decimal" value={priceEur} placeholder="0.00" onChange={(event) => { setPriceEur(event.target.value); fields.clearField("unit_price_eur"); }} />
               </Field>
             </div>
+            <label className="flex items-start gap-2 rounded-lg border border-line-soft bg-surface-2 px-3 py-2.5 text-sm text-ink">
+              <input type="checkbox" className="mt-0.5" checked={isDiluent} onChange={(event) => setIsDiluent(event.target.checked)} />
+              <span>
+                <span className="font-medium">Can be used as a diluent</span>
+                <span className="mt-0.5 block text-xs text-muted">Checked medications appear in the diluent list on an infusion order. Choosing one adds its unit price to that order. The volume is used to work out the infusion time.</span>
+              </span>
+            </label>
             <div>
               <p className={label}>Routes of administration</p>
               <input className="sr-only" name="routes" value={assigned.length ? assigned.map((item) => item.route).join(", ") : ""} readOnly required tabIndex={-1} aria-hidden="true" />

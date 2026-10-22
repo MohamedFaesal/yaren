@@ -30,6 +30,15 @@ const frequencies = ["Once", "Once daily", "Every 6 hours", "Every 8 hours", "Ev
 const doseUnits = ["mg", "g", "mcg", "mL", "Ampule", "Vial", "Nebule", "Syringe"] as const;
 const flowRateUnits = ["mL/hr", "drops/min", "mL/min", "mg/hr", "mcg/min"] as const;
 const clearedFlowRate: Pick<MedicationOrder, "flow_rate" | "flow_rate_value" | "flow_rate_unit"> = { flow_rate: "", flow_rate_value: null, flow_rate_unit: "" };
+const clearedAdministration: Pick<MedicationOrder, "flow_rate" | "flow_rate_value" | "flow_rate_unit" | "diluent_medication_id" | "diluent_volume_value" | "infusion_duration_value" | "infusion_input" | "monitoring_duration_value" | "monitoring_duration_unit"> = {
+  ...clearedFlowRate,
+  diluent_medication_id: null,
+  diluent_volume_value: null,
+  infusion_duration_value: null,
+  infusion_input: "rate",
+  monitoring_duration_value: null,
+  monitoring_duration_unit: "",
+};
 const incompleteOrdersMessage = "Complete the highlighted medication orders, or remove them.";
 
 const investigationPriorities = [
@@ -136,7 +145,7 @@ export function EncounterPage({ token }: { token: string }) {
     });
   }, [draftReady, catalog, record?.visit.patient_nationality]);
 
-  const ordersInvalid = Boolean(form?.medication_orders.some((row) => hasOrderProblems(row)));
+  const ordersInvalid = Boolean(form?.medication_orders.some((row) => hasOrderProblems(row, catalog)));
   useEffect(() => {
     if (!showOrderErrors || ordersInvalid) return;
     setShowOrderErrors(false);
@@ -546,8 +555,16 @@ export function EncounterPage({ token }: { token: string }) {
                           index={index}
                           locked={locked}
                           nationality={visit.patient_nationality}
-                          charges={form.procedure_orders.filter((item) => item.linked_medication_order_id === row.id)}
-                          invalid={showOrderErrors && hasOrderProblems(row)}
+                          charges={[
+                            ...form.procedure_orders.filter((item) => item.linked_medication_order_id === row.id),
+                            ...(() => {
+                              const fluid = diluentCharge(row, catalog, visit.patient_nationality);
+                              return fluid ? [fluid] : [];
+                            })(),
+                          ]}
+                          planNotes={servicesForOrder(catalog, row).filter((service) => service.charge_once_per_plan).map((service) => service.name)}
+                          invalid={showOrderErrors && hasOrderProblems(row, catalog)}
+                          diluent={catalog.find((item) => item.id === row.diluent_medication_id)?.name ?? ""}
                           onEdit={() => setOrderDialog(row)}
                           onRemove={() => {
                             const medication_orders = form.medication_orders.filter((item) => item.id !== row.id);
@@ -561,7 +578,7 @@ export function EncounterPage({ token }: { token: string }) {
                     <div className="mt-3 flex flex-wrap items-baseline justify-between gap-2 rounded-xl bg-surface-2 px-4 py-3">
                       <p className="text-sm text-muted-strong">Administration charges for {form.medication_orders.length} {form.medication_orders.length === 1 ? "order" : "orders"}</p>
                       <p className="text-base font-bold tabular-nums text-ink">
-                        {chargesTotal(form.procedure_orders.filter((item) => item.linked_medication_order_id), visit.patient_nationality)}
+                        {chargesTotal(administrationCharges(form.medication_orders, form.procedure_orders, catalog, visit.patient_nationality), visit.patient_nationality)}
                       </p>
                     </div>
                   ) : null}
@@ -598,7 +615,7 @@ export function EncounterPage({ token }: { token: string }) {
                           nationality={visit.patient_nationality}
                           source={form.medication_orders.find((order) => order.id === item.linked_medication_order_id)?.medication ?? ""}
                           onEdit={() => setProcedureDialog(item)}
-                          onRemove={() => update({ procedure_orders: form.procedure_orders.filter((row) => row.id !== item.id) })}
+                          onRemove={() => update({ procedure_orders: reconcileProcedures(form.medication_orders, form.procedure_orders.filter((row) => row.id !== item.id), catalog, visit.patient_nationality) })}
                         />
                       ))}
                     </ol>
@@ -659,6 +676,7 @@ export function EncounterPage({ token }: { token: string }) {
           locked={locked}
           catalog={catalog}
           nationality={visit.patient_nationality}
+          planOrders={form.medication_orders}
           onClose={() => setOrderDialog(null)}
           onSave={(order) => {
             const exists = form.medication_orders.some((row) => row.id === order.id);
@@ -728,6 +746,12 @@ function normalize(encounter: ClinicalEncounter): ClinicalEncounter {
         flow_rate_value,
         flow_rate_unit,
         flow_rate: flow_rate_value != null && flow_rate_unit ? flowRateText(flow_rate_value, flow_rate_unit) : item.flow_rate ?? "",
+        diluent_medication_id: item.diluent_medication_id ?? null,
+        diluent_volume_value: item.diluent_volume_value ?? null,
+        infusion_duration_value: item.infusion_duration_value ?? null,
+        infusion_input: item.infusion_input === "duration" ? "duration" : "rate",
+        monitoring_duration_value: item.monitoring_duration_value ?? null,
+        monitoring_duration_unit: item.monitoring_duration_unit || "",
         duration_value,
         duration_unit,
         duration: duration_value != null && duration_unit ? durationText(duration_value, duration_unit) : item.duration ?? "",
@@ -745,6 +769,7 @@ function normalize(encounter: ClinicalEncounter): ClinicalEncounter {
       quantity: item.quantity ?? 1,
       notes: item.notes ?? "",
       linked_medication_order_id: item.linked_medication_order_id ?? null,
+      billing_scope: item.billing_scope === "plan" ? "plan" : "order",
     })),
     patient_advices: encounter.patient_advices ?? [],
   };
@@ -768,6 +793,12 @@ function emptyOrder(): MedicationOrder {
     flow_rate: "",
     flow_rate_value: null,
     flow_rate_unit: "",
+    diluent_medication_id: null,
+    diluent_volume_value: null,
+    infusion_duration_value: null,
+    infusion_input: "rate",
+    monitoring_duration_value: null,
+    monitoring_duration_unit: "hours",
     instructions: "",
   };
 }
@@ -783,6 +814,7 @@ function emptyProcedure(): ProcedureOrder {
     quantity: 1,
     notes: "",
     linked_medication_order_id: null,
+    billing_scope: "order",
   };
 }
 
@@ -823,14 +855,19 @@ function listedServicePrice(catalog: MedicalService[], serviceId: string | null,
 }
 
 function reconcileProcedures(orders: MedicationOrder[], procedures: ProcedureOrder[], catalog: CatalogMedication[], nationality: string | null | undefined) {
-  const manual = procedures.filter((item) => !item.linked_medication_order_id);
+  const manual = procedures.filter((item) => !item.linked_medication_order_id && item.billing_scope !== "plan");
   const linked: ProcedureOrder[] = [];
+  const planServices = new Map<string, NonNullable<CatalogMedication["routes"]>[number]["services"][number]>();
   for (const order of orders) {
     if (!order.medication_id || !order.route) continue;
     const item = catalog.find((entry) => entry.id === order.medication_id);
     const services = item?.routes?.find((entry) => entry.route === order.route)?.services ?? [];
-    const quantity = administrationQuantity(order);
     for (const service of services) {
+      if (service.charge_once_per_plan) {
+        planServices.set(service.id, service);
+        continue;
+      }
+      const quantity = quantityForLinkedService(order, service);
       const previous = procedures.find((entry) => entry.linked_medication_order_id === order.id && entry.procedure_id === service.id);
       linked.push({
         id: previous?.id ?? crypto.randomUUID(),
@@ -842,10 +879,56 @@ function reconcileProcedures(orders: MedicationOrder[], procedures: ProcedureOrd
         quantity,
         notes: previous?.notes ?? "",
         linked_medication_order_id: order.id,
+        billing_scope: "order",
       });
     }
   }
-  return [...manual, ...linked];
+  const plan: ProcedureOrder[] = [];
+  for (const service of planServices.values()) {
+    if (manual.some((item) => item.procedure_id === service.id)) continue;
+    const previous = procedures.find((entry) => entry.billing_scope === "plan" && entry.procedure_id === service.id);
+    plan.push({
+      id: previous?.id ?? crypto.randomUUID(),
+      procedure_id: service.id,
+      name: service.name,
+      code: service.code,
+      unit: service.unit,
+      price: servicePriceAmount(service, nationality),
+      quantity: 1,
+      notes: previous?.notes ?? "",
+      linked_medication_order_id: null,
+      billing_scope: "plan",
+    });
+  }
+  return [...manual, ...plan, ...linked];
+}
+
+function quantityForLinkedService(order: MedicationOrder, service: { code: string; name: string; unit: string }) {
+  if (isMonitoringService(service)) {
+    const hours = monitoringHours(order.monitoring_duration_value, order.monitoring_duration_unit);
+    return hours == null ? 1 : hours;
+  }
+  if (isHourlyService(service)) return administrationQuantity(order);
+  if (isPerProcedure(service)) return 1;
+  return administrationQuantity(order);
+}
+
+function isMonitoringService(service: { code: string; name: string }) {
+  return service.code === "YRN-MP-006" || /monitor/i.test(service.name);
+}
+
+function isPerProcedure(service: { unit: string }) {
+  return /per procedure/i.test(service.unit);
+}
+
+function isHourlyService(service: { name: string; unit: string }) {
+  return /per hour/i.test(`${service.name} ${service.unit}`);
+}
+
+function monitoringHours(value: number | null, unit: string) {
+  if (value == null || value <= 0) return null;
+  const hours = unit === "minutes" ? value / 60 : value;
+  return Math.round(hours * 10000) / 10000;
 }
 
 function administrationQuantity(order: Pick<MedicationOrder, "route" | "duration_value" | "duration_unit" | "dose_value" | "dose_unit" | "flow_rate_value" | "flow_rate_unit">) {
@@ -877,15 +960,46 @@ function infusionHours(order: Pick<MedicationOrder, "dose_value" | "dose_unit" |
   return amount == null ? null : amount / perHour;
 }
 
+function infusionVolume(order: Pick<MedicationOrder, "diluent_volume_value" | "dose_value" | "dose_unit">) {
+  if (order.diluent_volume_value != null && order.diluent_volume_value > 0) return order.diluent_volume_value;
+  if (order.dose_unit === "mL" && order.dose_value != null && order.dose_value > 0) return order.dose_value;
+  return null;
+}
+
+function volumeRatePerHour(value: number | null, unit: string) {
+  if (value == null || value <= 0) return null;
+  if (unit === "mL/hr") return value;
+  if (unit === "mL/min") return value * 60;
+  if (unit === "drops/min") return (value / 20) * 60;
+  return null;
+}
+
+function syncInfusion(order: MedicationOrder, input: MedicationOrder["infusion_input"] = order.infusion_input): Partial<MedicationOrder> {
+  const volume = infusionVolume(order);
+  if (volume == null) return { infusion_input: input };
+  if (input === "duration") {
+    if (order.infusion_duration_value == null || order.infusion_duration_value <= 0) return { infusion_input: "duration" };
+    const mlPerHour = Math.round((volume / order.infusion_duration_value) * 100) / 100;
+    return {
+      infusion_input: "duration",
+      flow_rate_value: mlPerHour,
+      flow_rate_unit: "mL/hr",
+      flow_rate: flowRateText(mlPerHour, "mL/hr"),
+    };
+  }
+  const perHour = volumeRatePerHour(order.flow_rate_value, order.flow_rate_unit || "mL/hr");
+  if (perHour == null) return { infusion_input: "rate", infusion_duration_value: null };
+  return { infusion_input: "rate", infusion_duration_value: Math.round((volume / perHour) * 100) / 100 };
+}
+
 function flowRateHint(order: MedicationOrder) {
   const hours = infusionHours(order);
   if (hours == null) {
-    if (order.flow_rate_value != null && order.dose_value != null) return "This rate does not match the dose type, so the charge uses the duration instead.";
-    return "Set a rate that matches the dose, such as mL with mL/hr, and the infusion is charged for the hours it takes.";
+    if (order.flow_rate_value != null && order.dose_value != null) return "This rate does not match the dose type.";
+    return "Set a rate that matches the dose, such as mL with mL/hr.";
   }
-  const rounded = Math.max(1, Math.ceil(hours));
   const drops = order.flow_rate_unit === "drops/min" ? " Drops are counted on a 20-drop/mL giving set." : "";
-  return `Giving ${order.dose} at this rate takes ${rounded} ${rounded === 1 ? "hour" : "hours"}, so the infusion is charged × ${rounded}.${drops}`;
+  return `Giving ${order.dose} at this rate takes ${Math.round(hours * 100) / 100} hours.${drops}`;
 }
 
 function doseText(value: number | null, unit: MedicationOrder["dose_unit"]) {
@@ -969,10 +1083,14 @@ function parseDuration(text: string): { value: number | null; unit: MedicationOr
 
 function chargeSummary(charge: ProcedureOrder, nationality: string | null | undefined) {
   const quantity = charge.quantity || 1;
-  if (charge.price == null) return `— × ${quantity}`;
+  if (charge.price == null) return `— × ${formatQuantity(quantity)}`;
   const currency = nationality === "Egyptian" ? "EGP" : "EUR";
   const total = Math.round(charge.price * quantity * 100) / 100;
-  return `${currency} ${formatPrice(charge.price)} × ${quantity} · ${currency} ${formatPrice(total)}`;
+  return `${currency} ${formatPrice(charge.price)} × ${formatQuantity(quantity)} · ${currency} ${formatPrice(total)}`;
+}
+
+function formatQuantity(quantity: number) {
+  return String(Math.round(quantity * 10000) / 10000);
 }
 function Icd10Picker({
   token,
@@ -1223,20 +1341,65 @@ function PlanTabButton({ selected, count, onClick, children }: { selected: boole
   );
 }
 
-type OrderProblems = Partial<Record<"medication" | "route" | "dose" | "duration", string>>;
+type OrderProblems = Partial<Record<"medication" | "route" | "dose" | "duration" | "infusion" | "monitoring", string>>;
 
 function isHourlyRoute(route: string) {
   return route === "IV Infusion / Drip" || route === "Inhalation / Nebulization";
 }
 
 function durationRequired(row: MedicationOrder) {
-  return isHourlyRoute(row.route) || row.frequency !== "Once";
+  if (row.route === "IV Infusion / Drip") return false;
+  return row.route === "Inhalation / Nebulization" || row.frequency !== "Once";
+}
+
+function servicesForOrder(catalog: CatalogMedication[], row: MedicationOrder) {
+  const item = catalog.find((entry) => entry.id === row.medication_id);
+  return item?.routes?.find((entry) => entry.route === row.route)?.services ?? [];
+}
+
+function administrationCharges(orders: MedicationOrder[], procedures: ProcedureOrder[], catalog: CatalogMedication[], nationality: string | null | undefined) {
+  const sharedIds = new Set<string>();
+  for (const order of orders) {
+    for (const service of servicesForOrder(catalog, order)) {
+      if (service.charge_once_per_plan) sharedIds.add(service.id);
+    }
+  }
+  return procedures.filter((item) => Boolean(item.linked_medication_order_id) || item.billing_scope === "plan" || (item.procedure_id != null && sharedIds.has(item.procedure_id)))
+    .concat(orders.flatMap((order) => {
+      const fluid = diluentCharge(order, catalog, nationality);
+      return fluid ? [fluid] : [];
+    }));
+}
+
+function diluentCharge(order: MedicationOrder, catalog: CatalogMedication[], nationality: string | null | undefined): ProcedureOrder | null {
+  if (order.route !== "IV Infusion / Drip" || !order.diluent_medication_id) return null;
+  const item = catalog.find((entry) => entry.id === order.diluent_medication_id);
+  if (!item) return null;
+  return {
+    id: `diluent:${order.id}`,
+    procedure_id: null,
+    name: [item.name, item.strength].filter((part) => part.trim()).join(" "),
+    code: "",
+    unit: item.dosage_form,
+    price: servicePriceAmount(item, nationality),
+    quantity: 1,
+    notes: "",
+    linked_medication_order_id: order.id,
+    billing_scope: "order",
+  };
+}
+
+function firstOrderForPlanService(orders: MedicationOrder[], catalog: CatalogMedication[], procedureId: string | null) {
+  for (const order of orders) {
+    if (servicesForOrder(catalog, order).some((service) => service.charge_once_per_plan && service.id === procedureId)) return order.id;
+  }
+  return null;
 }
 
 /** Strict checks are used in the dialog. The list check accepts an older order whose dose or duration is only free text. */
-function orderProblems(row: MedicationOrder, strict = false): OrderProblems {
+function orderProblems(row: MedicationOrder, strict = false, services: { code: string; name: string }[] = []): OrderProblems {
   const problems: OrderProblems = {};
-  if (!row.medication.trim()) problems.medication = "Choose a medication.";
+  if (!row.medication.trim() || !row.medication_id) problems.medication = "Choose a medication.";
   if (!row.route) problems.route = "Choose a route.";
   const legacyDose = !strict && row.dose.trim().length > 0;
   if (!legacyDose) {
@@ -1246,13 +1409,19 @@ function orderProblems(row: MedicationOrder, strict = false): OrderProblems {
   }
   const legacyDuration = !strict && row.duration.trim().length > 0;
   if (durationRequired(row) && row.duration_value == null && !legacyDuration) {
-    problems.duration = isHourlyRoute(row.route) ? "Enter how long it runs. This sets the charge." : "Enter how long to continue it.";
+    problems.duration = row.route === "Inhalation / Nebulization" ? "Enter how long it runs. This sets the charge." : "Enter how long to continue it.";
+  }
+  if (row.route === "IV Infusion / Drip" && infusionVolume(row) != null && (row.infusion_duration_value == null || row.infusion_duration_value <= 0)) {
+    problems.infusion = row.infusion_input === "duration" ? "Enter how long the infusion runs." : "Enter the infusion rate so the duration can be calculated.";
+  }
+  if (strict && services.some(isMonitoringService) && row.monitoring_duration_value == null) {
+    problems.monitoring = "Enter how long the patient is monitored.";
   }
   return problems;
 }
 
-function hasOrderProblems(row: MedicationOrder) {
-  return Object.keys(orderProblems(row)).length > 0;
+function hasOrderProblems(row: MedicationOrder, catalog: CatalogMedication[]) {
+  return Object.keys(orderProblems(row, false, servicesForOrder(catalog, row))).length > 0;
 }
 
 function prescriptionSummary(row: MedicationOrder) {
@@ -1337,6 +1506,8 @@ function MedicationOrderRow({
   locked,
   nationality,
   charges,
+  planNotes,
+  diluent,
   invalid,
   onEdit,
   onRemove,
@@ -1346,12 +1517,20 @@ function MedicationOrderRow({
   locked: boolean;
   nationality: string | null | undefined;
   charges: ProcedureOrder[];
+  planNotes: string[];
+  diluent: string;
   invalid: boolean;
   onEdit: () => void;
   onRemove: () => void;
 }) {
   const identity = [row.strength, row.dosage_form].filter((part) => part.trim()).join(" · ");
   const summary = prescriptionSummary(row);
+  const administration = [
+    row.infusion_duration_value != null ? `Infusion ${row.infusion_duration_value} h` : "",
+    row.flow_rate ? `at ${row.flow_rate}` : "",
+    diluent ? `in ${diluent}${row.diluent_volume_value != null ? ` ${row.diluent_volume_value} mL` : ""}` : "",
+    row.monitoring_duration_value != null ? `Monitor ${row.monitoring_duration_value} ${row.monitoring_duration_unit || "hours"}` : "",
+  ].filter(Boolean).join(" · ");
   return (
     <li className={`rounded-xl border bg-surface transition ${invalid ? "border-danger" : "border-line hover:border-line-strong"}`}>
       <div className="flex items-start gap-3 p-3 sm:p-4">
@@ -1362,7 +1541,8 @@ function MedicationOrderRow({
             {identity ? <span className="ml-2 text-sm font-normal text-muted-strong">{identity}</span> : null}
           </p>
           <p className="mt-0.5 text-sm text-muted-strong">{summary || "No dose recorded yet"}</p>
-          {row.flow_rate ? <p className="mt-0.5 text-xs text-muted">Flow rate {row.flow_rate}</p> : null}
+          {administration ? <p className="mt-0.5 text-xs text-muted">{administration}</p> : null}
+          {planNotes.map((name) => <p key={name} className="mt-1 text-xs font-medium text-blue">{name} is charged once for this plan.</p>)}
           {row.instructions ? <p className="mt-0.5 line-clamp-2 text-xs text-muted">{row.instructions}</p> : null}
           {invalid ? <p className="mt-1 text-xs font-medium text-danger">Open this order to complete it.</p> : null}
         </button>
@@ -1388,6 +1568,7 @@ function MedicationOrderDialog({
   locked,
   catalog,
   nationality,
+  planOrders,
   onClose,
   onSave,
 }: {
@@ -1396,17 +1577,41 @@ function MedicationOrderDialog({
   locked: boolean;
   catalog: CatalogMedication[];
   nationality: string | null | undefined;
+  planOrders: MedicationOrder[];
   onClose: () => void;
   onSave: (order: MedicationOrder) => void;
 }) {
   const [draft, setDraft] = useState<MedicationOrder>(order);
   const [attempted, setAttempted] = useState(false);
   const titleId = useId();
-  const problems = attempted ? orderProblems(draft, true) : {};
-  const hourly = isHourlyRoute(draft.route);
-  const needsDuration = durationRequired(draft);
-  const charges = reconcileProcedures([draft], [], catalog, nationality);
+  const services = servicesForOrder(catalog, draft);
+  const problems = attempted ? orderProblems(draft, true, services) : {};
+  const infusion = draft.route === "IV Infusion / Drip";
+  const monitors = services.some(isMonitoringService);
+  const previewOrders = existing
+    ? planOrders.map((item) => item.id === draft.id ? draft : item)
+    : [...planOrders, draft];
+  const reconciled = reconcileProcedures(previewOrders, [], catalog, nationality);
+  const charges = [
+    ...reconciled.filter((item) => item.linked_medication_order_id === draft.id || (item.billing_scope === "plan" && firstOrderForPlanService(previewOrders, catalog, item.procedure_id) === draft.id)),
+    ...(() => {
+      const fluid = diluentCharge(draft, catalog, nationality);
+      return fluid ? [fluid] : [];
+    })(),
+  ];
+  const alreadyCharged = reconciled.filter((item) => item.billing_scope === "plan" && services.some((service) => service.charge_once_per_plan && service.id === item.procedure_id) && firstOrderForPlanService(previewOrders, catalog, item.procedure_id) !== draft.id);
   const control = (problem?: string) => `${field} ${problem ? fieldInvalid : ""}`;
+  const names = [...new Set(catalog.map((item) => item.name))].sort((left, right) => left.localeCompare(right));
+  if (draft.medication && !names.includes(draft.medication)) names.unshift(draft.medication);
+  const named = catalog.filter((item) => item.name === draft.medication);
+  const strengths = [...new Set(named.map((item) => item.strength))];
+  const forms = named.filter((item) => item.strength === draft.strength).map((item) => item.dosage_form);
+  const uniqueForms = [...new Set(forms)];
+  const product = catalog.find((item) => item.id === draft.medication_id);
+  const diluents = catalog.filter((item) => item.is_diluent);
+  const currency = nationality === "Egyptian" ? "EGP" : "EUR";
+  const rateLocked = locked || draft.infusion_input === "duration";
+  const durationLocked = locked || draft.infusion_input !== "duration";
 
   useEffect(() => {
     function onKey(event: KeyboardEvent) {
@@ -1416,22 +1621,41 @@ function MedicationOrderDialog({
     return () => document.removeEventListener("keydown", onKey);
   }, [onClose]);
 
-  function patch(next: Partial<MedicationOrder>) {
-    setDraft((current) => ({ ...current, ...next }));
+  function chooseProduct(item: CatalogMedication) {
+    setDraft((current) => {
+      const same = current.medication_id === item.id;
+      const dose = same ? { value: current.dose_value, unit: current.dose_unit } : defaultDose(item.strength, item.dosage_form);
+      const route = same ? current.route : item.routes?.[0]?.route ?? item.route;
+      const next: MedicationOrder = {
+        ...current,
+        medication_id: item.id,
+        medication: item.name,
+        strength: item.strength,
+        dosage_form: item.dosage_form,
+        route,
+        dose_value: dose.value,
+        dose_unit: dose.unit,
+        dose: doseText(dose.value, dose.unit),
+        ...(route === "IV Infusion / Drip" ? {} : clearedAdministration),
+      };
+      return route === "IV Infusion / Drip" ? { ...next, ...syncInfusion(next) } : next;
+    });
   }
 
   function submit(event: FormEvent) {
     if (locked) return;
     event.preventDefault();
     setAttempted(true);
-    if (Object.keys(orderProblems(draft, true)).length > 0) return;
+    if (Object.keys(orderProblems(draft, true, services)).length > 0) return;
     onSave(draft);
   }
+
+  const monitoringBilled = monitoringHours(draft.monitoring_duration_value, draft.monitoring_duration_unit);
 
   return (
     <div className="triage-dialog-backdrop fixed inset-0 z-50 grid place-items-center bg-shell/45 p-4" role="presentation" onMouseDown={onClose}>
       <form
-        className="flex max-h-[92vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl bg-surface shadow-dialog"
+        className="flex max-h-[92vh] w-full max-w-6xl flex-col overflow-hidden rounded-2xl bg-surface shadow-dialog"
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
@@ -1441,8 +1665,8 @@ function MedicationOrderDialog({
       >
         <div className="flex shrink-0 items-start justify-between gap-4 border-b border-line-soft px-5 py-4">
           <div className="min-w-0">
-            <h2 id={titleId} className="text-lg font-semibold text-ink">{locked ? "Medication order" : existing ? "Edit medication order" : "New medication order"}</h2>
-            <p className="mt-0.5 text-sm text-muted">{locked ? "This encounter is finished, so the order is read-only." : "Fields marked * are required."}</p>
+            <h2 id={titleId} className="text-lg font-semibold text-ink">{locked ? "Medication Order" : existing ? "Edit Medication Order" : "New Medication Order"}</h2>
+            <p className="mt-0.5 text-sm text-muted">{locked ? "This encounter is finished, so the order is read-only." : existing ? "Update this medication order for the patient" : "Add a new medication order for the patient"}</p>
           </div>
           <button type="button" className="inline-grid size-9 shrink-0 place-items-center rounded-lg text-muted-strong transition hover:bg-surface-2 hover:text-ink" aria-label="Close" onClick={onClose}>
             <svg viewBox="0 0 24 24" className="size-5" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
@@ -1450,72 +1674,89 @@ function MedicationOrderDialog({
         </div>
 
         <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
-          <section>
-            <label className={label}>Medication <span className="text-danger">*</span>
-              <SearchSelect
-                fixedMenu
-                disabled={locked}
-                invalid={Boolean(problems.medication)}
-                value={draft.medication_id ?? ""}
-                placeholder={catalog.length ? "Search by name or active ingredient" : "No medications yet"}
-                options={medicationOptions(catalog, draft)}
-                onChange={(medicationId) => {
-                  const item = catalog.find((entry) => entry.id === medicationId);
-                  if (!item) return;
-                  const route = item.routes?.[0]?.route ?? item.route;
-                  const dose = defaultDose(item.strength, item.dosage_form);
-                  patch({
-                    medication_id: item.id,
-                    medication: item.name,
-                    strength: item.strength,
-                    dosage_form: item.dosage_form,
-                    route,
-                    dose_value: dose.value,
-                    dose_unit: dose.unit,
-                    dose: doseText(dose.value, dose.unit),
-                    ...(route === "IV Infusion / Drip" ? {} : clearedFlowRate),
-                  });
-                }}
-              />
-              <FieldError message={problems.medication} />
-            </label>
-            {draft.medication_id ? (
-              <div className="mt-2 flex flex-wrap gap-1.5">
-                {[draft.strength, draft.dosage_form].filter((part) => part.trim()).map((part) => (
-                  <span key={part} className="rounded-full bg-surface-2 px-2.5 py-0.5 text-xs font-medium text-muted-strong">{part}</span>
-                ))}
-                {(() => {
-                  const item = catalog.find((entry) => entry.id === draft.medication_id);
-                  const amount = item ? servicePriceAmount(item, nationality) : null;
-                  const currency = nationality === "Egyptian" ? "EGP" : "EUR";
-                  return <span className="rounded-full bg-surface-2 px-2.5 py-0.5 text-xs font-medium text-muted-strong">Drug price {amount == null ? "—" : `${currency} ${formatPrice(amount)}`}</span>;
-                })()}
-              </div>
-            ) : null}
-          </section>
-
-          <section className="mt-5 border-t border-line-soft pt-4">
-            <h3 className="text-xs font-semibold uppercase tracking-wide text-muted">Prescription</h3>
-            <div className="mt-3 grid gap-x-4 gap-y-4 sm:grid-cols-2">
-              <label className={label}>Route <span className="text-danger">*</span>
+          <div className="grid min-w-0 items-start gap-4 xl:grid-cols-3">
+            <section className="min-w-0 rounded-xl border border-line-soft p-4">
+              <SectionHeading step="1" title="Medication Details" hint="Medication name, strength and form" />
+              <label className={label}>Medication <span className="text-danger">*</span>
+                <SearchSelect
+                  fixedMenu
+                  disabled={locked}
+                  invalid={Boolean(problems.medication)}
+                  value={draft.medication}
+                  placeholder={catalog.length ? "Search by name" : "No medications yet"}
+                  options={names.map((name) => ({ value: name, label: name }))}
+                  onChange={(name) => {
+                    const matches = catalog.filter((item) => item.name === name);
+                    const onlyStrength = [...new Set(matches.map((item) => item.strength))];
+                    if (matches.length === 1 || (onlyStrength.length === 1 && new Set(matches.map((item) => item.dosage_form)).size === 1)) {
+                      const match = matches[0];
+                      if (match) chooseProduct(match);
+                      return;
+                    }
+                    setDraft((current) => ({
+                      ...current,
+                      medication: name,
+                      strength: onlyStrength.length === 1 ? onlyStrength[0] : "",
+                      dosage_form: "",
+                      medication_id: null,
+                      route: "",
+                      ...clearedAdministration,
+                    }));
+                  }}
+                />
+                <FieldError message={problems.medication} />
+              </label>
+              <label className={`${label} mt-4`}>Strength <span className="text-danger">*</span>
                 <select
-                  className={control(problems.route)}
-                  disabled={locked || !draft.medication_id}
-                  value={draft.route}
+                  className={field}
+                  disabled={locked || strengths.length <= 1}
+                  value={draft.strength}
                   onChange={(event) => {
-                    const route = event.target.value;
-                    patch({ route, ...(route === "IV Infusion / Drip" ? {} : clearedFlowRate) });
+                    const strength = event.target.value;
+                    const matches = named.filter((item) => item.strength === strength);
+                    if (matches.length === 1) chooseProduct(matches[0]);
+                    else {
+                      const formsForStrength = [...new Set(matches.map((item) => item.dosage_form))];
+                      if (formsForStrength.length === 1 && matches[0]) chooseProduct(matches[0]);
+                      else setDraft((current) => ({ ...current, strength, dosage_form: "", medication_id: null, route: "" }));
+                    }
                   }}
                 >
-                  <option value="">Choose a route</option>
-                  {routeOptions(catalog, draft).map((route) => <option key={route} value={route}>{route}</option>)}
+                  {strengths.length === 0 ? <option value="">Choose a medication</option> : null}
+                  {strengths.map((strength) => <option key={strength || "none"} value={strength}>{strength || "No strength"}</option>)}
                 </select>
-                <FieldError message={problems.route} />
-                {!problems.route && !draft.medication_id ? <span className="mt-1 block text-xs text-muted">Choose the medication first.</span> : null}
               </label>
+              <label className={`${label} mt-4`}>Dosage Form <span className="text-danger">*</span>
+                <select
+                  className={field}
+                  disabled={locked || uniqueForms.length <= 1}
+                  value={draft.dosage_form}
+                  onChange={(event) => {
+                    const dosageForm = event.target.value;
+                    const match = named.find((item) => item.strength === draft.strength && item.dosage_form === dosageForm);
+                    if (match) chooseProduct(match);
+                  }}
+                >
+                  {uniqueForms.length === 0 ? <option value="">Choose a strength</option> : null}
+                  {uniqueForms.map((form) => <option key={form} value={form}>{form}</option>)}
+                </select>
+              </label>
+              {product ? (
+                <div className="mt-3 flex flex-wrap gap-1.5">
+                  {[product.strength, product.dosage_form].filter((part) => part.trim()).map((part) => (
+                    <span key={part} className="rounded-full bg-surface-2 px-2.5 py-0.5 text-xs font-medium text-muted-strong">{part}</span>
+                  ))}
+                  <span className="rounded-full bg-surface-2 px-2.5 py-0.5 text-xs font-medium text-muted-strong">
+                    Drug price {servicePriceAmount(product, nationality) == null ? "—" : `${currency} ${formatPrice(servicePriceAmount(product, nationality) ?? 0)}`}
+                  </span>
+                </div>
+              ) : null}
+            </section>
 
+            <section className="min-w-0 rounded-xl border border-line-soft p-4">
+              <SectionHeading step="2" title="Prescription Details" hint="Dose, frequency and duration" />
               <div>
-                <span className={label}>Dose <span className="text-danger">*</span></span>
+                <span className={label}>Prescribed Dose / Volume <span className="text-danger">*</span></span>
                 <AmountWithUnit
                   amountLabel="Dose amount"
                   unitLabel="Dose type"
@@ -1530,32 +1771,35 @@ function MedicationOrderDialog({
                   onAmount={(raw) => {
                     const amount = raw ? Number(raw) : null;
                     const dose_value = amount != null && Number.isFinite(amount) && amount > 0 ? Math.round(amount * 100) / 100 : null;
-                    const dose_unit = draft.dose_unit || "mg";
-                    patch({ dose_value, dose_unit, dose: doseText(dose_value, dose_unit) });
+                    setDraft((current) => {
+                      const dose_unit = current.dose_unit || "mg";
+                      const next = { ...current, dose_value, dose_unit, dose: doseText(dose_value, dose_unit) };
+                      return next.route === "IV Infusion / Drip" ? { ...next, ...syncInfusion(next) } : next;
+                    });
                   }}
                   onUnit={(value) => {
                     const dose_unit = value as MedicationOrder["dose_unit"];
-                    patch({ dose_unit, dose: doseText(draft.dose_value, dose_unit) });
+                    setDraft((current) => {
+                      const next = { ...current, dose_unit, dose: doseText(current.dose_value, dose_unit) };
+                      return next.route === "IV Infusion / Drip" ? { ...next, ...syncInfusion(next) } : next;
+                    });
                   }}
                 />
                 <FieldError message={problems.dose} />
-                {!problems.dose && draft.dose_value == null && draft.dose ? <span className="mt-1 block text-xs text-muted">Saved as “{draft.dose}”. Enter the amount and type to replace it.</span> : null}
               </div>
-
-              <label className={label}>Frequency <span className="text-danger">*</span>
-                <select className={field} disabled={locked} value={draft.frequency} onChange={(event) => patch({ frequency: event.target.value })}>
+              <label className={`${label} mt-4`}>Frequency <span className="text-danger">*</span>
+                <select className={field} disabled={locked} value={draft.frequency} onChange={(event) => setDraft((current) => ({ ...current, frequency: event.target.value }))}>
                   {frequencies.map((frequency) => <option key={frequency} value={frequency}>{frequency}</option>)}
                 </select>
               </label>
-
-              <div>
-                <span className={label}>Duration {needsDuration ? <span className="text-danger">*</span> : <span className="font-medium text-muted">Optional</span>}</span>
+              <div className="mt-4">
+                <span className={label}>Duration {durationRequired(draft) ? <span className="text-danger">*</span> : <span className="font-medium text-muted">(Optional)</span>}</span>
                 <AmountWithUnit
                   amountLabel="Duration amount"
                   unitLabel="Duration unit"
                   amount={draft.duration_value}
                   unit={draft.duration_unit || "days"}
-                  units={[{ value: "minutes", label: "Minutes" }, { value: "hours", label: "Hours" }, { value: "days", label: "Days" }]}
+                  units={[{ value: "minutes", label: "Minute(s)" }, { value: "hours", label: "Hour(s)" }, { value: "days", label: "Day(s)" }]}
                   placeholder="Amount"
                   step={1}
                   disabled={locked}
@@ -1563,106 +1807,238 @@ function MedicationOrderDialog({
                   onAmount={(raw) => {
                     const amount = raw ? Number(raw) : null;
                     const duration_value = amount != null && Number.isInteger(amount) && amount > 0 ? amount : null;
-                    const duration_unit = draft.duration_unit || "days";
-                    patch({ duration_value, duration_unit, duration: durationText(duration_value, duration_unit) });
+                    setDraft((current) => {
+                      const duration_unit = current.duration_unit || "days";
+                      return { ...current, duration_value, duration_unit, duration: durationText(duration_value, duration_unit) };
+                    });
                   }}
                   onUnit={(value) => {
                     const duration_unit = value as MedicationOrder["duration_unit"];
-                    patch({ duration_unit, duration: durationText(draft.duration_value, duration_unit) });
+                    setDraft((current) => ({ ...current, duration_unit, duration: durationText(current.duration_value, duration_unit) }));
                   }}
                 />
                 <FieldError message={problems.duration} />
-                {!problems.duration && hourly ? (
-                  <span className="mt-1 block text-xs text-muted">
-                    {draft.route === "IV Infusion / Drip"
-                      ? "Used when the flow rate cannot be worked out from the dose. Otherwise the charge follows the flow rate."
-                      : draft.duration_unit === "days" ? "A duration in days is charged as one session." : "Charged per started hour."}
-                  </span>
-                ) : null}
-                {!problems.duration && !hourly && draft.duration_value == null && draft.duration ? <span className="mt-1 block text-xs text-muted">Saved as “{draft.duration}”.</span> : null}
+                {!problems.duration && draft.route === "Inhalation / Nebulization" ? <span className="mt-1 block text-xs text-muted">{draft.duration_unit === "days" ? "A duration in days is charged as one session." : "Charged per started hour."}</span> : null}
+                {!problems.duration && infusion ? <span className="mt-1 block text-xs text-muted">This is the course of treatment. Infusion time is set on the right.</span> : null}
               </div>
-
-              {draft.route === "IV Infusion / Drip" ? (
-                <div>
-                  <span className={label}>Flow rate <span className="font-medium text-muted">Optional</span></span>
-                  <AmountWithUnit
-                    amountLabel="Flow rate amount"
-                    unitLabel="Flow rate unit"
-                    amount={draft.flow_rate_value}
-                    unit={draft.flow_rate_unit}
-                    units={flowRateUnits.map((unit) => ({ value: unit, label: unit }))}
-                    unitPlaceholder="Unit"
-                    placeholder="Rate"
-                    step="any"
-                    disabled={locked}
-                    invalid={false}
-                    onAmount={(raw) => {
-                      const amount = raw ? Number(raw) : null;
-                      const flow_rate_value = amount != null && Number.isFinite(amount) && amount > 0 ? Math.round(amount * 100) / 100 : null;
-                      const flow_rate_unit = draft.flow_rate_unit || "mL/hr";
-                      patch({ flow_rate_value, flow_rate_unit, flow_rate: flowRateText(flow_rate_value, flow_rate_unit) });
-                    }}
-                    onUnit={(value) => {
-                      const flow_rate_unit = value as MedicationOrder["flow_rate_unit"];
-                      patch({ flow_rate_unit, flow_rate: flowRateText(draft.flow_rate_value, flow_rate_unit) });
-                    }}
-                  />
-                  <span className="mt-1 block text-xs text-muted">
-                    {draft.flow_rate_value == null && draft.flow_rate ? `Saved as “${draft.flow_rate}”. ` : ""}{flowRateHint(draft)}
-                  </span>
-                </div>
-              ) : null}
-
-              <label className={`${label} sm:col-span-2`}>Instructions <span className="font-medium text-muted">Optional</span>
-                <textarea
-                  className={`${field} min-h-20`}
-                  disabled={locked}
-                  maxLength={500}
-                  value={draft.instructions}
-                  placeholder="e.g. Dilute in 100 mL saline, give after meals"
-                  onChange={(event) => patch({ instructions: event.target.value })}
-                />
+              <label className={`${label} mt-4`}>Additional Instructions <span className="font-medium text-muted">(Optional)</span>
+                <textarea className={`${field} min-h-24`} disabled={locked} maxLength={500} value={draft.instructions} placeholder="e.g. Give after meals, or as clinically indicated..." onChange={(event) => setDraft((current) => ({ ...current, instructions: event.target.value }))} />
               </label>
-            </div>
-          </section>
+            </section>
 
-          <section className="mt-5 rounded-xl border border-line-soft bg-surface-2 p-4">
-            <div className="flex flex-wrap items-baseline justify-between gap-2">
-              <h3 className="text-xs font-semibold uppercase tracking-wide text-muted">Administration charge</h3>
-              {charges.length > 0 ? (
-                <p className="text-base font-bold tabular-nums text-ink">
-                  {charges.some((charge) => charge.price == null) ? <span className="text-sm font-medium text-muted">Price not set</span> : chargesTotal(charges, nationality)}
-                </p>
+            <section className="min-w-0 rounded-xl border border-line-soft p-4">
+              <SectionHeading step="3" title="Administration Details" hint="Route, diluent, infusion and monitoring" />
+              <label className={label}>Route of Administration <span className="text-danger">*</span>
+                <select
+                  className={control(problems.route)}
+                  disabled={locked || !draft.medication_id}
+                  value={draft.route}
+                  onChange={(event) => {
+                    const route = event.target.value;
+                    setDraft((current) => {
+                      const next = { ...current, route, ...(route === "IV Infusion / Drip" ? {} : clearedAdministration) };
+                      return route === "IV Infusion / Drip" ? { ...next, ...syncInfusion(next) } : next;
+                    });
+                  }}
+                >
+                  <option value="">Choose a route</option>
+                  {routeOptions(catalog, draft).map((route) => <option key={route} value={route}>{route}</option>)}
+                </select>
+                <FieldError message={problems.route} />
+              </label>
+
+              {infusion ? (
+                <>
+                  <label className={`${label} mt-4`}>Diluent Fluid <span className="font-medium text-muted">(Optional)</span>
+                    <select
+                      className={field}
+                      disabled={locked}
+                      value={draft.diluent_medication_id ?? ""}
+                      onChange={(event) => setDraft((current) => ({ ...current, diluent_medication_id: event.target.value || null }))}
+                    >
+                      <option value="">Select diluent fluid</option>
+                      {diluents.map((item) => (
+                        <option key={item.id} value={item.id}>{[item.name, item.strength, item.dosage_form].filter((part) => part.trim()).join(" · ")}</option>
+                      ))}
+                    </select>
+                    {draft.diluent_medication_id ? <span className="mt-1 block text-xs text-muted">This fluid is added to the order price.</span> : null}
+                  </label>
+                  <div className="mt-4">
+                    <span className={label}>Diluent Volume <span className="font-medium text-muted">(Optional)</span></span>
+                    <AmountWithUnit
+                      amountLabel="Diluent volume"
+                      unitLabel="Diluent volume unit"
+                      amount={draft.diluent_volume_value}
+                      unit="mL"
+                      units={[{ value: "mL", label: "mL" }]}
+                      placeholder="Volume"
+                      step="any"
+                      disabled={locked}
+                      invalid={false}
+                      onAmount={(raw) => {
+                        const amount = raw ? Number(raw) : null;
+                        const diluent_volume_value = amount != null && Number.isFinite(amount) && amount > 0 ? Math.round(amount * 100) / 100 : null;
+                        setDraft((current) => {
+                          const next = { ...current, diluent_volume_value };
+                          return { ...next, ...syncInfusion(next) };
+                        });
+                      }}
+                      onUnit={() => undefined}
+                    />
+                  </div>
+                  <div className="mt-4 rounded-lg bg-panel px-3 py-2 text-xs text-ink">
+                    <p className="font-semibold">Automatic Calculation Rule</p>
+                    <p className="mt-0.5">The system will use the Diluent Volume if entered; otherwise it will use the Prescribed Volume to calculate the infusion duration and rate.</p>
+                  </div>
+                  <div className="mt-4">
+                    <span className={label}>Infusion Duration {durationLocked ? null : <span className="text-danger">*</span>}</span>
+                    <AmountWithUnit
+                      amountLabel="Infusion duration"
+                      unitLabel="Infusion duration unit"
+                      amount={draft.infusion_duration_value}
+                      unit="hours"
+                      units={[{ value: "hours", label: "Hour(s)" }]}
+                      placeholder="Hours"
+                      step="any"
+                      disabled={durationLocked}
+                      invalid={Boolean(problems.infusion) && !durationLocked}
+                      onAmount={(raw) => {
+                        const amount = raw ? Number(raw) : null;
+                        const infusion_duration_value = amount != null && Number.isFinite(amount) && amount > 0 ? Math.round(amount * 100) / 100 : null;
+                        setDraft((current) => {
+                          const next = { ...current, infusion_duration_value, infusion_input: "duration" as const };
+                          return { ...next, ...syncInfusion(next, "duration") };
+                        });
+                      }}
+                      onUnit={() => undefined}
+                    />
+                    {durationLocked ? <p className="mt-1 text-xs text-muted">Calculated automatically from selected volume and infusion rate.</p> : null}
+                  </div>
+                  <div className="my-2 flex justify-center">
+                    <button
+                      type="button"
+                      className="inline-grid size-9 place-items-center rounded-lg border border-line-strong text-blue hover:bg-panel"
+                      aria-label="Swap which value is calculated"
+                      disabled={locked}
+                      onClick={() => setDraft((current) => {
+                        const infusion_input = current.infusion_input === "rate" ? "duration" as const : "rate" as const;
+                        return { ...current, infusion_input, ...syncInfusion({ ...current, infusion_input }, infusion_input) };
+                      })}
+                    >
+                      <svg viewBox="0 0 24 24" className="size-4" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><path d="M8 7V19M8 19l-3-3M8 19l3-3M16 17V5M16 5l-3 3M16 5l3 3" /></svg>
+                    </button>
+                  </div>
+                  <div>
+                    <span className={label}>Infusion Rate {rateLocked ? null : <span className="text-danger">*</span>}</span>
+                    <AmountWithUnit
+                      amountLabel="Infusion rate"
+                      unitLabel="Infusion rate unit"
+                      amount={draft.flow_rate_value}
+                      unit={draft.flow_rate_unit}
+                      units={flowRateUnits.map((unit) => ({ value: unit, label: unit }))}
+                      unitPlaceholder="Unit"
+                      placeholder="Rate"
+                      step="any"
+                      disabled={rateLocked}
+                      invalid={Boolean(problems.infusion) && !rateLocked}
+                      onAmount={(raw) => {
+                        const amount = raw ? Number(raw) : null;
+                        const flow_rate_value = amount != null && Number.isFinite(amount) && amount > 0 ? Math.round(amount * 100) / 100 : null;
+                        setDraft((current) => {
+                          const flow_rate_unit = current.flow_rate_unit || "mL/hr";
+                          const next = { ...current, flow_rate_value, flow_rate_unit, flow_rate: flowRateText(flow_rate_value, flow_rate_unit), infusion_input: "rate" as const };
+                          return { ...next, ...syncInfusion(next, "rate") };
+                        });
+                      }}
+                      onUnit={(value) => {
+                        const flow_rate_unit = value as MedicationOrder["flow_rate_unit"];
+                        setDraft((current) => {
+                          const next = { ...current, flow_rate_unit, flow_rate: flowRateText(current.flow_rate_value, flow_rate_unit), infusion_input: "rate" as const };
+                          return { ...next, ...syncInfusion(next, "rate") };
+                        });
+                      }}
+                    />
+                    {rateLocked ? <p className="mt-1 text-xs text-muted">Calculated automatically from selected volume and infusion duration.</p> : null}
+                  </div>
+                  <FieldError message={problems.infusion} />
+                  <p className="mt-1 text-xs text-muted">I.V. infusion is charged once for this order.</p>
+                  {monitors ? (
+                    <div className="mt-4">
+                      <span className={label}>Monitoring Duration <span className="text-danger">*</span></span>
+                      <AmountWithUnit
+                        amountLabel="Monitoring duration"
+                        unitLabel="Monitoring duration unit"
+                        amount={draft.monitoring_duration_value}
+                        unit={draft.monitoring_duration_unit || "hours"}
+                        units={[{ value: "minutes", label: "Minute(s)" }, { value: "hours", label: "Hour(s)" }]}
+                        placeholder="Time"
+                        step="any"
+                        disabled={locked}
+                        invalid={Boolean(problems.monitoring)}
+                        onAmount={(raw) => {
+                          const amount = raw ? Number(raw) : null;
+                          const monitoring_duration_value = amount != null && Number.isFinite(amount) && amount > 0 ? Math.round(amount * 100) / 100 : null;
+                          setDraft((current) => ({ ...current, monitoring_duration_value, monitoring_duration_unit: current.monitoring_duration_unit || "hours" }));
+                        }}
+                        onUnit={(value) => setDraft((current) => ({ ...current, monitoring_duration_unit: value as MedicationOrder["monitoring_duration_unit"] }))}
+                      />
+                      <FieldError message={problems.monitoring} />
+                      {monitoringBilled != null ? <p className="mt-1 text-xs text-muted">{formatQuantity(monitoringBilled)} {monitoringBilled === 1 ? "hour is" : "hours are"} charged at the hourly rate.</p> : null}
+                    </div>
+                  ) : null}
+                </>
               ) : null}
-            </div>
-            {charges.length === 0 ? (
-              <p className="mt-1 text-sm text-muted">{draft.route ? "No administration charge for this route." : "Choose a route to see the charge."}</p>
-            ) : (
-              <ul className="mt-2 space-y-1">
-                {charges.map((charge) => (
-                  <li key={charge.id} className="flex flex-wrap justify-between gap-2 text-sm text-muted-strong">
-                    <span>{charge.name}</span>
-                    <span className="tabular-nums">{chargeSummary(charge, nationality)}</span>
-                  </li>
-                ))}
-              </ul>
-            )}
-            {charges.some((charge) => charge.price == null) ? (
-              <p className="mt-2 text-xs text-muted">No {nationality === "Egyptian" ? "EGP" : "EUR"} price is set for this service yet. Add it on the Clinic Services page.</p>
-            ) : null}
-          </section>
+
+              <div className="mt-4 rounded-xl border border-line-soft bg-surface-2 p-3">
+                <div className="flex items-baseline justify-between gap-2">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-muted">Administration charge</p>
+                  {charges.length > 0 ? <p className="text-sm font-bold tabular-nums text-ink">{charges.some((charge) => charge.price == null) ? "Price not set" : chargesTotal(charges, nationality)}</p> : null}
+                </div>
+                {charges.length === 0 && alreadyCharged.length === 0 ? (
+                  <p className="mt-1 text-sm text-muted">{draft.route ? "No administration charge for this route." : "Choose a route to see the charge."}</p>
+                ) : (
+                  <ul className="mt-2 space-y-1">
+                    {charges.map((charge) => (
+                      <li key={charge.id} className="flex justify-between gap-2 text-sm text-muted-strong">
+                        <span>{charge.name}</span>
+                        <span className="tabular-nums">{chargeSummary(charge, nationality)}</span>
+                      </li>
+                    ))}
+                    {alreadyCharged.map((charge) => (
+                      <li key={charge.id} className="flex justify-between gap-2 text-sm text-muted-strong">
+                        <span>{charge.name}</span>
+                        <span>Already charged once for this plan</span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            </section>
+          </div>
         </div>
 
         <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-t border-line-soft px-5 py-4">
           <p className="min-w-0 flex-1 truncate text-sm text-muted-strong">
-            {draft.medication ? <><span className="font-semibold text-ink">{draft.medication}</span> {prescriptionSummary(draft) ? `· ${prescriptionSummary(draft)}` : ""}</> : "Nothing chosen yet"}
+            {draft.medication ? <><span className="font-semibold text-ink">{draft.medication}</span> {prescriptionSummary(draft) ? ` · ${prescriptionSummary(draft)}` : ""}</> : "Nothing chosen yet"}
           </p>
           <div className="flex gap-2">
             <button type="button" className={secondary} onClick={onClose}>{locked ? "Close" : "Cancel"}</button>
-            {locked ? null : <button type="submit" className={primary}>{existing ? "Save changes" : "Add order"}</button>}
+            {locked ? null : <button type="submit" className={primary}>{existing ? "Save changes" : "Add Order"}</button>}
           </div>
         </div>
       </form>
+    </div>
+  );
+}
+
+function SectionHeading({ step, title, hint }: { step: string; title: string; hint: string }) {
+  return (
+    <div className="mb-4 flex items-start gap-3">
+      <span className="inline-flex size-8 shrink-0 items-center justify-center rounded-full bg-panel text-sm font-bold text-blue">{step}</span>
+      <div>
+        <h3 className="text-sm font-semibold text-ink">{title}</h3>
+        <p className="text-xs text-muted">{hint}</p>
+      </div>
     </div>
   );
 }
@@ -1689,6 +2065,7 @@ function ProcedureOrderRow({
   onRemove: () => void;
 }) {
   const linked = Boolean(item.linked_medication_order_id);
+  const shared = item.billing_scope === "plan";
   const hours = hourlyProcedure(item);
   return (
     <li className="rounded-xl border border-line bg-surface transition hover:border-line-strong">
@@ -1700,9 +2077,10 @@ function ProcedureOrderRow({
             <span className="ml-2 text-sm font-normal text-muted-strong">{item.code}</span>
           </p>
           <p className="mt-0.5 text-sm text-muted-strong">
-            {hours ? `${item.quantity} ${item.quantity === 1 ? "hour" : "hours"}` : `Quantity ${item.quantity}`}
+            {hours ? `${formatQuantity(item.quantity)} ${item.quantity === 1 ? "hour" : "hours"}` : `Quantity ${formatQuantity(item.quantity)}`}
             {item.unit ? ` · ${item.unit}` : ""}
           </p>
+          {shared ? <p className="mt-1 text-xs font-medium text-blue">Charged once for this plan</p> : null}
           {linked ? <p className="mt-1 text-xs font-medium text-blue">Added with {source || "a medication order"}</p> : null}
           {item.notes ? <p className="mt-0.5 line-clamp-2 text-xs text-muted">{item.notes}</p> : null}
         </button>
@@ -1712,7 +2090,7 @@ function ProcedureOrderRow({
           </p>
           <div className="flex items-center gap-2">
             <button type="button" className={`${secondary} h-9 px-3 py-0`} onClick={onEdit}>{locked ? "View" : "Edit"}</button>
-            {locked || linked ? null : <RemoveButton label="Remove procedure" onClick={onRemove} />}
+            {locked || linked || shared ? null : <RemoveButton label="Remove procedure" onClick={onRemove} />}
           </div>
         </div>
       </div>
@@ -1745,10 +2123,11 @@ function ProcedureOrderDialog({
   const [attempted, setAttempted] = useState(false);
   const titleId = useId();
   const linked = Boolean(draft.linked_medication_order_id);
+  const shared = draft.billing_scope === "plan";
   const hours = hourlyProcedure(draft);
   const duplicate = Boolean(draft.procedure_id && takenIds.includes(draft.procedure_id));
   const serviceError = attempted && !draft.procedure_id ? "Choose a procedure." : attempted && duplicate ? "This procedure is already on the visit. Edit that line instead." : "";
-  const quantityError = attempted && (!Number.isInteger(draft.quantity) || draft.quantity < 1) ? `Enter the ${hours ? "hours" : "quantity"}.` : "";
+  const quantityError = !linked && !shared && attempted && (!Number.isInteger(draft.quantity) || draft.quantity < 1) ? `Enter the ${hours ? "hours" : "quantity"}.` : "";
 
   useEffect(() => {
     function onKey(event: KeyboardEvent) {
@@ -1762,7 +2141,7 @@ function ProcedureOrderDialog({
     event.preventDefault();
     if (locked) return;
     setAttempted(true);
-    if (!draft.procedure_id || duplicate || !Number.isInteger(draft.quantity) || draft.quantity < 1) return;
+    if (!draft.procedure_id || duplicate || (!linked && !shared && (!Number.isInteger(draft.quantity) || draft.quantity < 1))) return;
     onSave(draft);
   }
 
@@ -1780,7 +2159,7 @@ function ProcedureOrderDialog({
         <div className="flex shrink-0 items-start justify-between gap-4 border-b border-line-soft px-5 py-4">
           <div className="min-w-0">
             <h2 id={titleId} className="text-lg font-semibold text-ink">{locked ? "Procedure" : existing ? "Edit procedure" : "New procedure"}</h2>
-            <p className="mt-0.5 text-sm text-muted">{linked ? `Added with ${source || "a medication order"}. The quantity follows that order.` : "Choose the service and how many to charge."}</p>
+            <p className="mt-0.5 text-sm text-muted">{shared ? "Charged once for this plan. The quantity stays 1." : linked ? `Added with ${source || "a medication order"}. The quantity follows that order.` : "Choose the service and how many to charge."}</p>
           </div>
           <button type="button" className="inline-grid size-9 shrink-0 place-items-center rounded-lg text-muted-strong transition hover:bg-surface-2 hover:text-ink" aria-label="Close" onClick={onClose}>
             <svg viewBox="0 0 24 24" className="size-5" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
@@ -1791,7 +2170,7 @@ function ProcedureOrderDialog({
           <label className={label}>Procedure <span className="text-danger">*</span>
             <SearchSelect
               fixedMenu
-              disabled={locked || linked}
+              disabled={locked || linked || shared}
               invalid={Boolean(serviceError)}
               value={draft.procedure_id ?? ""}
               placeholder={services.length ? "Search procedures and interventions" : "No procedures yet"}
@@ -1832,7 +2211,7 @@ function ProcedureOrderDialog({
               <input
                 className={`${field} ${quantityError ? fieldInvalid : ""}`}
                 aria-label={hours ? "Hours" : "Quantity"}
-                disabled={locked || linked}
+                disabled={locked || linked || shared}
                 inputMode="numeric"
                 min={1}
                 step={1}
@@ -1844,7 +2223,7 @@ function ProcedureOrderDialog({
                 }}
               />
               <FieldError message={quantityError} />
-              {!quantityError && linked ? <span className="mt-1 block text-xs text-muted">Change the medication order to change these hours.</span> : null}
+              {!quantityError && (linked || shared) ? <span className="mt-1 block text-xs text-muted">{shared ? "This is charged once for the plan." : "Change the medication order to change these hours."}</span> : null}
               {!quantityError && !linked && hours ? <span className="mt-1 block text-xs text-muted">Charged for each started hour.</span> : null}
             </label>
 
@@ -1870,7 +2249,7 @@ function ProcedureOrderDialog({
             <p className="mt-1 text-sm text-muted">
               {!draft.procedure_id ? "Choose a procedure to see the charge."
                 : draft.price == null ? `No ${nationality === "Egyptian" ? "EGP" : "EUR"} price is set for this service yet.`
-                : `${nationality === "Egyptian" ? "EGP" : "EUR"} ${formatPrice(draft.price)} × ${draft.quantity || 0}`}
+                : `${nationality === "Egyptian" ? "EGP" : "EUR"} ${formatPrice(draft.price)} × ${formatQuantity(draft.quantity || 0)}`}
             </p>
           </section>
         </div>
