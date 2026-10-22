@@ -272,7 +272,7 @@ export function EncounterPage({ token }: { token: string }) {
         <>
           {visit ? <Link className={secondary} to={`/patients/${visit.patient_id}`}>View Full Profile</Link> : null}
           {locked ? null : (
-            <button type="button" className={`${primary} !text-white`} disabled={saving} onClick={requestFinish}>Finish Encounter & end to Nurse</button>
+            <button type="button" className={`${primary} !text-white`} disabled={saving} onClick={requestFinish}>Finish Encounter & Send to Nurse</button>
           )}
         </>
       ) : null}
@@ -664,7 +664,7 @@ export function EncounterPage({ token }: { token: string }) {
         open={confirmFinish}
         title="Finish this encounter?"
         body="The visit leaves the doctor queue and the note can no longer be edited."
-        confirmLabel="Finish Encounter & end to Nurse"
+        confirmLabel="Finish Encounter & Send to Nurse"
         pending={saving}
         onCancel={() => setConfirmFinish(false)}
         onConfirm={() => void finish()}
