@@ -15,6 +15,7 @@ COPY packages/shared-kernel/package.json packages/shared-kernel/
 RUN pnpm install --frozen-lockfile
 
 FROM deps AS api
+COPY tsconfig.base.json ./
 COPY apps/api apps/api
 COPY packages packages
 ENV NODE_ENV=production
@@ -24,6 +25,7 @@ EXPOSE 3000
 CMD ["pnpm", "--filter", "@yaren/api", "start"]
 
 FROM deps AS web-build
+COPY tsconfig.base.json ./
 COPY apps/web apps/web
 COPY packages packages
 RUN pnpm --filter @yaren/web build
