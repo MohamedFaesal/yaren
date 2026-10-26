@@ -1,9 +1,11 @@
 export {
   procedureDetailErrors,
+  procedureFieldActive,
   procedureFields,
   procedureFormById,
   procedureForms,
   procedureServiceCharges,
+  quantityForAssociatedService,
   quantityForProcedureForm,
   readServices,
   readStaff,
@@ -16,6 +18,8 @@ export type {
   ProcedureFieldKind,
   ProcedureFormDefinition,
   ProcedureFormSection,
+  ProcedureServiceCharge,
+  ProcedureServiceMatch,
   ProcedureServiceValue,
   ProcedureStaffValue,
 } from "./procedure-forms.js";

@@ -1,6 +1,6 @@
 import { useEffect, useId, useState, type FormEvent, type ReactNode } from "react";
 import { Link, useNavigate, useParams } from "react-router";
-import { procedureDetailErrors, procedureFields, procedureFormById, procedureServiceCharges, quantityForProcedureForm, readServices, readStaff, readText, type ProcedureDetails, type ProcedureField, type ProcedureServiceValue } from "@yaren/shared-kernel";
+import { procedureDetailErrors, procedureFieldActive, procedureFields, procedureFormById, procedureServiceCharges, quantityForAssociatedService, quantityForProcedureForm, readServices, readStaff, readText, type ProcedureDetails, type ProcedureField, type ProcedureFormDefinition, type ProcedureServiceValue } from "@yaren/shared-kernel";
 import {
   api,
   formatPrice,
@@ -619,7 +619,7 @@ export function EncounterPage({ token }: { token: string }) {
                   {standaloneProcedures(form.procedure_orders).length > 0 ? (
                     <div className="mt-3 flex flex-wrap items-baseline justify-between gap-2 rounded-xl bg-surface-2 px-4 py-3">
                       <p className="text-sm text-muted-strong">{standaloneProcedures(form.procedure_orders).length} {standaloneProcedures(form.procedure_orders).length === 1 ? "procedure" : "procedures"}</p>
-                      <p className="text-base font-bold tabular-nums text-ink">{chargesTotal(standaloneProcedures(form.procedure_orders), visit.patient_nationality)}</p>
+                      <p className="text-base font-bold tabular-nums text-ink">{chargesTotal(standaloneProcedures(form.procedure_orders).map((item) => procedureForBilling(item, procedureServices)), visit.patient_nationality)}</p>
                     </div>
                   ) : null}
                 </div>
@@ -1082,7 +1082,7 @@ function parseDuration(text: string): { value: number | null; unit: MedicationOr
   return { value, unit };
 }
 
-function chargeSummary(charge: ProcedureOrder, nationality: string | null | undefined) {
+function chargeSummary(charge: { price: number | null; quantity: number }, nationality: string | null | undefined) {
   const quantity = charge.quantity || 1;
   if (charge.price == null) return `— × ${formatQuantity(quantity)}`;
   const currency = nationality === "Egyptian" ? "EGP" : "EUR";
@@ -1090,8 +1090,36 @@ function chargeSummary(charge: ProcedureOrder, nationality: string | null | unde
   return `${currency} ${formatPrice(charge.price)} × ${formatQuantity(quantity)} · ${currency} ${formatPrice(total)}`;
 }
 
+function ChargeItemList({
+  items,
+  nationality,
+  compact = false,
+}: {
+  items: { id: string; name: string; price: number | null; quantity: number }[];
+  nationality: string | null | undefined;
+  compact?: boolean;
+}) {
+  return (
+    <ul className="mt-2 space-y-1">
+      {items.map((item) => (
+        <li key={item.id} className={`flex justify-between text-muted-strong ${compact ? "items-baseline gap-3 text-xs" : "gap-2 text-sm"}`}>
+          <span className={compact ? "min-w-0 truncate" : ""}>{item.name}</span>
+          <span className="shrink-0 tabular-nums">{compact && item.price == null ? "—" : chargeSummary(item, nationality)}</span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 function formatQuantity(quantity: number) {
   return String(Math.round(quantity * 10000) / 10000);
+}
+
+function associatedChargeLabel(service: ProcedureServiceValue, quantity: number, currency: string) {
+  if (service.price == null) return "Price not set";
+  if (quantity === 1) return `${currency} ${formatPrice(service.price)}`;
+  const total = Math.round(service.price * quantity * 100) / 100;
+  return `${currency} ${formatPrice(service.price)} × ${formatQuantity(quantity)} · ${currency} ${formatPrice(total)}`;
 }
 function Icd10Picker({
   token,
@@ -1466,7 +1494,7 @@ function chargesTotal(charges: ProcedureOrder[], nationality: string | null | un
   const amounts = charges.map((charge) => {
     const extras = procedureServiceCharges(charge.details);
     if (charge.price == null || extras.some((item) => item.price == null)) return null;
-    return charge.price * (charge.quantity || 1) + extras.reduce((sum, item) => sum + (item.price ?? 0), 0);
+    return charge.price * (charge.quantity || 1) + extras.reduce((sum, item) => sum + (item.price ?? 0) * item.quantity, 0);
   });
   if (amounts.some((amount) => amount == null)) return "—";
   const total = amounts.reduce<number>((sum, amount) => sum + (amount ?? 0), 0);
@@ -1584,16 +1612,7 @@ function MedicationOrderRow({
             {row.instructions ? <p className="mt-0.5 line-clamp-2 text-xs text-muted">{row.instructions}</p> : null}
             {invalid ? <p className="mt-1 text-xs font-medium text-danger">Open this order to complete it.</p> : null}
           </button>
-          {charges.length > 0 ? (
-            <ul className="mt-2 space-y-1">
-              {charges.map((charge) => (
-                <li key={charge.id} className="flex items-baseline justify-between gap-3 text-xs text-muted-strong">
-                  <span className="min-w-0 truncate">{charge.name}</span>
-                  <span className="shrink-0 tabular-nums">{charge.price == null ? "—" : chargeSummary(charge, nationality)}</span>
-                </li>
-              ))}
-            </ul>
-          ) : null}
+          {charges.length > 0 ? <ChargeItemList compact items={charges.map((charge) => ({ id: charge.id, name: charge.name, price: charge.price, quantity: charge.quantity || 1 }))} nationality={nationality} /> : null}
           {planNotes.map((name) => <p key={name} className="mt-1 text-xs font-medium text-blue">{name} is charged once for this plan.</p>)}
         </div>
         <div className="flex shrink-0 flex-col items-end gap-2">
@@ -2051,20 +2070,19 @@ function MedicationOrderDialog({
                 {charges.length === 0 && alreadyCharged.length === 0 ? (
                   <p className="mt-1 text-sm text-muted">{draft.route ? "No administration charge for this route." : "Choose a route to see the charge."}</p>
                 ) : (
-                  <ul className="mt-2 space-y-1">
-                    {charges.map((charge) => (
-                      <li key={charge.id} className="flex justify-between gap-2 text-sm text-muted-strong">
-                        <span>{charge.name}</span>
-                        <span className="tabular-nums">{chargeSummary(charge, nationality)}</span>
-                      </li>
-                    ))}
-                    {alreadyCharged.map((charge) => (
-                      <li key={charge.id} className="flex justify-between gap-2 text-sm text-muted-strong">
-                        <span>{charge.name}</span>
-                        <span>Already charged once for this plan</span>
-                      </li>
-                    ))}
-                  </ul>
+                  <>
+                    <ChargeItemList items={charges.map((charge) => ({ id: charge.id, name: charge.name, price: charge.price, quantity: charge.quantity || 1 }))} nationality={nationality} />
+                    {alreadyCharged.length > 0 ? (
+                      <ul className="mt-2 space-y-1">
+                        {alreadyCharged.map((charge) => (
+                          <li key={charge.id} className="flex justify-between gap-2 text-sm text-muted-strong">
+                            <span>{charge.name}</span>
+                            <span>Already charged once for this plan</span>
+                          </li>
+                        ))}
+                      </ul>
+                    ) : null}
+                  </>
                 )}
               </div>
             </section>
@@ -2101,6 +2119,62 @@ function hourlyProcedure(item: { name: string; unit: string }) {
   return /per hour/i.test(`${item.name} ${item.unit}`);
 }
 
+function procedureDetailSummary(form: ProcedureFormDefinition | null, details: ProcedureDetails) {
+  if (!form) return "";
+  return procedureFields(form).flatMap((field) => {
+    if (!field.summary || !procedureFieldActive(field, details)) return [];
+    if (field.kind === "staff") {
+      const person = readStaff(details, field.id);
+      return person ? [`${field.label}: ${person.name}`] : [];
+    }
+    if (field.kind === "number") {
+      const amount = details[field.id];
+      return typeof amount === "number" ? [`${field.label}: ${amount}`] : [];
+    }
+    const text = readText(details, field.id);
+    return text ? [`${field.label}: ${text}`] : [];
+  }).join(" · ");
+}
+
+function procedureForBilling(item: ProcedureOrder, catalog: MedicalService[]) {
+  const linked = Boolean(item.linked_medication_order_id);
+  const shared = item.billing_scope === "plan";
+  const form = !linked && !shared ? procedureFormById(catalog.find((service) => service.id === item.procedure_id)?.procedure_form) : null;
+  if (!form) return item;
+  const quantity = quantityForProcedureForm(form, item.details ?? {}, item.quantity);
+  return quantity === item.quantity ? item : { ...item, quantity };
+}
+
+function procedureChargeItems(item: ProcedureOrder) {
+  return [
+    { id: item.id, name: item.name, price: item.price, quantity: item.quantity || 1 },
+    ...procedureServiceCharges(item.details).map((service) => ({
+      id: `${item.id}:${service.service_id}`,
+      name: service.name,
+      price: service.price,
+      quantity: service.quantity,
+    })),
+  ];
+}
+
+function ProcedureChargePanel({ order, nationality }: { order: ProcedureOrder; nationality: string | null | undefined }) {
+  const items = order.procedure_id || order.name ? procedureChargeItems(order) : [];
+  const missingPrice = items.some((item) => item.price == null);
+  return (
+    <div className="mt-4 rounded-xl border border-line-soft bg-surface-2 p-3">
+      <div className="flex items-baseline justify-between gap-2">
+        <p className="text-xs font-semibold uppercase tracking-wide text-muted">Charge</p>
+        {items.length > 0 ? <p className="text-sm font-bold tabular-nums text-ink">{missingPrice ? "Price not set" : chargesTotal([order], nationality)}</p> : null}
+      </div>
+      {items.length === 0 ? (
+        <p className="mt-1 text-sm text-muted">Choose a procedure to see the charge.</p>
+      ) : (
+        <ChargeItemList items={items} nationality={nationality} />
+      )}
+    </div>
+  );
+}
+
 function ProcedureOrderRow({
   item,
   index,
@@ -2125,48 +2199,34 @@ function ProcedureOrderRow({
   const hours = hourlyProcedure(item);
   const form = !linked && !shared ? procedureFormById(services.find((service) => service.id === item.procedure_id)?.procedure_form) : null;
   const details = item.details ?? {};
-  const summaries = form ? procedureFields(form).flatMap((field) => {
-    if (!field.summary) return [];
-    if (field.kind === "staff") {
-      const person = readStaff(details, field.id);
-      return person ? [`${field.label}: ${person.name}`] : [];
-    }
-    if (field.kind === "number") {
-      const amount = details[field.id];
-      return typeof amount === "number" ? [`${field.label}: ${amount}`] : [];
-    }
-    const text = readText(details, field.id);
-    return text ? [`${field.label}: ${text}`] : [];
-  }) : [];
-  const associated = form ? procedureFields(form).filter((field) => field.kind === "associated-services").flatMap((field) => readServices(details, field.id)) : [];
+  const detailSummary = procedureDetailSummary(form, details);
+  const quantitySummary = form?.quantity === "hidden"
+    ? item.unit
+    : [hours ? `${formatQuantity(item.quantity)} ${item.quantity === 1 ? "hour" : "hours"}` : `Quantity ${formatQuantity(item.quantity)}`, item.unit].filter((part) => part.trim()).join(" · ");
+  const summary = detailSummary || quantitySummary;
+  const billed = procedureForBilling(item, services);
+  const chargeItems = procedureChargeItems(billed);
+  const missingPrice = chargeItems.some((entry) => entry.price == null);
   return (
     <li className="rounded-xl border border-line bg-surface transition hover:border-line-strong">
       <div className="flex items-start gap-3 p-3 sm:p-4">
         <span className="mt-0.5 inline-flex size-7 shrink-0 items-center justify-center rounded-full bg-panel text-xs font-bold text-blue">{index + 1}</span>
-        <button type="button" className="min-w-0 flex-1 text-left" onClick={onEdit} aria-label={`${locked ? "View" : "Edit"} procedure ${index + 1}: ${item.name}`}>
-          <p className="truncate text-base font-semibold text-ink">
-            {item.name}
-            <span className="ml-2 text-sm font-normal text-muted-strong">{item.code}</span>
-          </p>
-          {form?.quantity === "hidden" ? (
-            item.unit ? <p className="mt-0.5 text-sm text-muted-strong">{item.unit}</p> : null
-          ) : (
-            <p className="mt-0.5 text-sm text-muted-strong">
-              {hours ? `${formatQuantity(item.quantity)} ${item.quantity === 1 ? "hour" : "hours"}` : `Quantity ${formatQuantity(item.quantity)}`}
-              {item.unit ? ` · ${item.unit}` : ""}
+        <div className="min-w-0 flex-1">
+          <button type="button" className="w-full text-left" onClick={onEdit} aria-label={`${locked ? "View" : "Edit"} procedure ${index + 1}: ${item.name}`}>
+            <p className="truncate text-base font-semibold text-ink">
+              {item.name}
+              {item.code ? <span className="ml-2 text-sm font-normal text-muted-strong">{item.code}</span> : null}
             </p>
-          )}
-          {summaries.map((line) => <p key={line} className="mt-0.5 text-sm text-muted-strong">{line}</p>)}
-          {associated.map((service) => (
-            <p key={service.service_id} className="mt-0.5 text-xs text-muted">{service.name}{service.code ? ` · ${service.code}` : ""}</p>
-          ))}
-          {shared ? <p className="mt-1 text-xs font-medium text-blue">Charged once for this plan</p> : null}
-          {linked ? <p className="mt-1 text-xs font-medium text-blue">Added with {source || "a medication order"}</p> : null}
-          {!form && item.notes ? <p className="mt-0.5 line-clamp-2 text-xs text-muted">{item.notes}</p> : null}
-        </button>
+            <p className="mt-0.5 text-sm text-muted-strong">{summary || "No details recorded yet"}</p>
+            {item.notes ? <p className="mt-0.5 line-clamp-2 text-xs text-muted">{item.notes}</p> : null}
+            {shared ? <p className="mt-1 text-xs font-medium text-blue">Charged once for this plan</p> : null}
+            {linked ? <p className="mt-1 text-xs font-medium text-blue">Added with {source || "a medication order"}</p> : null}
+          </button>
+          {chargeItems.length > 0 ? <ChargeItemList compact items={chargeItems} nationality={nationality} /> : null}
+        </div>
         <div className="flex shrink-0 flex-col items-end gap-2">
-          <p className="text-right text-sm font-bold tabular-nums text-ink">
-            {item.price == null ? <span className="font-medium text-muted">Price not set</span> : chargesTotal([item], nationality)}
+          <p className="text-right text-sm font-bold tabular-nums text-ink" title={chargeItems.map((entry) => `${entry.name} ${chargeSummary(entry, nationality)}`).join("\n")}>
+            {missingPrice ? <span className="font-medium text-muted">Price not set</span> : chargesTotal([billed], nationality)}
           </p>
           <div className="flex items-center gap-2">
             <button type="button" className={`${secondary} h-9 px-3 py-0`} onClick={onEdit}>{locked ? "View" : "Edit"}</button>
@@ -2211,11 +2271,11 @@ function ProcedureOrderDialog({
   const selected = services.find((service) => service.id === draft.procedure_id);
   const activeForm = !linked && !shared ? procedureFormById(selected?.procedure_form) : null;
   const fields = activeForm ? procedureFields(activeForm) : [];
-  const hours = hourlyProcedure(draft);
   const duplicate = Boolean(draft.procedure_id && !activeForm?.allowDuplicate && takenIds.includes(draft.procedure_id));
   const serviceError = attempted && !draft.procedure_id ? "Choose a procedure." : attempted && duplicate ? "This procedure is already on the visit. Edit that line instead." : "";
-  const quantityError = !activeForm && !linked && !shared && attempted && (!Number.isInteger(draft.quantity) || draft.quantity < 1) ? `Enter the ${hours ? "hours" : "quantity"}.` : "";
   const detailErrors = attempted && activeForm ? procedureDetailErrors(activeForm, draft.details ?? {}).errors : {};
+  const detailSummary = procedureDetailSummary(activeForm, draft.details ?? {});
+  const billedDraft = activeForm ? { ...draft, quantity: quantityForProcedureForm(activeForm, draft.details ?? {}, draft.quantity) } : draft;
   const needsStaff = fields.some((item) => item.kind === "staff");
 
   useEffect(() => {
@@ -2250,7 +2310,7 @@ function ProcedureOrderDialog({
         code: service.code,
         unit: service.unit,
         price: servicePriceAmount(service, nationality),
-        quantity: nextForm?.quantity === "hidden" ? 1 : current.quantity,
+        quantity: nextForm ? (nextForm.quantity === "hidden" ? 1 : current.quantity) : 1,
         details: nextForm && previousForm && nextForm.id === previousForm.id ? current.details ?? {} : {},
       };
     });
@@ -2268,10 +2328,13 @@ function ProcedureOrderDialog({
           if (conflicts) delete details[other.id];
         }
       }
+      for (const other of fields) {
+        if (other.whenAssociated && !procedureFieldActive(other, details)) delete details[other.id];
+      }
       return {
         ...current,
         details,
-        quantity: field.setsQuantity ? (typeof value === "number" ? value : 1) : current.quantity,
+        quantity: activeForm ? quantityForProcedureForm(activeForm, details, field.setsQuantity ? 1 : current.quantity) : current.quantity,
       };
     });
   }
@@ -2294,7 +2357,10 @@ function ProcedureOrderDialog({
       });
       return;
     }
-    if (!linked && !shared && (!Number.isInteger(draft.quantity) || draft.quantity < 1)) return;
+    if (!linked && !shared) {
+      onSave({ ...draft, details: {}, notes: "", quantity: 1 });
+      return;
+    }
     onSave({ ...draft, details: {} });
   }
 
@@ -2345,7 +2411,7 @@ function ProcedureOrderDialog({
       ? `Added with ${source || "a medication order"}. The quantity follows that order.`
       : activeForm
         ? (activeForm.intro ?? "Choose the procedure, add clinical details and associated services. It will be added to the encounter and can be added to the invoice later.")
-        : "Choose the service and how many to charge.";
+        : "Choose the procedure.";
 
   return (
     <div className="triage-dialog-backdrop fixed inset-0 z-50 grid place-items-center bg-shell/45 p-4" role="presentation" onMouseDown={onClose}>
@@ -2370,97 +2436,46 @@ function ProcedureOrderDialog({
 
         <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
           {activeForm ? (
-            <div className={`grid items-start gap-4 ${activeForm.sections.length > 1 ? "lg:grid-cols-3" : ""}`}>
-              {activeForm.sections.map((section, index) => (
-                <section key={section.id} className="min-w-0 rounded-xl border border-line-soft bg-surface-2 p-4">
-                  <h3 className="text-sm font-semibold text-blue">{section.title}</h3>
-                  {index === 0 ? <div className="mt-4">{procedurePicker}</div> : null}
-                  <div className="mt-4 grid gap-4">
-                    {section.fields.map((item) => (
-                      <ProcedureFormField
-                        key={item.id}
-                        field={item}
-                        fields={fields}
-                        details={draft.details ?? {}}
-                        error={detailErrors[item.id] ?? ""}
-                        locked={locked}
-                        staff={staff}
-                        staffNote={staffNote}
-                        services={services}
-                        procedureId={draft.procedure_id}
-                        nationality={nationality}
-                        onChange={(value) => writeDetail(item, value)}
-                      />
-                    ))}
-                  </div>
-                </section>
-              ))}
-            </div>
+            <>
+              <div className={`grid items-start gap-4 ${activeForm.sections.length > 1 ? "lg:grid-cols-3" : ""}`}>
+                {activeForm.sections.map((section, index) => (
+                  <section key={section.id} className="min-w-0 rounded-xl border border-line-soft bg-surface-2 p-4">
+                    <h3 className="text-sm font-semibold text-blue">{section.title}</h3>
+                    {index === 0 ? <div className="mt-4">{procedurePicker}</div> : null}
+                    <div className="mt-4 grid gap-4">
+                      {section.fields.map((item) => (
+                        <ProcedureFormField
+                          key={item.id}
+                          field={item}
+                          fields={fields}
+                          details={draft.details ?? {}}
+                          error={detailErrors[item.id] ?? ""}
+                          locked={locked}
+                          staff={staff}
+                          staffNote={staffNote}
+                          services={services}
+                          procedureId={draft.procedure_id}
+                          nationality={nationality}
+                          onChange={(value) => writeDetail(item, value)}
+                        />
+                      ))}
+                    </div>
+                  </section>
+                ))}
+              </div>
+              <ProcedureChargePanel order={billedDraft} nationality={nationality} />
+            </>
           ) : (
             <>
               {procedurePicker}
-              {draft.procedure_id ? (
-                <div className="mt-2 flex flex-wrap gap-1.5">
-                  {[draft.code, draft.unit].filter((part) => part.trim()).map((part) => (
-                    <span key={part} className="rounded-full bg-surface-2 px-2.5 py-0.5 text-xs font-medium text-muted-strong">{part}</span>
-                  ))}
-                  <span className="rounded-full bg-surface-2 px-2.5 py-0.5 text-xs font-medium text-muted-strong">
-                    Unit price {draft.price == null ? "—" : `${nationality === "Egyptian" ? "EGP" : "EUR"} ${formatPrice(draft.price)}`}
-                  </span>
-                </div>
-              ) : null}
-              <div className="mt-5 grid gap-4 border-t border-line-soft pt-4 sm:grid-cols-2">
-                <label className={label}>{hours ? "Hours" : "Quantity"} <span className="text-danger">*</span>
-                  <input
-                    className={`${field} ${quantityError ? fieldInvalid : ""}`}
-                    aria-label={hours ? "Hours" : "Quantity"}
-                    disabled={locked || linked || shared}
-                    inputMode="numeric"
-                    min={1}
-                    step={1}
-                    type="number"
-                    value={draft.quantity || ""}
-                    onChange={(event) => {
-                      const amount = Number(event.target.value);
-                      setDraft((current) => ({ ...current, quantity: Number.isInteger(amount) && amount > 0 ? amount : 0 }));
-                    }}
-                  />
-                  <FieldError message={quantityError} />
-                  {!quantityError && (linked || shared) ? <span className="mt-1 block text-xs text-muted">{shared ? "This is charged once for the plan." : "Change the medication order to change these hours."}</span> : null}
-                  {!quantityError && !linked && hours ? <span className="mt-1 block text-xs text-muted">Charged for each started hour.</span> : null}
-                </label>
-                <label className={`${label} sm:col-span-2`}>Note <span className="font-medium text-muted">Optional</span>
-                  <textarea
-                    className={`${field} min-h-20`}
-                    disabled={locked}
-                    maxLength={500}
-                    placeholder="e.g. Right arm, patient tolerated well"
-                    value={draft.notes}
-                    onChange={(event) => setDraft((current) => ({ ...current, notes: event.target.value }))}
-                  />
-                </label>
-              </div>
-              <section className="mt-5 rounded-xl border border-line-soft bg-surface-2 p-4">
-                <div className="flex flex-wrap items-baseline justify-between gap-2">
-                  <h3 className="text-xs font-semibold uppercase tracking-wide text-muted">Charge</h3>
-                  <p className="text-base font-bold tabular-nums text-ink">
-                    {!draft.procedure_id ? "" : draft.price == null ? <span className="text-sm font-medium text-muted">Price not set</span> : chargesTotal([draft], nationality)}
-                  </p>
-                </div>
-                <p className="mt-1 text-sm text-muted">
-                  {!draft.procedure_id ? "Choose a procedure to see the charge."
-                    : draft.price == null ? `No ${nationality === "Egyptian" ? "EGP" : "EUR"} price is set for this service yet.`
-                    : `${nationality === "Egyptian" ? "EGP" : "EUR"} ${formatPrice(draft.price)} × ${formatQuantity(draft.quantity || 0)}`}
-                </p>
-              </section>
+              <ProcedureChargePanel order={billedDraft} nationality={nationality} />
             </>
           )}
         </div>
 
         <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-t border-line-soft px-5 py-4">
           <p className="min-w-0 flex-1 truncate text-sm text-muted-strong">
-            {draft.name ? <span className="font-semibold text-ink">{draft.name}</span> : "Nothing chosen yet"}
-            {activeForm && draft.procedure_id ? <span className="ml-3 font-semibold tabular-nums text-ink">{draft.price == null ? "Price not set" : chargesTotal([draft], nationality)}</span> : null}
+            {draft.name ? <><span className="font-semibold text-ink">{draft.name}</span>{detailSummary ? ` · ${detailSummary}` : ""}</> : "Nothing chosen yet"}
           </p>
           <div className="flex gap-2">
             <button type="button" className={secondary} onClick={onClose}>{locked ? "Close" : "Cancel"}</button>
@@ -2498,6 +2513,7 @@ function ProcedureFormField({
   onChange: (value: ProcedureDetails[string] | null) => void;
 }) {
   const currency = nationality === "Egyptian" ? "EGP" : "EUR";
+  if (!procedureFieldActive(item, details)) return null;
   const takenIds = fields.flatMap((other) => {
     if (other.kind !== "staff" || other.id === item.id) return [];
     const samePerson = other.distinctFrom === item.id || item.distinctFrom === other.id;
@@ -2557,7 +2573,7 @@ function ProcedureFormField({
         <input
           className={`${field} ${error ? fieldInvalid : ""}`}
           disabled={locked}
-          inputMode="decimal"
+          inputMode={item.step != null && Number.isInteger(item.step) ? "numeric" : "decimal"}
           max={item.max}
           min={item.min}
           step={item.step ?? "any"}
@@ -2565,12 +2581,23 @@ function ProcedureFormField({
           value={typeof details[item.id] === "number" ? String(details[item.id]) : ""}
           onChange={(event) => {
             const raw = event.target.value.trim();
+            const wholeNumber = item.step != null && Number.isInteger(item.step);
+            if (wholeNumber && raw !== "" && !/^\d+$/.test(raw)) return;
             if (!raw) onChange(null);
             else {
               const amount = Number(raw);
               onChange(Number.isFinite(amount) ? amount : null);
             }
           }}
+        />
+      ) : null}
+      {item.kind === "text" ? (
+        <input
+          className={`${field} ${error ? fieldInvalid : ""}`}
+          disabled={locked}
+          maxLength={item.maxLength}
+          value={readText(details, item.id)}
+          onChange={(event) => onChange(event.target.value)}
         />
       ) : null}
       {item.kind === "textarea" ? (
@@ -2668,7 +2695,7 @@ function AssociatedServicesField({
             <li key={service.service_id} className="flex items-center gap-2 rounded-lg border border-line bg-surface px-3 py-2">
               <div className="min-w-0 flex-1">
                 <p className="truncate text-sm font-medium text-ink">{service.name}</p>
-                <p className="text-xs text-muted">{service.code} · {service.price == null ? "Price not set" : `${currency} ${formatPrice(service.price)}`}</p>
+                <p className="text-xs text-muted">{service.code} · {associatedChargeLabel(service, quantityForAssociatedService(details, service), currency)}</p>
               </div>
               {locked ? null : (
                 <button

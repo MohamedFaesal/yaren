@@ -1,4 +1,4 @@
-export type ProcedureFieldKind = "staff" | "select" | "textarea" | "number" | "associated-services";
+export type ProcedureFieldKind = "staff" | "select" | "text" | "textarea" | "number" | "associated-services";
 
 export type ProcedureField = {
   id: string;
@@ -15,6 +15,15 @@ export type ProcedureField = {
   /** Another staff field that must be a different person. */
   distinctFrom?: string;
   summary?: boolean;
+  /** Show this field, and apply its required rule, only when an associated service matches. */
+  whenAssociated?: ProcedureServiceMatch;
+  /** This number is the quantity charged for each matching associated service. */
+  setsAssociatedQuantity?: ProcedureServiceMatch;
+};
+
+export type ProcedureServiceMatch = {
+  code?: string;
+  name?: RegExp;
 };
 
 export type ProcedureFormSection = {
@@ -34,10 +43,9 @@ export type ProcedureFormDefinition = {
 
 export type ProcedureStaffValue = { id: string; name: string };
 export type ProcedureServiceValue = { service_id: string; name: string; code: string; price: number | null };
+export type ProcedureServiceCharge = ProcedureServiceValue & { quantity: number };
 export type ProcedureDetailValue = string | number | ProcedureStaffValue | ProcedureServiceValue[];
 export type ProcedureDetails = Record<string, ProcedureDetailValue>;
-
-const laterality = ["Left", "Right", "Bilateral"] as const;
 
 const procedureDetails = {
   id: "procedure",
@@ -70,29 +78,9 @@ const catheterNotes = [
   { id: "notes", label: "Note", kind: "textarea", required: false, maxLength: 500 },
 ] as const satisfies readonly ProcedureField[];
 
-const frenchSizes = ["6", "8", "10", "12", "14", "16", "18", "20", "22", "24"] as const;
+const frenchSizes = Array.from({ length: 28 }, (_, index) => String(index + 3));
 
-const anatomicalSites = [
-  "Eye",
-  "Eyelid",
-  "Cornea",
-  "Conjunctiva",
-  "Orbit",
-  "Shoulder",
-  "Arm",
-  "Elbow",
-  "Forearm",
-  "Wrist",
-  "Hand",
-  "Finger",
-  "Hip",
-  "Thigh",
-  "Knee",
-  "Leg",
-  "Ankle",
-  "Foot",
-  "Toe",
-] as const;
+const monitoringService = { code: "YRN-MP-006", name: /monitor/i } as const satisfies ProcedureServiceMatch;
 
 export const procedureForms: readonly ProcedureFormDefinition[] = [
   {
@@ -105,8 +93,7 @@ export const procedureForms: readonly ProcedureFormDefinition[] = [
         id: "clinical",
         title: "Clinical Details",
         fields: [
-          { id: "anatomical_site", label: "Anatomical site", kind: "select", required: true, summary: true, options: anatomicalSites },
-          { id: "laterality", label: "Laterality", kind: "select", required: false, summary: true, options: laterality },
+          { id: "anatomical_site", label: "Anatomical site", kind: "text", required: true, summary: true, maxLength: 200 },
           ...clinicalNotes,
         ],
       },
@@ -123,7 +110,6 @@ export const procedureForms: readonly ProcedureFormDefinition[] = [
         id: "clinical",
         title: "Clinical Details",
         fields: [
-          { id: "laterality", label: "Laterality", kind: "select", required: false, summary: true, options: laterality },
           ...clinicalNotes,
         ],
       },
@@ -147,9 +133,9 @@ export const procedureForms: readonly ProcedureFormDefinition[] = [
         title: "Procedure Parameters",
         fields: [
           { id: "delivery_method", label: "Delivery method", kind: "select", required: true, summary: true, options: ["Nasal cannula", "Face mask", "Non-rebreather mask", "Venturi mask"] },
-          { id: "flow_rate", label: "Flow rate (L/min)", kind: "number", required: true, summary: true, min: 0.5, max: 60, step: 0.5 },
-          { id: "oxygen_hours", label: "Duration of oxygen supply (hours)", kind: "number", required: true, summary: true, min: 0.5, max: 24, step: 0.5, setsQuantity: true },
-          { id: "monitoring_hours", label: "Duration of monitoring (hours)", kind: "number", required: true, summary: true, min: 0.5, max: 24, step: 0.5 },
+          { id: "flow_rate", label: "Flow rate (L/min)", kind: "number", required: true, summary: true, min: 1, max: 60, step: 1 },
+          { id: "oxygen_hours", label: "Duration of oxygen supply (hours)", kind: "number", required: true, summary: true, min: 0.5, max: 24, step: 0.5 },
+          { id: "monitoring_hours", label: "Duration of monitoring (hours)", kind: "number", required: true, summary: true, min: 0.5, max: 24, step: 0.5, whenAssociated: monitoringService, setsAssociatedQuantity: monitoringService },
         ],
       },
       associatedServices,
@@ -165,12 +151,37 @@ export const procedureForms: readonly ProcedureFormDefinition[] = [
         id: "clinical",
         title: "Clinical Details",
         fields: [
-          { id: "catheter_type", label: "Catheter type", kind: "select", required: true, summary: true, options: ["Foley", "Nelaton", "Coude", "Suprapubic", "Condom"] },
-          { id: "catheter_material", label: "Catheter material", kind: "select", required: true, options: ["Latex", "Silicone", "Silicone-coated latex", "PVC"] },
+          { id: "catheter_type", label: "Catheter type", kind: "select", required: true, summary: true, options: ["Foley catheter", "Nelaton catheter", "Coude catheter"] },
+          { id: "catheter_material", label: "Catheter material", kind: "select", required: true, options: ["Latex", "Silicone", "Coated catheter"] },
           { id: "route", label: "Route", kind: "select", required: true, summary: true, options: ["Urethral", "Suprapubic"] },
           { id: "size_fr", label: "Size (Fr)", kind: "select", required: true, summary: true, options: frenchSizes },
-          { id: "sample_collection", label: "Sample collection", kind: "select", required: false, options: ["Not collected", "Catheter specimen", "Midstream"] },
+          { id: "sample_collection", label: "Sample collection", kind: "select", required: false, options: ["Routine urine analysis", "Urine culture"] },
           ...catheterNotes,
+        ],
+      },
+      associatedServices,
+    ],
+  },
+  {
+    id: "surgical-procedure",
+    quantity: "hidden",
+    allowDuplicate: true,
+    sections: [
+      {
+        id: "procedure",
+        title: "Procedure Details",
+        fields: [
+          { id: "quantity", label: "Quantity", kind: "number", required: true, summary: true, min: 1, max: 999, step: 1, setsQuantity: true },
+          { id: "performed_by", label: "Performed by", kind: "staff", required: true, summary: true },
+          { id: "assistant", label: "Assistant", kind: "staff", required: false, distinctFrom: "performed_by" },
+        ],
+      },
+      {
+        id: "clinical",
+        title: "Clinical Details",
+        fields: [
+          { id: "anatomical_site", label: "Anatomical site", kind: "text", required: true, summary: true, maxLength: 200 },
+          ...clinicalNotes,
         ],
       },
       associatedServices,
@@ -210,21 +221,60 @@ export function readServices(details: ProcedureDetails | Record<string, unknown>
   const value = details[id];
   if (!Array.isArray(value)) return [];
   return value.flatMap((item) => {
-    if (!item || typeof item !== "object" || !("service_id" in item) || typeof item.service_id !== "string") return [];
-    const name = "name" in item && typeof item.name === "string" ? item.name : "";
-    const code = "code" in item && typeof item.code === "string" ? item.code : "";
-    const price = "price" in item && (item.price === null || typeof item.price === "number") ? item.price : null;
-    return [{ service_id: item.service_id, name, code, price }];
+    const service = readService(item);
+    return service ? [service] : [];
   });
 }
 
-export function procedureServiceCharges(details: ProcedureDetails | null | undefined): ProcedureServiceValue[] {
-  if (!details) return [];
-  const charges: ProcedureServiceValue[] = [];
-  for (const value of Object.values(details)) {
-    if (Array.isArray(value)) charges.push(...value);
+export function procedureFieldActive(field: ProcedureField, raw: unknown) {
+  if (!field.whenAssociated) return true;
+  return listedServices(raw).some((service) => serviceMatches(service, field.whenAssociated!));
+}
+
+/** Hours entered for a matching service, or 1 when this service is charged once. */
+export function quantityForAssociatedService(raw: unknown, service: { code: string; name: string }) {
+  const source = raw && typeof raw === "object" ? raw as Record<string, unknown> : {};
+  for (const form of procedureForms) {
+    for (const field of procedureFields(form)) {
+      if (!field.setsAssociatedQuantity || !serviceMatches(service, field.setsAssociatedQuantity)) continue;
+      if (!procedureFieldActive(field, source)) continue;
+      const amount = source[field.id];
+      if (typeof amount === "number" && amount > 0) return amount;
+    }
   }
-  return charges;
+  return 1;
+}
+
+export function procedureServiceCharges(details: ProcedureDetails | null | undefined): ProcedureServiceCharge[] {
+  return listedServices(details).map((service) => ({
+    ...service,
+    quantity: quantityForAssociatedService(details, service),
+  }));
+}
+
+function readService(item: unknown): ProcedureServiceValue | null {
+  if (!item || typeof item !== "object" || !("service_id" in item) || typeof item.service_id !== "string" || !item.service_id) return null;
+  const name = "name" in item && typeof item.name === "string" ? item.name : "";
+  const code = "code" in item && typeof item.code === "string" ? item.code : "";
+  const price = "price" in item && (item.price === null || typeof item.price === "number") ? item.price : null;
+  return { service_id: item.service_id, name, code, price };
+}
+
+function listedServices(raw: unknown): ProcedureServiceValue[] {
+  if (!raw || typeof raw !== "object") return [];
+  const services: ProcedureServiceValue[] = [];
+  for (const value of Object.values(raw as Record<string, unknown>)) {
+    if (!Array.isArray(value)) continue;
+    for (const item of value) {
+      const service = readService(item);
+      if (service) services.push(service);
+    }
+  }
+  return services;
+}
+
+function serviceMatches(service: { code: string; name: string }, match: ProcedureServiceMatch) {
+  return Boolean((match.code && service.code === match.code) || (match.name && match.name.test(service.name)));
 }
 
 /** Keep only the answers this form defines, and report the first problem on each field. */
@@ -235,6 +285,7 @@ export function procedureDetailErrors(form: ProcedureFormDefinition, raw: unknow
   const fields = procedureFields(form);
 
   for (const field of fields) {
+    if (!procedureFieldActive(field, source)) continue;
     const value = source[field.id];
     if (field.kind === "staff") {
       const id = value && typeof value === "object" && "id" in value && typeof value.id === "string" ? value.id : "";
@@ -260,11 +311,13 @@ export function procedureDetailErrors(form: ProcedureFormDefinition, raw: unknow
       } else if (field.min != null && field.max != null && (amount < field.min || amount > field.max)) {
         errors[field.id] = `${field.label} must be between ${field.min} and ${field.max}.`;
       } else if (field.step != null && Math.abs(amount / field.step - Math.round(amount / field.step)) > 1e-6) {
-        errors[field.id] = `${field.label} must use steps of ${field.step}.`;
+        errors[field.id] = Number.isInteger(field.step)
+          ? `${field.label} must be a whole number.`
+          : `${field.label} must use steps of ${field.step}.`;
       } else {
         details[field.id] = Math.round(amount * 100) / 100;
       }
-    } else if (field.kind === "textarea") {
+    } else if (field.kind === "text" || field.kind === "textarea") {
       const text = typeof value === "string" ? value.trim() : "";
       if (field.maxLength && text.length > field.maxLength) {
         errors[field.id] = `${field.label} must be ${field.maxLength} characters or fewer.`;
