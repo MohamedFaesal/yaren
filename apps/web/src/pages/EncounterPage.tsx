@@ -1,5 +1,6 @@
 import { useEffect, useId, useState, type FormEvent, type ReactNode } from "react";
 import { Link, useNavigate, useParams } from "react-router";
+import { procedureDetailErrors, procedureFields, procedureFormById, procedureServiceCharges, quantityForProcedureForm, readServices, readStaff, readText, type ProcedureDetails, type ProcedureField, type ProcedureServiceValue } from "@yaren/shared-kernel";
 import {
   api,
   formatPrice,
@@ -523,7 +524,7 @@ export function EncounterPage({ token }: { token: string }) {
               <p className="mt-1 text-sm text-muted">Document medications, procedures and interventions, and advice for this encounter.</p>
               <div className="mt-4 flex gap-2 overflow-x-auto border-b border-line-soft">
                 <PlanTabButton selected={planTab === "medications"} count={form.medication_orders.length} onClick={() => setPlanTab("medications")}>Medication Orders</PlanTabButton>
-                <PlanTabButton selected={planTab === "procedures"} count={form.procedure_orders.length} onClick={() => setPlanTab("procedures")}>Procedures & Interventions</PlanTabButton>
+                <PlanTabButton selected={planTab === "procedures"} count={standaloneProcedures(form.procedure_orders).length} onClick={() => setPlanTab("procedures")}>Procedures & Interventions</PlanTabButton>
                 <PlanTabButton selected={planTab === "advice"} count={form.patient_advices.some((row) => row.text.trim()) ? 1 : 0} onClick={() => setPlanTab("advice")}>Patient Advices</PlanTabButton>
               </div>
 
@@ -555,14 +556,8 @@ export function EncounterPage({ token }: { token: string }) {
                           index={index}
                           locked={locked}
                           nationality={visit.patient_nationality}
-                          charges={[
-                            ...form.procedure_orders.filter((item) => item.linked_medication_order_id === row.id),
-                            ...(() => {
-                              const fluid = diluentCharge(row, catalog, visit.patient_nationality);
-                              return fluid ? [fluid] : [];
-                            })(),
-                          ]}
-                          planNotes={servicesForOrder(catalog, row).filter((service) => service.charge_once_per_plan).map((service) => service.name)}
+                          charges={chargesForMedicationOrder(row, form.medication_orders, form.procedure_orders, catalog, visit.patient_nationality)}
+                          planNotes={servicesForOrder(catalog, row).filter((service) => service.charge_once_per_plan && firstOrderForPlanService(form.medication_orders, catalog, service.id) !== row.id).map((service) => service.name)}
                           invalid={showOrderErrors && hasOrderProblems(row, catalog)}
                           diluent={catalog.find((item) => item.id === row.diluent_medication_id)?.name ?? ""}
                           onEdit={() => setOrderDialog(row)}
@@ -590,29 +585,30 @@ export function EncounterPage({ token }: { token: string }) {
                   <div className="flex flex-wrap items-end justify-between gap-3">
                     <div>
                       <h4 className="text-base font-bold text-ink">Procedures & Interventions <span className="text-xs font-medium text-muted">Optional</span></h4>
-                      <p className="text-sm text-muted">Add a procedure for this visit, or review the ones added by a medication order.</p>
+                      <p className="text-sm text-muted">Add a procedure for this visit. Procedures that belong to a medication order are listed on that order.</p>
                     </div>
                     {locked ? null : (
                       <button type="button" className={primary} onClick={() => setProcedureDialog(emptyProcedure())}>+ Add Procedure</button>
                     )}
                   </div>
-                  {form.procedure_orders.length === 0 ? (
+                  {standaloneProcedures(form.procedure_orders).length === 0 ? (
                     <div className="mt-4 rounded-xl border border-dashed border-line-strong px-4 py-8 text-center">
                       <p className="text-sm font-medium text-ink">No procedures yet</p>
-                      <p className="mt-1 text-sm text-muted">{locked ? "Nothing was recorded for this encounter." : "Add a procedure, or choose a medication route that includes one."}</p>
+                      <p className="mt-1 text-sm text-muted">{locked ? "Nothing was added on its own for this encounter." : "Add a procedure that is not part of a medication order."}</p>
                       {locked ? null : (
                         <button type="button" className={`${secondary} mt-4`} onClick={() => setProcedureDialog(emptyProcedure())}>Add the first procedure</button>
                       )}
                     </div>
                   ) : (
                     <ol className="mt-4 space-y-2">
-                      {form.procedure_orders.map((item, index) => (
+                      {standaloneProcedures(form.procedure_orders).map((item, index) => (
                         <ProcedureOrderRow
                           key={item.id}
                           item={item}
                           index={index}
                           locked={locked}
                           nationality={visit.patient_nationality}
+                          services={procedureServices}
                           source={form.medication_orders.find((order) => order.id === item.linked_medication_order_id)?.medication ?? ""}
                           onEdit={() => setProcedureDialog(item)}
                           onRemove={() => update({ procedure_orders: reconcileProcedures(form.medication_orders, form.procedure_orders.filter((row) => row.id !== item.id), catalog, visit.patient_nationality) })}
@@ -620,10 +616,10 @@ export function EncounterPage({ token }: { token: string }) {
                       ))}
                     </ol>
                   )}
-                  {form.procedure_orders.length > 0 ? (
+                  {standaloneProcedures(form.procedure_orders).length > 0 ? (
                     <div className="mt-3 flex flex-wrap items-baseline justify-between gap-2 rounded-xl bg-surface-2 px-4 py-3">
-                      <p className="text-sm text-muted-strong">{form.procedure_orders.length} {form.procedure_orders.length === 1 ? "procedure" : "procedures"}</p>
-                      <p className="text-base font-bold tabular-nums text-ink">{chargesTotal(form.procedure_orders, visit.patient_nationality)}</p>
+                      <p className="text-sm text-muted-strong">{standaloneProcedures(form.procedure_orders).length} {standaloneProcedures(form.procedure_orders).length === 1 ? "procedure" : "procedures"}</p>
+                      <p className="text-base font-bold tabular-nums text-ink">{chargesTotal(standaloneProcedures(form.procedure_orders), visit.patient_nationality)}</p>
                     </div>
                   ) : null}
                 </div>
@@ -698,6 +694,7 @@ export function EncounterPage({ token }: { token: string }) {
           takenIds={form.procedure_orders.filter((row) => !row.linked_medication_order_id && row.id !== procedureDialog.id).map((row) => row.procedure_id).filter((id): id is string => Boolean(id))}
           source={form.medication_orders.find((order) => order.id === procedureDialog.linked_medication_order_id)?.medication ?? ""}
           nationality={visit.patient_nationality}
+          token={token}
           onClose={() => setProcedureDialog(null)}
           onSave={(order) => {
             const exists = form.procedure_orders.some((row) => row.id === order.id);
@@ -770,6 +767,7 @@ function normalize(encounter: ClinicalEncounter): ClinicalEncounter {
       notes: item.notes ?? "",
       linked_medication_order_id: item.linked_medication_order_id ?? null,
       billing_scope: item.billing_scope === "plan" ? "plan" : "order",
+      details: item.details ?? {},
     })),
     patient_advices: encounter.patient_advices ?? [],
   };
@@ -815,6 +813,7 @@ function emptyProcedure(): ProcedureOrder {
     notes: "",
     linked_medication_order_id: null,
     billing_scope: "order",
+    details: {},
   };
 }
 
@@ -880,6 +879,7 @@ function reconcileProcedures(orders: MedicationOrder[], procedures: ProcedureOrd
         notes: previous?.notes ?? "",
         linked_medication_order_id: order.id,
         billing_scope: "order",
+        details: {},
       });
     }
   }
@@ -898,6 +898,7 @@ function reconcileProcedures(orders: MedicationOrder[], procedures: ProcedureOrd
       notes: previous?.notes ?? "",
       linked_medication_order_id: null,
       billing_scope: "plan",
+      details: {},
     });
   }
   return [...manual, ...plan, ...linked];
@@ -1365,10 +1366,41 @@ function administrationCharges(orders: MedicationOrder[], procedures: ProcedureO
     }
   }
   return procedures.filter((item) => Boolean(item.linked_medication_order_id) || item.billing_scope === "plan" || (item.procedure_id != null && sharedIds.has(item.procedure_id)))
-    .concat(orders.flatMap((order) => {
-      const fluid = diluentCharge(order, catalog, nationality);
-      return fluid ? [fluid] : [];
-    }));
+    .concat(orders.flatMap((order) => productCharges(order, catalog, nationality)));
+}
+
+function standaloneProcedures(procedures: ProcedureOrder[]) {
+  return procedures.filter((item) => !item.linked_medication_order_id && item.billing_scope !== "plan");
+}
+
+function chargesForMedicationOrder(order: MedicationOrder, orders: MedicationOrder[], procedures: ProcedureOrder[], catalog: CatalogMedication[], nationality: string | null | undefined) {
+  const own = procedures.filter((item) => item.linked_medication_order_id === order.id);
+  const shared = procedures.filter((item) => item.billing_scope === "plan" && firstOrderForPlanService(orders, catalog, item.procedure_id) === order.id);
+  const drug = medicationCharge(order, catalog, nationality);
+  const fluid = diluentCharge(order, catalog, nationality);
+  return [...(drug ? [drug] : []), ...own, ...shared, ...(fluid ? [fluid] : [])];
+}
+
+function productCharges(order: MedicationOrder, catalog: CatalogMedication[], nationality: string | null | undefined) {
+  return [medicationCharge(order, catalog, nationality), diluentCharge(order, catalog, nationality)].filter((item): item is ProcedureOrder => item != null);
+}
+
+function medicationCharge(order: MedicationOrder, catalog: CatalogMedication[], nationality: string | null | undefined): ProcedureOrder | null {
+  if (!order.medication_id) return null;
+  const item = catalog.find((entry) => entry.id === order.medication_id);
+  if (!item) return null;
+  return {
+    id: `medication:${order.id}`,
+    procedure_id: null,
+    name: [item.name, item.strength].filter((part) => part.trim()).join(" "),
+    code: "",
+    unit: item.dosage_form,
+    price: servicePriceAmount(item, nationality),
+    quantity: 1,
+    notes: "",
+    linked_medication_order_id: order.id,
+    billing_scope: "order",
+  };
 }
 
 function diluentCharge(order: MedicationOrder, catalog: CatalogMedication[], nationality: string | null | undefined): ProcedureOrder | null {
@@ -1429,9 +1461,15 @@ function prescriptionSummary(row: MedicationOrder) {
 }
 
 function chargesTotal(charges: ProcedureOrder[], nationality: string | null | undefined) {
-  if (charges.length === 0 || charges.some((charge) => charge.price == null)) return "—";
+  if (charges.length === 0) return "—";
   const currency = nationality === "Egyptian" ? "EGP" : "EUR";
-  const total = charges.reduce((sum, charge) => sum + (charge.price ?? 0) * (charge.quantity || 1), 0);
+  const amounts = charges.map((charge) => {
+    const extras = procedureServiceCharges(charge.details);
+    if (charge.price == null || extras.some((item) => item.price == null)) return null;
+    return charge.price * (charge.quantity || 1) + extras.reduce((sum, item) => sum + (item.price ?? 0), 0);
+  });
+  if (amounts.some((amount) => amount == null)) return "—";
+  const total = amounts.reduce<number>((sum, amount) => sum + (amount ?? 0), 0);
   return `${currency} ${formatPrice(Math.round(total * 100) / 100)}`;
 }
 
@@ -1535,17 +1573,29 @@ function MedicationOrderRow({
     <li className={`rounded-xl border bg-surface transition ${invalid ? "border-danger" : "border-line hover:border-line-strong"}`}>
       <div className="flex items-start gap-3 p-3 sm:p-4">
         <span className={`mt-0.5 inline-flex size-7 shrink-0 items-center justify-center rounded-full text-xs font-bold ${invalid ? "bg-danger-soft text-danger" : "bg-panel text-blue"}`}>{index + 1}</span>
-        <button type="button" className="min-w-0 flex-1 text-left" onClick={onEdit} aria-label={`${locked ? "View" : "Edit"} order ${index + 1}: ${row.medication}`}>
-          <p className="truncate text-base font-semibold text-ink">
-            {row.medication}
-            {identity ? <span className="ml-2 text-sm font-normal text-muted-strong">{identity}</span> : null}
-          </p>
-          <p className="mt-0.5 text-sm text-muted-strong">{summary || "No dose recorded yet"}</p>
-          {administration ? <p className="mt-0.5 text-xs text-muted">{administration}</p> : null}
+        <div className="min-w-0 flex-1">
+          <button type="button" className="w-full text-left" onClick={onEdit} aria-label={`${locked ? "View" : "Edit"} order ${index + 1}: ${row.medication}`}>
+            <p className="truncate text-base font-semibold text-ink">
+              {row.medication}
+              {identity ? <span className="ml-2 text-sm font-normal text-muted-strong">{identity}</span> : null}
+            </p>
+            <p className="mt-0.5 text-sm text-muted-strong">{summary || "No dose recorded yet"}</p>
+            {administration ? <p className="mt-0.5 text-xs text-muted">{administration}</p> : null}
+            {row.instructions ? <p className="mt-0.5 line-clamp-2 text-xs text-muted">{row.instructions}</p> : null}
+            {invalid ? <p className="mt-1 text-xs font-medium text-danger">Open this order to complete it.</p> : null}
+          </button>
+          {charges.length > 0 ? (
+            <ul className="mt-2 space-y-1">
+              {charges.map((charge) => (
+                <li key={charge.id} className="flex items-baseline justify-between gap-3 text-xs text-muted-strong">
+                  <span className="min-w-0 truncate">{charge.name}</span>
+                  <span className="shrink-0 tabular-nums">{charge.price == null ? "—" : chargeSummary(charge, nationality)}</span>
+                </li>
+              ))}
+            </ul>
+          ) : null}
           {planNotes.map((name) => <p key={name} className="mt-1 text-xs font-medium text-blue">{name} is charged once for this plan.</p>)}
-          {row.instructions ? <p className="mt-0.5 line-clamp-2 text-xs text-muted">{row.instructions}</p> : null}
-          {invalid ? <p className="mt-1 text-xs font-medium text-danger">Open this order to complete it.</p> : null}
-        </button>
+        </div>
         <div className="flex shrink-0 flex-col items-end gap-2">
           <p className="text-right text-sm font-bold tabular-nums text-ink" title={charges.map((charge) => `${charge.name} ${chargeSummary(charge, nationality)}`).join("\n")}>
             {charges.length === 0 ? <span className="font-medium text-muted">No charge</span>
@@ -1593,6 +1643,10 @@ function MedicationOrderDialog({
     : [...planOrders, draft];
   const reconciled = reconcileProcedures(previewOrders, [], catalog, nationality);
   const charges = [
+    ...(() => {
+      const drug = medicationCharge(draft, catalog, nationality);
+      return drug ? [drug] : [];
+    })(),
     ...reconciled.filter((item) => item.linked_medication_order_id === draft.id || (item.billing_scope === "plan" && firstOrderForPlanService(previewOrders, catalog, item.procedure_id) === draft.id)),
     ...(() => {
       const fluid = diluentCharge(draft, catalog, nationality);
@@ -2052,6 +2106,7 @@ function ProcedureOrderRow({
   index,
   locked,
   nationality,
+  services,
   source,
   onEdit,
   onRemove,
@@ -2060,6 +2115,7 @@ function ProcedureOrderRow({
   index: number;
   locked: boolean;
   nationality: string | null | undefined;
+  services: MedicalService[];
   source: string;
   onEdit: () => void;
   onRemove: () => void;
@@ -2067,6 +2123,22 @@ function ProcedureOrderRow({
   const linked = Boolean(item.linked_medication_order_id);
   const shared = item.billing_scope === "plan";
   const hours = hourlyProcedure(item);
+  const form = !linked && !shared ? procedureFormById(services.find((service) => service.id === item.procedure_id)?.procedure_form) : null;
+  const details = item.details ?? {};
+  const summaries = form ? procedureFields(form).flatMap((field) => {
+    if (!field.summary) return [];
+    if (field.kind === "staff") {
+      const person = readStaff(details, field.id);
+      return person ? [`${field.label}: ${person.name}`] : [];
+    }
+    if (field.kind === "number") {
+      const amount = details[field.id];
+      return typeof amount === "number" ? [`${field.label}: ${amount}`] : [];
+    }
+    const text = readText(details, field.id);
+    return text ? [`${field.label}: ${text}`] : [];
+  }) : [];
+  const associated = form ? procedureFields(form).filter((field) => field.kind === "associated-services").flatMap((field) => readServices(details, field.id)) : [];
   return (
     <li className="rounded-xl border border-line bg-surface transition hover:border-line-strong">
       <div className="flex items-start gap-3 p-3 sm:p-4">
@@ -2076,13 +2148,21 @@ function ProcedureOrderRow({
             {item.name}
             <span className="ml-2 text-sm font-normal text-muted-strong">{item.code}</span>
           </p>
-          <p className="mt-0.5 text-sm text-muted-strong">
-            {hours ? `${formatQuantity(item.quantity)} ${item.quantity === 1 ? "hour" : "hours"}` : `Quantity ${formatQuantity(item.quantity)}`}
-            {item.unit ? ` · ${item.unit}` : ""}
-          </p>
+          {form?.quantity === "hidden" ? (
+            item.unit ? <p className="mt-0.5 text-sm text-muted-strong">{item.unit}</p> : null
+          ) : (
+            <p className="mt-0.5 text-sm text-muted-strong">
+              {hours ? `${formatQuantity(item.quantity)} ${item.quantity === 1 ? "hour" : "hours"}` : `Quantity ${formatQuantity(item.quantity)}`}
+              {item.unit ? ` · ${item.unit}` : ""}
+            </p>
+          )}
+          {summaries.map((line) => <p key={line} className="mt-0.5 text-sm text-muted-strong">{line}</p>)}
+          {associated.map((service) => (
+            <p key={service.service_id} className="mt-0.5 text-xs text-muted">{service.name}{service.code ? ` · ${service.code}` : ""}</p>
+          ))}
           {shared ? <p className="mt-1 text-xs font-medium text-blue">Charged once for this plan</p> : null}
           {linked ? <p className="mt-1 text-xs font-medium text-blue">Added with {source || "a medication order"}</p> : null}
-          {item.notes ? <p className="mt-0.5 line-clamp-2 text-xs text-muted">{item.notes}</p> : null}
+          {!form && item.notes ? <p className="mt-0.5 line-clamp-2 text-xs text-muted">{item.notes}</p> : null}
         </button>
         <div className="flex shrink-0 flex-col items-end gap-2">
           <p className="text-right text-sm font-bold tabular-nums text-ink">
@@ -2106,6 +2186,7 @@ function ProcedureOrderDialog({
   takenIds,
   source,
   nationality,
+  token,
   onClose,
   onSave,
 }: {
@@ -2116,18 +2197,36 @@ function ProcedureOrderDialog({
   takenIds: string[];
   source: string;
   nationality: string | null | undefined;
+  token: string;
   onClose: () => void;
   onSave: (order: ProcedureOrder) => void;
 }) {
   const [draft, setDraft] = useState(order);
   const [attempted, setAttempted] = useState(false);
+  const [staff, setStaff] = useState<{ id: string; name: string; role: string }[]>([]);
+  const [staffNote, setStaffNote] = useState("");
   const titleId = useId();
   const linked = Boolean(draft.linked_medication_order_id);
   const shared = draft.billing_scope === "plan";
+  const selected = services.find((service) => service.id === draft.procedure_id);
+  const activeForm = !linked && !shared ? procedureFormById(selected?.procedure_form) : null;
+  const fields = activeForm ? procedureFields(activeForm) : [];
   const hours = hourlyProcedure(draft);
-  const duplicate = Boolean(draft.procedure_id && takenIds.includes(draft.procedure_id));
+  const duplicate = Boolean(draft.procedure_id && !activeForm?.allowDuplicate && takenIds.includes(draft.procedure_id));
   const serviceError = attempted && !draft.procedure_id ? "Choose a procedure." : attempted && duplicate ? "This procedure is already on the visit. Edit that line instead." : "";
-  const quantityError = !linked && !shared && attempted && (!Number.isInteger(draft.quantity) || draft.quantity < 1) ? `Enter the ${hours ? "hours" : "quantity"}.` : "";
+  const quantityError = !activeForm && !linked && !shared && attempted && (!Number.isInteger(draft.quantity) || draft.quantity < 1) ? `Enter the ${hours ? "hours" : "quantity"}.` : "";
+  const detailErrors = attempted && activeForm ? procedureDetailErrors(activeForm, draft.details ?? {}).errors : {};
+  const needsStaff = fields.some((item) => item.kind === "staff");
+
+  useEffect(() => {
+    if (!needsStaff) return;
+    api<{ id: string; name: string; role: string }[]>("/api/clinical-staff", {}, token)
+      .then((rows) => {
+        setStaff(rows);
+        setStaffNote("");
+      })
+      .catch((caught) => setStaffNote(messageOf(caught)));
+  }, [needsStaff, token]);
 
   useEffect(() => {
     function onKey(event: KeyboardEvent) {
@@ -2137,18 +2236,121 @@ function ProcedureOrderDialog({
     return () => document.removeEventListener("keydown", onKey);
   }, [onClose]);
 
+  function chooseProcedure(procedureId: string) {
+    const service = services.find((item) => item.id === procedureId);
+    if (!service) return;
+    setDraft((current) => {
+      const previous = services.find((item) => item.id === current.procedure_id);
+      const nextForm = procedureFormById(service.procedure_form);
+      const previousForm = procedureFormById(previous?.procedure_form);
+      return {
+        ...current,
+        procedure_id: service.id,
+        name: service.name,
+        code: service.code,
+        unit: service.unit,
+        price: servicePriceAmount(service, nationality),
+        quantity: nextForm?.quantity === "hidden" ? 1 : current.quantity,
+        details: nextForm && previousForm && nextForm.id === previousForm.id ? current.details ?? {} : {},
+      };
+    });
+  }
+
+  function writeDetail(field: ProcedureField, value: ProcedureDetails[string] | null) {
+    setDraft((current) => {
+      const details: ProcedureDetails = { ...(current.details ?? {}) };
+      if (value == null || value === "") delete details[field.id];
+      else details[field.id] = value;
+      if (value && typeof value === "object" && !Array.isArray(value)) {
+        for (const other of fields) {
+          if (other.kind !== "staff" || other.id === field.id) continue;
+          const conflicts = (other.distinctFrom === field.id || field.distinctFrom === other.id) && readStaff(details, other.id)?.id === value.id;
+          if (conflicts) delete details[other.id];
+        }
+      }
+      return {
+        ...current,
+        details,
+        quantity: field.setsQuantity ? (typeof value === "number" ? value : 1) : current.quantity,
+      };
+    });
+  }
+
   function submit(event: FormEvent) {
     event.preventDefault();
     if (locked) return;
     setAttempted(true);
-    if (!draft.procedure_id || duplicate || (!linked && !shared && (!Number.isInteger(draft.quantity) || draft.quantity < 1))) return;
-    onSave(draft);
+    if (!draft.procedure_id || duplicate) return;
+    if (draft.procedure_id && !selected && services.length === 0) return;
+    if (activeForm) {
+      const checked = procedureDetailErrors(activeForm, draft.details ?? {});
+      if (Object.keys(checked.errors).length > 0) return;
+      const note = checked.details.notes;
+      onSave({
+        ...draft,
+        details: checked.details,
+        notes: typeof note === "string" ? note : "",
+        quantity: quantityForProcedureForm(activeForm, checked.details, draft.quantity),
+      });
+      return;
+    }
+    if (!linked && !shared && (!Number.isInteger(draft.quantity) || draft.quantity < 1)) return;
+    onSave({ ...draft, details: {} });
   }
+
+  const procedurePicker = (
+    <label className={label}>Procedure <span className="text-danger">*</span>
+      <SearchSelect
+        fixedMenu
+        clearable={Boolean(activeForm?.selectionCard) && !locked && !linked && !shared}
+        disabled={locked || linked || shared}
+        invalid={Boolean(serviceError)}
+        value={draft.procedure_id ?? ""}
+        placeholder={services.length ? "Search and select procedure" : "No procedures yet"}
+        options={services.map((service) => ({
+          value: service.id,
+          label: service.name,
+          hint: `${service.code} · ${service.unit} · ${servicePriceLabel(service, nationality)}`,
+          group: service.category,
+        }))}
+        onChange={(procedureId) => {
+          if (!procedureId) {
+            setDraft((current) => ({ ...current, procedure_id: null, name: "", code: "", unit: "", price: null, quantity: 1, details: {} }));
+            return;
+          }
+          chooseProcedure(procedureId);
+        }}
+      />
+      <FieldError message={serviceError} />
+      {activeForm?.selectionCard && selected ? (
+        <div className="mt-3 flex items-center gap-3 rounded-lg border border-line bg-panel/50 px-3 py-2">
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-sm font-semibold text-ink">{selected.name}</p>
+            <p className="truncate text-xs text-muted">{selected.code} · {selected.category}</p>
+          </div>
+          <p className="shrink-0 text-sm font-semibold tabular-nums text-ink">{servicePriceLabel(selected, nationality)}</p>
+        </div>
+      ) : null}
+    </label>
+  );
+
+  const heading = locked
+    ? (activeForm ? "Procedure / Intervention" : "Procedure")
+    : existing
+      ? (activeForm ? "Edit Procedure / Intervention" : "Edit procedure")
+      : (activeForm ? "Add Procedure / Intervention" : "New procedure");
+  const subtitle = shared
+    ? "Charged once for this plan. The quantity stays 1."
+    : linked
+      ? `Added with ${source || "a medication order"}. The quantity follows that order.`
+      : activeForm
+        ? (activeForm.intro ?? "Choose the procedure, add clinical details and associated services. It will be added to the encounter and can be added to the invoice later.")
+        : "Choose the service and how many to charge.";
 
   return (
     <div className="triage-dialog-backdrop fixed inset-0 z-50 grid place-items-center bg-shell/45 p-4" role="presentation" onMouseDown={onClose}>
       <form
-        className="flex max-h-[92vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl bg-surface shadow-dialog"
+        className={`flex max-h-[92vh] w-full flex-col overflow-hidden rounded-2xl bg-surface shadow-dialog ${activeForm ? "max-w-6xl" : "max-w-2xl"}`}
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
@@ -2158,8 +2360,8 @@ function ProcedureOrderDialog({
       >
         <div className="flex shrink-0 items-start justify-between gap-4 border-b border-line-soft px-5 py-4">
           <div className="min-w-0">
-            <h2 id={titleId} className="text-lg font-semibold text-ink">{locked ? "Procedure" : existing ? "Edit procedure" : "New procedure"}</h2>
-            <p className="mt-0.5 text-sm text-muted">{shared ? "Charged once for this plan. The quantity stays 1." : linked ? `Added with ${source || "a medication order"}. The quantity follows that order.` : "Choose the service and how many to charge."}</p>
+            <h2 id={titleId} className="text-lg font-semibold text-ink">{heading}</h2>
+            <p className="mt-0.5 text-sm text-muted">{subtitle}</p>
           </div>
           <button type="button" className="inline-grid size-9 shrink-0 place-items-center rounded-lg text-muted-strong transition hover:bg-surface-2 hover:text-ink" aria-label="Close" onClick={onClose}>
             <svg viewBox="0 0 24 24" className="size-5" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
@@ -2167,96 +2369,98 @@ function ProcedureOrderDialog({
         </div>
 
         <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
-          <label className={label}>Procedure <span className="text-danger">*</span>
-            <SearchSelect
-              fixedMenu
-              disabled={locked || linked || shared}
-              invalid={Boolean(serviceError)}
-              value={draft.procedure_id ?? ""}
-              placeholder={services.length ? "Search procedures and interventions" : "No procedures yet"}
-              options={services.map((service) => ({
-                value: service.id,
-                label: service.name,
-                hint: `${service.code} · ${service.unit} · ${servicePriceLabel(service, nationality)}`,
-                group: service.category,
-              }))}
-              onChange={(procedureId) => {
-                const service = services.find((item) => item.id === procedureId);
-                if (!service) return;
-                setDraft((current) => ({
-                  ...current,
-                  procedure_id: service.id,
-                  name: service.name,
-                  code: service.code,
-                  unit: service.unit,
-                  price: servicePriceAmount(service, nationality),
-                }));
-              }}
-            />
-            <FieldError message={serviceError} />
-          </label>
-          {draft.procedure_id ? (
-            <div className="mt-2 flex flex-wrap gap-1.5">
-              {[draft.code, draft.unit].filter((part) => part.trim()).map((part) => (
-                <span key={part} className="rounded-full bg-surface-2 px-2.5 py-0.5 text-xs font-medium text-muted-strong">{part}</span>
+          {activeForm ? (
+            <div className={`grid items-start gap-4 ${activeForm.sections.length > 1 ? "lg:grid-cols-3" : ""}`}>
+              {activeForm.sections.map((section, index) => (
+                <section key={section.id} className="min-w-0 rounded-xl border border-line-soft bg-surface-2 p-4">
+                  <h3 className="text-sm font-semibold text-blue">{section.title}</h3>
+                  {index === 0 ? <div className="mt-4">{procedurePicker}</div> : null}
+                  <div className="mt-4 grid gap-4">
+                    {section.fields.map((item) => (
+                      <ProcedureFormField
+                        key={item.id}
+                        field={item}
+                        fields={fields}
+                        details={draft.details ?? {}}
+                        error={detailErrors[item.id] ?? ""}
+                        locked={locked}
+                        staff={staff}
+                        staffNote={staffNote}
+                        services={services}
+                        procedureId={draft.procedure_id}
+                        nationality={nationality}
+                        onChange={(value) => writeDetail(item, value)}
+                      />
+                    ))}
+                  </div>
+                </section>
               ))}
-              <span className="rounded-full bg-surface-2 px-2.5 py-0.5 text-xs font-medium text-muted-strong">
-                Unit price {draft.price == null ? "—" : `${nationality === "Egyptian" ? "EGP" : "EUR"} ${formatPrice(draft.price)}`}
-              </span>
             </div>
-          ) : null}
-
-          <div className="mt-5 grid gap-4 border-t border-line-soft pt-4 sm:grid-cols-2">
-            <label className={label}>{hours ? "Hours" : "Quantity"} <span className="text-danger">*</span>
-              <input
-                className={`${field} ${quantityError ? fieldInvalid : ""}`}
-                aria-label={hours ? "Hours" : "Quantity"}
-                disabled={locked || linked || shared}
-                inputMode="numeric"
-                min={1}
-                step={1}
-                type="number"
-                value={draft.quantity || ""}
-                onChange={(event) => {
-                  const amount = Number(event.target.value);
-                  setDraft((current) => ({ ...current, quantity: Number.isInteger(amount) && amount > 0 ? amount : 0 }));
-                }}
-              />
-              <FieldError message={quantityError} />
-              {!quantityError && (linked || shared) ? <span className="mt-1 block text-xs text-muted">{shared ? "This is charged once for the plan." : "Change the medication order to change these hours."}</span> : null}
-              {!quantityError && !linked && hours ? <span className="mt-1 block text-xs text-muted">Charged for each started hour.</span> : null}
-            </label>
-
-            <label className={`${label} sm:col-span-2`}>Note <span className="font-medium text-muted">Optional</span>
-              <textarea
-                className={`${field} min-h-20`}
-                disabled={locked}
-                maxLength={500}
-                placeholder="e.g. Right arm, patient tolerated well"
-                value={draft.notes}
-                onChange={(event) => setDraft((current) => ({ ...current, notes: event.target.value }))}
-              />
-            </label>
-          </div>
-
-          <section className="mt-5 rounded-xl border border-line-soft bg-surface-2 p-4">
-            <div className="flex flex-wrap items-baseline justify-between gap-2">
-              <h3 className="text-xs font-semibold uppercase tracking-wide text-muted">Charge</h3>
-              <p className="text-base font-bold tabular-nums text-ink">
-                {!draft.procedure_id ? "" : draft.price == null ? <span className="text-sm font-medium text-muted">Price not set</span> : chargesTotal([draft], nationality)}
-              </p>
-            </div>
-            <p className="mt-1 text-sm text-muted">
-              {!draft.procedure_id ? "Choose a procedure to see the charge."
-                : draft.price == null ? `No ${nationality === "Egyptian" ? "EGP" : "EUR"} price is set for this service yet.`
-                : `${nationality === "Egyptian" ? "EGP" : "EUR"} ${formatPrice(draft.price)} × ${formatQuantity(draft.quantity || 0)}`}
-            </p>
-          </section>
+          ) : (
+            <>
+              {procedurePicker}
+              {draft.procedure_id ? (
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  {[draft.code, draft.unit].filter((part) => part.trim()).map((part) => (
+                    <span key={part} className="rounded-full bg-surface-2 px-2.5 py-0.5 text-xs font-medium text-muted-strong">{part}</span>
+                  ))}
+                  <span className="rounded-full bg-surface-2 px-2.5 py-0.5 text-xs font-medium text-muted-strong">
+                    Unit price {draft.price == null ? "—" : `${nationality === "Egyptian" ? "EGP" : "EUR"} ${formatPrice(draft.price)}`}
+                  </span>
+                </div>
+              ) : null}
+              <div className="mt-5 grid gap-4 border-t border-line-soft pt-4 sm:grid-cols-2">
+                <label className={label}>{hours ? "Hours" : "Quantity"} <span className="text-danger">*</span>
+                  <input
+                    className={`${field} ${quantityError ? fieldInvalid : ""}`}
+                    aria-label={hours ? "Hours" : "Quantity"}
+                    disabled={locked || linked || shared}
+                    inputMode="numeric"
+                    min={1}
+                    step={1}
+                    type="number"
+                    value={draft.quantity || ""}
+                    onChange={(event) => {
+                      const amount = Number(event.target.value);
+                      setDraft((current) => ({ ...current, quantity: Number.isInteger(amount) && amount > 0 ? amount : 0 }));
+                    }}
+                  />
+                  <FieldError message={quantityError} />
+                  {!quantityError && (linked || shared) ? <span className="mt-1 block text-xs text-muted">{shared ? "This is charged once for the plan." : "Change the medication order to change these hours."}</span> : null}
+                  {!quantityError && !linked && hours ? <span className="mt-1 block text-xs text-muted">Charged for each started hour.</span> : null}
+                </label>
+                <label className={`${label} sm:col-span-2`}>Note <span className="font-medium text-muted">Optional</span>
+                  <textarea
+                    className={`${field} min-h-20`}
+                    disabled={locked}
+                    maxLength={500}
+                    placeholder="e.g. Right arm, patient tolerated well"
+                    value={draft.notes}
+                    onChange={(event) => setDraft((current) => ({ ...current, notes: event.target.value }))}
+                  />
+                </label>
+              </div>
+              <section className="mt-5 rounded-xl border border-line-soft bg-surface-2 p-4">
+                <div className="flex flex-wrap items-baseline justify-between gap-2">
+                  <h3 className="text-xs font-semibold uppercase tracking-wide text-muted">Charge</h3>
+                  <p className="text-base font-bold tabular-nums text-ink">
+                    {!draft.procedure_id ? "" : draft.price == null ? <span className="text-sm font-medium text-muted">Price not set</span> : chargesTotal([draft], nationality)}
+                  </p>
+                </div>
+                <p className="mt-1 text-sm text-muted">
+                  {!draft.procedure_id ? "Choose a procedure to see the charge."
+                    : draft.price == null ? `No ${nationality === "Egyptian" ? "EGP" : "EUR"} price is set for this service yet.`
+                    : `${nationality === "Egyptian" ? "EGP" : "EUR"} ${formatPrice(draft.price)} × ${formatQuantity(draft.quantity || 0)}`}
+                </p>
+              </section>
+            </>
+          )}
         </div>
 
         <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-t border-line-soft px-5 py-4">
           <p className="min-w-0 flex-1 truncate text-sm text-muted-strong">
             {draft.name ? <span className="font-semibold text-ink">{draft.name}</span> : "Nothing chosen yet"}
+            {activeForm && draft.procedure_id ? <span className="ml-3 font-semibold tabular-nums text-ink">{draft.price == null ? "Price not set" : chargesTotal([draft], nationality)}</span> : null}
           </p>
           <div className="flex gap-2">
             <button type="button" className={secondary} onClick={onClose}>{locked ? "Close" : "Cancel"}</button>
@@ -2264,6 +2468,222 @@ function ProcedureOrderDialog({
           </div>
         </div>
       </form>
+    </div>
+  );
+}
+
+function ProcedureFormField({
+  field: item,
+  fields,
+  details,
+  error,
+  locked,
+  staff,
+  staffNote,
+  services,
+  procedureId,
+  nationality,
+  onChange,
+}: {
+  field: ProcedureField;
+  fields: readonly ProcedureField[];
+  details: ProcedureDetails;
+  error: string;
+  locked: boolean;
+  staff: { id: string; name: string; role: string }[];
+  staffNote: string;
+  services: MedicalService[];
+  procedureId: string | null;
+  nationality: string | null | undefined;
+  onChange: (value: ProcedureDetails[string] | null) => void;
+}) {
+  const currency = nationality === "Egyptian" ? "EGP" : "EUR";
+  const takenIds = fields.flatMap((other) => {
+    if (other.kind !== "staff" || other.id === item.id) return [];
+    const samePerson = other.distinctFrom === item.id || item.distinctFrom === other.id;
+    const id = samePerson ? readStaff(details, other.id)?.id : undefined;
+    return id ? [id] : [];
+  });
+
+  return (
+    <div>
+      <span className={label}>
+        {item.label}{" "}
+        {item.required ? <span className="text-danger">*</span> : <span className="font-medium text-muted">(optional)</span>}
+      </span>
+      {item.kind === "staff" ? (
+        <SearchSelect
+          fixedMenu
+          clearable={!item.required}
+          disabled={locked}
+          invalid={Boolean(error)}
+          value={readStaff(details, item.id)?.id ?? ""}
+          placeholder="Search and select"
+          options={staff.filter((person) => !takenIds.includes(person.id)).map((person) => ({
+            value: person.id,
+            label: person.name,
+            hint: person.role,
+          }))}
+          onChange={(id) => {
+            const person = staff.find((entry) => entry.id === id);
+            onChange(person ? { id: person.id, name: person.name } : null);
+          }}
+        />
+      ) : null}
+      {item.kind === "select" && (item.options?.length ?? 0) > 6 ? (
+        <SearchSelect
+          fixedMenu
+          clearable={!item.required}
+          disabled={locked}
+          invalid={Boolean(error)}
+          value={readText(details, item.id)}
+          placeholder="Search and select"
+          options={(item.options ?? []).map((option) => ({ value: option, label: option }))}
+          onChange={(value) => onChange(value)}
+        />
+      ) : null}
+      {item.kind === "select" && (item.options?.length ?? 0) <= 6 ? (
+        <select
+          className={`${field} ${error ? fieldInvalid : ""}`}
+          disabled={locked}
+          value={readText(details, item.id)}
+          onChange={(event) => onChange(event.target.value)}
+        >
+          <option value="">Select</option>
+          {(item.options ?? []).map((option) => <option key={option} value={option}>{option}</option>)}
+        </select>
+      ) : null}
+      {item.kind === "number" ? (
+        <input
+          className={`${field} ${error ? fieldInvalid : ""}`}
+          disabled={locked}
+          inputMode="decimal"
+          max={item.max}
+          min={item.min}
+          step={item.step ?? "any"}
+          type="number"
+          value={typeof details[item.id] === "number" ? String(details[item.id]) : ""}
+          onChange={(event) => {
+            const raw = event.target.value.trim();
+            if (!raw) onChange(null);
+            else {
+              const amount = Number(raw);
+              onChange(Number.isFinite(amount) ? amount : null);
+            }
+          }}
+        />
+      ) : null}
+      {item.kind === "textarea" ? (
+        <>
+          <textarea
+            className={`${field} min-h-28 ${error ? fieldInvalid : ""}`}
+            disabled={locked}
+            maxLength={item.maxLength}
+            value={readText(details, item.id)}
+            onChange={(event) => onChange(event.target.value)}
+          />
+          {item.maxLength ? <span className="mt-1 block text-right text-xs text-muted">{readText(details, item.id).length}/{item.maxLength}</span> : null}
+        </>
+      ) : null}
+      {item.kind === "associated-services" ? (
+        <AssociatedServicesField
+          details={details}
+          fieldId={item.id}
+          locked={locked}
+          services={services}
+          procedureId={procedureId}
+          nationality={nationality}
+          currency={currency}
+          onChange={onChange}
+        />
+      ) : null}
+      {item.kind === "staff" && staffNote ? <span className="mt-1 block text-xs text-muted">{staffNote}</span> : null}
+      <FieldError message={error} />
+    </div>
+  );
+}
+
+function AssociatedServicesField({
+  details,
+  fieldId,
+  locked,
+  services,
+  procedureId,
+  nationality,
+  currency,
+  onChange,
+}: {
+  details: ProcedureDetails;
+  fieldId: string;
+  locked: boolean;
+  services: MedicalService[];
+  procedureId: string | null;
+  nationality: string | null | undefined;
+  currency: string;
+  onChange: (value: ProcedureServiceValue[] | null) => void;
+}) {
+  const chosen = readServices(details, fieldId);
+  const available = services.filter((service) => service.id !== procedureId && !chosen.some((item) => item.service_id === service.id));
+  return (
+    <div>
+      <SearchSelect
+        fixedMenu
+        disabled={locked || available.length === 0}
+        value=""
+        placeholder="Search for associated services (e.g. anesthesia, wound dressing)"
+        options={available.map((service) => ({
+          value: service.id,
+          label: service.name,
+          hint: `${service.code} · ${servicePriceLabel(service, nationality)}`,
+          group: service.category,
+        }))}
+        onChange={(id) => {
+          const service = services.find((item) => item.id === id);
+          if (!service) return;
+          onChange([...chosen, {
+            service_id: service.id,
+            name: service.name,
+            code: service.code,
+            price: servicePriceAmount(service, nationality),
+          }]);
+        }}
+      />
+      {chosen.length === 0 ? (
+        <div className="mt-8 px-4 text-center">
+          <span className="mx-auto grid size-14 place-items-center rounded-full bg-panel text-blue">
+            <svg viewBox="0 0 24 24" className="size-6" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><path d="M7 3h8l4 4v14H7z" /><path d="M15 3v4h4" /><path d="M12 11v6M9 14h6" /></svg>
+          </span>
+          <p className="mt-3 text-sm text-muted">No associated services added</p>
+        </div>
+      ) : (
+        <>
+          <div className="mt-4 flex items-center justify-between gap-3">
+            <p className="text-sm font-medium text-ink">Selected services ({chosen.length})</p>
+            {locked ? null : (
+              <button type="button" className="text-xs font-semibold text-blue" onClick={() => onChange(null)}>Clear all</button>
+            )}
+          </div>
+          <ul className="mt-2 space-y-2">
+          {chosen.map((service) => (
+            <li key={service.service_id} className="flex items-center gap-2 rounded-lg border border-line bg-surface px-3 py-2">
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-sm font-medium text-ink">{service.name}</p>
+                <p className="text-xs text-muted">{service.code} · {service.price == null ? "Price not set" : `${currency} ${formatPrice(service.price)}`}</p>
+              </div>
+              {locked ? null : (
+                <button
+                  type="button"
+                  className="text-xs font-semibold text-danger"
+                  onClick={() => onChange(chosen.filter((item) => item.service_id !== service.service_id))}
+                >
+                  Remove
+                </button>
+              )}
+            </li>
+          ))}
+          </ul>
+        </>
+      )}
     </div>
   );
 }

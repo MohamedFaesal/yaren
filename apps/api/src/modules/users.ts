@@ -94,6 +94,18 @@ async function findUser(pool: pg.Pool, id: string) {
 }
 
 export function registerUsers(app: FastifyInstance, pool: pg.Pool) {
+  app.get("/api/clinical-staff", { preHandler: authenticate }, async () => {
+    const result = await pool.query<{ id: string; name: string; role: string }>(
+      `SELECT id, name, role
+       FROM users
+       WHERE deleted_at IS NULL
+         AND is_active = true
+         AND role IN ('Doctor', 'Nurse')
+       ORDER BY lower(name) ASC`,
+    );
+    return result.rows;
+  });
+
   app.get("/api/users", { preHandler: authenticate }, async (request) => {
     const access = await loadAccess(pool, request.user);
     const where = viewWhere(access, request.user.sub, "user", { owner: "created_by" });

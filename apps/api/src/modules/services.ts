@@ -65,6 +65,7 @@ type ServiceRow = {
   unit_price_egp: string | null;
   unit_price_eur: string | null;
   charge_once_per_plan: boolean;
+  procedure_form: string | null;
 };
 
 export function registerServices(app: FastifyInstance, pool: pg.Pool) {
@@ -94,7 +95,7 @@ export function registerServices(app: FastifyInstance, pool: pg.Pool) {
     const result = await pool.query<ServiceRow>(
       `SELECT s.id, s.name, s.description, s.service_type, s.category, s.unit, s.code,
               s.price AS shared_price, NULL::numeric AS clinic_price, s.unit_price_egp, s.unit_price_eur,
-              s.charge_once_per_plan
+              s.charge_once_per_plan, s.procedure_form
        FROM medical_services s
        WHERE ${clauses.join(" AND ")}
        ORDER BY s.position ASC, lower(s.name) ASC`,
@@ -256,6 +257,7 @@ function present(row: ServiceRow) {
     unit_price_egp: unitPriceEgp,
     unit_price_eur: unitPriceEur,
     charge_once_per_plan: row.charge_once_per_plan,
+    procedure_form: row.procedure_form,
   };
 }
 
@@ -284,7 +286,7 @@ function readId(params: unknown) {
 async function findService(pool: pg.Pool, id: string) {
   const result = await pool.query<ServiceRow>(
     `SELECT s.id, s.name, s.description, s.service_type, s.category, s.unit, s.code, s.price AS shared_price, NULL::numeric AS clinic_price,
-            s.unit_price_egp, s.unit_price_eur, s.charge_once_per_plan
+            s.unit_price_egp, s.unit_price_eur, s.charge_once_per_plan, s.procedure_form
      FROM medical_services s
      WHERE s.id = $1 AND s.deleted_at IS NULL`,
     [id],

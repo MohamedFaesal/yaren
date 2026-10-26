@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import type pg from "pg";
 import { z } from "zod";
-import { ApplicationError } from "@yaren/shared-kernel";
+import { ApplicationError, procedureDetailErrors, procedureFields, procedureFormById, quantityForProcedureForm, readServices, readStaff } from "@yaren/shared-kernel";
 import { authenticate, parse } from "../http.js";
 import { loadAccess, workspaceClinicOptionsWhere } from "../permissions.js";
 import { fileUrl, removeUpload, saveEncounterFile } from "../uploads.js";
@@ -112,6 +112,9 @@ const encounterSchema = z.object({
     notes: z.string().trim().max(500).optional().transform((value) => value ?? ""),
     linked_medication_order_id: z.string().uuid().nullable().optional().transform((value) => value ?? null),
     billing_scope: z.enum(["order", "plan"]).optional().transform((value) => value ?? "order"),
+    details: z.unknown().optional().transform((value) => (
+      value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {}
+    )),
   })).max(40).optional().transform((value) => value ?? []),
   patient_advices: z.array(z.object({
     id: z.string().uuid(),
@@ -415,6 +418,7 @@ async function applyRouteProcedures<T extends EncounterBody>(db: pg.Pool | pg.Po
         notes: previous?.notes ?? "",
         linked_medication_order_id: order.id,
         billing_scope: "order",
+        details: {},
       });
     }
   }
@@ -433,9 +437,129 @@ async function applyRouteProcedures<T extends EncounterBody>(db: pg.Pool | pg.Po
       notes: previous?.notes ?? "",
       linked_medication_order_id: null,
       billing_scope: "plan",
+      details: {},
     });
   }
-  return { ...body, procedure_orders: [...manual, ...planOrders, ...linkedOrders] };
+  const normalizedManual = await normalizeManualProcedures(db, visitId, manual);
+  return { ...body, procedure_orders: [...normalizedManual, ...planOrders, ...linkedOrders] };
+}
+
+async function normalizeManualProcedures(
+  db: pg.Pool | pg.PoolClient,
+  visitId: string,
+  orders: EncounterBody["procedure_orders"],
+): Promise<EncounterBody["procedure_orders"]> {
+  const ids = [...new Set(orders.map((item) => item.procedure_id).filter((id): id is string => Boolean(id)))];
+  if (ids.length === 0) return orders.map((item) => ({ ...item, details: {} }));
+  const catalog = await db.query<{
+    id: string;
+    procedure_form: string | null;
+    service_type: string;
+    name: string;
+    code: string;
+    unit_price_egp: string | null;
+    unit_price_eur: string | null;
+  }>(
+    `SELECT id, procedure_form, service_type, name, code, unit_price_egp, unit_price_eur
+     FROM medical_services
+     WHERE deleted_at IS NULL AND id = ANY($1::uuid[])`,
+    [ids],
+  );
+  const byId = new Map(catalog.rows.map((row) => [row.id, row]));
+  const prepared = orders.map((item) => {
+    const service = item.procedure_id ? byId.get(item.procedure_id) : undefined;
+    const formId = service?.procedure_form ?? null;
+    if (formId && !procedureFormById(formId)) {
+      throw new ApplicationError(422, "invalid_body", `${item.name}: This procedure form is not available.`);
+    }
+    const form = procedureFormById(formId);
+    if (!form) return { ...item, details: {} };
+    const checked = procedureDetailErrors(form, item.details);
+    const message = Object.values(checked.errors)[0];
+    if (message) throw new ApplicationError(422, "invalid_body", `${item.name}: ${message}`);
+    return { ...item, details: checked.details, quantity: quantityForProcedureForm(form, checked.details, item.quantity) };
+  });
+  if (!prepared.some((item) => item.procedure_id && procedureFormById(byId.get(item.procedure_id)?.procedure_form ?? null))) return prepared;
+
+  const patient = await db.query<{ nationality: string | null }>(
+    `SELECT p.nationality
+     FROM patient_visits v
+     JOIN patients p ON p.id = v.patient_id
+     WHERE v.id = $1::uuid`,
+    [visitId],
+  );
+  const nationality = patient.rows[0]?.nationality ?? null;
+  const staffIds = new Set<string>();
+  const serviceIds = new Set<string>();
+  for (const item of prepared) {
+    const form = procedureFormById(item.procedure_id ? byId.get(item.procedure_id)?.procedure_form ?? null : null);
+    if (!form) continue;
+    for (const field of procedureFields(form)) {
+      if (field.kind === "staff") {
+        const person = readStaff(item.details, field.id);
+        if (person) staffIds.add(person.id);
+      }
+      if (field.kind === "associated-services") {
+        for (const service of readServices(item.details, field.id)) {
+          if (service.service_id === item.procedure_id) {
+            throw new ApplicationError(422, "invalid_body", `${item.name}: An associated service cannot be the procedure itself.`);
+          }
+          serviceIds.add(service.service_id);
+        }
+      }
+    }
+  }
+  const staff = staffIds.size === 0 ? [] : (await db.query<{ id: string; name: string }>(
+    `SELECT id, name
+     FROM users
+     WHERE deleted_at IS NULL AND is_active = true AND role IN ('Doctor', 'Nurse') AND id = ANY($1::uuid[])`,
+    [[...staffIds]],
+  )).rows;
+  const staffNames = new Map(staff.map((row) => [row.id, row.name]));
+  const linkedServices = serviceIds.size === 0 ? [] : (await db.query<{
+    id: string;
+    name: string;
+    code: string;
+    service_type: string;
+    unit_price_egp: string | null;
+    unit_price_eur: string | null;
+  }>(
+    `SELECT id, name, code, service_type, unit_price_egp, unit_price_eur
+     FROM medical_services
+     WHERE deleted_at IS NULL AND id = ANY($1::uuid[])`,
+    [[...serviceIds]],
+  )).rows;
+  const linkedById = new Map(linkedServices.map((row) => [row.id, row]));
+  const priceOf = (row: { unit_price_egp: string | null; unit_price_eur: string | null }) => {
+    const raw = nationality === "Egyptian" ? row.unit_price_egp : row.unit_price_eur;
+    return raw == null ? null : Number(raw);
+  };
+
+  return prepared.map((item) => {
+    const form = procedureFormById(item.procedure_id ? byId.get(item.procedure_id)?.procedure_form ?? null : null);
+    if (!form) return item;
+    const details = { ...item.details };
+    for (const field of procedureFields(form)) {
+      if (field.kind === "staff") {
+        const person = readStaff(details, field.id);
+        if (!person) continue;
+        const name = staffNames.get(person.id);
+        if (!name) throw new ApplicationError(422, "invalid_body", `${item.name}: ${field.label} must be a doctor or nurse.`);
+        details[field.id] = { id: person.id, name };
+      }
+      if (field.kind === "associated-services") {
+        details[field.id] = readServices(details, field.id).map((service) => {
+          const row = linkedById.get(service.service_id);
+          if (!row || row.service_type !== "Procedures & Interventions Services") {
+            throw new ApplicationError(422, "invalid_body", `${item.name}: Choose a procedure or intervention.`);
+          }
+          return { service_id: row.id, name: row.name, code: row.code, price: priceOf(row) };
+        });
+      }
+    }
+    const note = details.notes;
+    return { ...item, details, notes: typeof note === "string" ? note : item.notes };
+  });
 }
 
 function quantityForLinkedService(order: {

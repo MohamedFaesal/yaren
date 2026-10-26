@@ -607,6 +607,7 @@ export function SearchSelect({
   name,
   invalid,
   fixedMenu,
+  clearable,
 }: {
   value: string;
   onChange: (value: string) => void;
@@ -617,6 +618,7 @@ export function SearchSelect({
   name?: string;
   invalid?: boolean;
   fixedMenu?: boolean;
+  clearable?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -643,7 +645,7 @@ export function SearchSelect({
         type="button"
         disabled={disabled}
         aria-invalid={invalid || undefined}
-        className={`flex w-full items-center justify-between rounded-lg border bg-surface px-3 py-2.5 text-left text-sm transition disabled:bg-surface-3 ${invalid ? "border-danger" : open ? "border-blue ring-2 ring-blue/15" : "border-line-strong hover:border-line"}`}
+        className={`flex w-full items-center justify-between rounded-lg border bg-surface px-3 py-2.5 text-left text-sm transition disabled:bg-surface-3 ${clearable && value ? "pr-16" : ""} ${invalid ? "border-danger" : open ? "border-blue ring-2 ring-blue/15" : "border-line-strong hover:border-line"}`}
         onClick={() => {
           if (!open && fixedMenu) {
             const rect = buttonRef.current?.getBoundingClientRect();
@@ -664,6 +666,20 @@ export function SearchSelect({
         <span className={`inline-flex min-w-0 items-center gap-2 ${selected ? "text-ink" : "text-muted-soft"}`}>{selected?.icon}{selected?.label ?? placeholder}</span>
         <span className="text-muted-soft">▾</span>
       </button>
+      {clearable && value && !disabled ? (
+        <button
+          type="button"
+          className="absolute right-8 top-1/2 grid size-6 -translate-y-1/2 place-items-center rounded text-muted-strong hover:bg-surface-2 hover:text-ink"
+          aria-label="Clear selection"
+          onClick={() => {
+            onChange("");
+            setQuery("");
+            setOpen(false);
+          }}
+        >
+          <svg viewBox="0 0 24 24" className="size-4" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
+        </button>
+      ) : null}
       {open && !disabled ? (
         <div
           className={`${fixedMenu ? "fixed z-50" : "absolute z-20 mt-1 w-full"} overflow-hidden rounded-xl border border-line bg-surface shadow-[var(--menu-shadow)]`}

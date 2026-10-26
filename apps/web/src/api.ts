@@ -1,3 +1,5 @@
+import type { ProcedureDetails } from "@yaren/shared-kernel";
+
 export type UserType = "super-admin" | "admin" | "staff";
 export type Role = "Doctor" | "Nurse" | "Receptionist" | "Accountant" | "CEO" | "CTO";
 
@@ -359,6 +361,7 @@ export type ProcedureOrder = {
   notes: string;
   linked_medication_order_id?: string | null;
   billing_scope?: "order" | "plan";
+  details?: ProcedureDetails;
 };
 
 export type PatientAdvice = {
@@ -420,6 +423,7 @@ export type MedicalService = {
   unit_price_egp: number | null;
   unit_price_eur: number | null;
   charge_once_per_plan: boolean;
+  procedure_form: string | null;
 };
 
 export function formatPrice(value: number) {
