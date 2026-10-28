@@ -4,9 +4,9 @@ import { Link } from "react-router";
 export const field = "mt-1 w-full rounded-lg border border-line-strong bg-surface px-3 py-2.5 text-sm text-ink outline-none transition focus:border-blue focus:ring-2 focus:ring-blue/15 disabled:bg-surface-3";
 export const fieldInvalid = "border-danger focus:border-danger focus:ring-danger/15";
 export const label = "block text-[13px] font-medium text-muted-strong";
-export const primary = "inline-flex items-center justify-center gap-1.5 rounded-lg bg-blue px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-blue-strong disabled:opacity-60";
-export const secondary = "inline-flex items-center justify-center rounded-lg border border-line-strong bg-surface px-4 py-2.5 text-sm font-semibold text-ink transition hover:bg-surface-2";
-export const danger = "inline-flex items-center justify-center rounded-lg bg-danger px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-[#8f1c14] disabled:opacity-60";
+export const primary = "inline-flex items-center justify-center gap-1.5 rounded-lg bg-blue px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-blue-strong hover:shadow-md active:scale-[0.97] disabled:opacity-60 disabled:shadow-none disabled:active:scale-100";
+export const secondary = "inline-flex items-center justify-center rounded-lg border border-line-strong bg-surface px-4 py-2.5 text-sm font-semibold text-ink transition hover:bg-surface-2 active:scale-[0.97] disabled:active:scale-100";
+export const danger = "inline-flex items-center justify-center rounded-lg bg-danger px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-[#8f1c14] active:scale-[0.97] disabled:opacity-60 disabled:active:scale-100";
 
 const actionTone = {
   view: "border border-line-strong bg-surface text-ink hover:bg-surface-2",
@@ -350,7 +350,7 @@ export function Page({
 }) {
   return (
     <section className="min-w-0">
-      <header className="border-b border-line-strong/70 pb-4 sm:pb-5">
+      <header className="ui-page-head border-b border-line-strong/70 pb-4 sm:pb-5">
         <nav className="flex flex-wrap items-center gap-1.5 text-xs font-medium text-muted">
           {crumbs.map((crumb, index) => (
             <span key={`${crumb.label}-${index}`} className="flex items-center gap-1.5">
@@ -367,7 +367,7 @@ export function Page({
           {action ? <div className="flex flex-wrap items-center gap-2">{action}</div> : null}
         </div>
       </header>
-      <div className="mt-4 sm:mt-5">{children}</div>
+      <div className="ui-page-body mt-4 sm:mt-5">{children}</div>
     </section>
   );
 }
@@ -440,7 +440,7 @@ export function CollapsibleSection({
           </svg>
         </button>
       </div>
-      <div className={`px-4 pb-4 pt-4 ${open ? "" : "hidden"}`}>{children}</div>
+      <div className={`px-4 pb-4 pt-4 ${open ? "ui-fade" : "hidden"}`}>{children}</div>
     </section>
   );
 }
@@ -470,7 +470,7 @@ export function Detail({ items }: { items: { label: string; value: ReactNode }[]
 export function DataTable({ children }: { children: ReactNode }) {
   return (
     <div className="overflow-x-auto rounded-2xl border border-line bg-surface shadow-card">
-      <table className="w-full text-sm">{children}</table>
+      <table className="ui-table w-full text-sm">{children}</table>
     </div>
   );
 }
@@ -682,7 +682,7 @@ export function SearchSelect({
       ) : null}
       {open && !disabled ? (
         <div
-          className={`${fixedMenu ? "fixed z-50" : "absolute z-20 mt-1 w-full"} overflow-hidden rounded-xl border border-line bg-surface shadow-[var(--menu-shadow)]`}
+          className={`ui-pop ${fixedMenu ? "fixed z-50" : "absolute z-20 mt-1 w-full"} overflow-hidden rounded-xl border border-line bg-surface shadow-[var(--menu-shadow)]`}
           style={fixedMenu && menuBox ? { top: menuBox.top, bottom: menuBox.bottom, left: menuBox.left, width: menuBox.width } : undefined}
         >
           <input

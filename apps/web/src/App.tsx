@@ -344,7 +344,7 @@ function AccountMenu({ user, onSignOut }: { user: User; onSignOut: () => void })
       {open ? (
         <div
           role="menu"
-          className="absolute right-0 z-40 mt-2 w-48 overflow-hidden rounded-xl border border-line bg-surface py-1 shadow-[var(--menu-shadow)]"
+          className="ui-pop absolute right-0 z-40 mt-2 w-48 overflow-hidden rounded-xl border border-line bg-surface py-1 shadow-[var(--menu-shadow)]"
         >
           <NavLink
             role="menuitem"

@@ -149,12 +149,12 @@ export function DocumentScanDialog({
 
   return (
     <div
-      className="fixed inset-0 z-50 grid place-items-center bg-shell/50 px-4 backdrop-blur-[2px]"
+      className="triage-dialog-backdrop fixed inset-0 z-50 grid place-items-center bg-shell/50 px-4 backdrop-blur-[2px]"
       role="presentation"
       onMouseDown={() => { if (!scanning) onClose(); }}
     >
       <div
-        className="w-full max-w-lg rounded-2xl bg-surface p-5 shadow-dialog"
+        className="triage-dialog-panel w-full max-w-lg rounded-2xl bg-surface p-5 shadow-dialog"
         role="dialog"
         aria-modal="true"
         aria-labelledby="scan-title"

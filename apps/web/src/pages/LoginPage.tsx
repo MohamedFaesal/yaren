@@ -46,7 +46,7 @@ export function LoginPage({ onSuccess }: { onSuccess: (session: Session) => void
             </div>
           </div>
 
-          <div className="max-w-xl">
+          <div className="ui-rise max-w-xl">
             <h1 className="text-4xl font-bold leading-tight tracking-tight xl:text-5xl">
               Healthcare Where People Belong
             </h1>
@@ -76,7 +76,7 @@ export function LoginPage({ onSuccess }: { onSuccess: (session: Session) => void
         <div className="flex flex-1 items-center justify-center py-6">
           <form
             noValidate
-            className="w-full max-w-[380px]"
+            className="ui-rise w-full max-w-[380px]"
             onSubmit={async (event) => {
               event.preventDefault();
               if (!fields.validateForm(event.currentTarget)) return;

@@ -279,7 +279,7 @@ function MedicationDialog({
   return (
     <div className="triage-dialog-backdrop fixed inset-0 z-50 grid place-items-center bg-shell/45 p-4" role="presentation" onMouseDown={() => { if (!pending) onClose(); }}>
       <form
-        className="flex max-h-[90vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl bg-surface shadow-dialog"
+        className="ui-fade flex max-h-[90vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl bg-surface shadow-dialog"
         role="dialog"
         aria-modal="true"
         aria-labelledby="medication-dialog-title"

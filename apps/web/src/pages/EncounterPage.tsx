@@ -1213,7 +1213,7 @@ function Icd10Picker({
             onChange={(event) => setQuery(event.target.value)}
           />
           {query.trim().length >= 2 ? (
-            <ul className="absolute z-20 mt-1 max-h-72 w-full overflow-auto rounded-xl border border-line bg-surface py-1 shadow-[var(--menu-shadow)]">
+            <ul className="ui-pop absolute z-20 mt-1 max-h-72 w-full overflow-auto rounded-xl border border-line bg-surface py-1 shadow-[var(--menu-shadow)]">
               {searching && results.length === 0 ? <li className="px-3 py-2 text-sm text-muted">Searching ICD-10…</li> : null}
               {!searching && results.length === 0 ? <li className="px-3 py-2 text-sm text-muted">No ICD-10 codes match.</li> : null}
               {results.map((item) => (
@@ -1728,7 +1728,7 @@ function MedicationOrderDialog({
   return (
     <div className="triage-dialog-backdrop fixed inset-0 z-50 grid place-items-center bg-shell/45 p-4" role="presentation" onMouseDown={onClose}>
       <form
-        className="flex max-h-[92vh] w-full max-w-6xl flex-col overflow-hidden rounded-2xl bg-surface shadow-dialog"
+        className="ui-fade flex max-h-[92vh] w-full max-w-6xl flex-col overflow-hidden rounded-2xl bg-surface shadow-dialog"
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
@@ -2416,7 +2416,7 @@ function ProcedureOrderDialog({
   return (
     <div className="triage-dialog-backdrop fixed inset-0 z-50 grid place-items-center bg-shell/45 p-4" role="presentation" onMouseDown={onClose}>
       <form
-        className={`flex max-h-[92vh] w-full flex-col overflow-hidden rounded-2xl bg-surface shadow-dialog ${activeForm ? "max-w-6xl" : "max-w-2xl"}`}
+        className={`ui-fade flex max-h-[92vh] w-full flex-col overflow-hidden rounded-2xl bg-surface shadow-dialog ${activeForm ? "max-w-6xl" : "max-w-2xl"}`}
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}

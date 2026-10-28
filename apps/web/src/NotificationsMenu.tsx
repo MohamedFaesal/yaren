@@ -90,7 +90,7 @@ export function NotificationsMenu({ token }: { token: string }) {
         ) : null}
       </button>
       {open ? (
-        <div className="absolute right-0 z-40 mt-2 w-[min(22rem,calc(100vw-2rem))] overflow-hidden rounded-2xl border border-line bg-surface shadow-[var(--menu-shadow)]">
+        <div className="ui-pop absolute right-0 z-40 mt-2 w-[min(22rem,calc(100vw-2rem))] overflow-hidden rounded-2xl border border-line bg-surface shadow-[var(--menu-shadow)]">
           <div className="flex items-center justify-between gap-3 border-b border-line-soft px-4 py-3">
             <p className="text-sm font-bold text-ink">Notifications</p>
             {result.unread > 0 ? (

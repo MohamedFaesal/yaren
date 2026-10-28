@@ -156,7 +156,7 @@ export function ClinicSwitcher() {
       {open ? (
         <div
           role="menu"
-          className="absolute right-0 z-40 mt-2 max-h-80 w-[min(18rem,calc(100vw-2rem))] overflow-auto rounded-xl border border-line bg-surface py-1 shadow-[var(--menu-shadow)]"
+          className="ui-pop absolute right-0 z-40 mt-2 max-h-80 w-[min(18rem,calc(100vw-2rem))] overflow-auto rounded-xl border border-line bg-surface py-1 shadow-[var(--menu-shadow)]"
         >
           {showAllOption ? (
             <button
