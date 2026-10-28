@@ -74,9 +74,11 @@ body {
   color: var(--color-ink);
 }
 
-input, select, button, textarea {
-  font: inherit;
-  color: inherit;
+@layer base {
+  input, select, button, textarea {
+    font: inherit;
+    color: inherit;
+  }
 }
 
 ::selection {

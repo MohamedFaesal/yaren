@@ -273,7 +273,7 @@ export function EncounterPage({ token }: { token: string }) {
         <>
           {visit ? <Link className={secondary} to={`/patients/${visit.patient_id}`}>View Full Profile</Link> : null}
           {locked ? null : (
-            <button type="button" className={`${primary} !text-white`} disabled={saving} onClick={requestFinish}>Finish Encounter & Send to Nurse</button>
+            <button type="button" className={primary} disabled={saving} onClick={requestFinish}>Finish Encounter & Send to Nurse</button>
           )}
         </>
       ) : null}

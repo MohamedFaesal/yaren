@@ -191,7 +191,7 @@ export function DocumentScanDialog({
         <div className="mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
           <button type="button" className={secondary} disabled={scanning} onClick={onClose}>Cancel</button>
           <button type="button" className={secondary} disabled={scanning || !selected} onClick={() => void scanAgain()}>Scan again</button>
-          <button type="button" className={`${primary} !text-white`} disabled={!file || scanning} onClick={() => { if (file) onUse(file); }}>Use scan</button>
+          <button type="button" className={primary} disabled={!file || scanning} onClick={() => { if (file) onUse(file); }}>Use scan</button>
         </div>
       </div>
     </div>
