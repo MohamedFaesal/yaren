@@ -59,7 +59,7 @@ export function DocumentScanDialog({
         setDevices(found);
         const current = found[0];
         if (!current) {
-          setError("No scanner is connected.");
+          setError("No scanner is plugged in or connected over Wi-Fi.");
           setStatus("");
           return;
         }
@@ -162,7 +162,7 @@ export function DocumentScanDialog({
       >
         <h2 id="scan-title" className="text-lg font-bold text-ink">Scan {title}</h2>
         <p className="mt-1 text-sm text-muted-strong">
-          {selected ? `Using the connected scanner: ${selected.name}.` : "Looking for the scanner connected to this computer."}
+          {selected ? `Using the connected scanner: ${selected.name}.` : "Looking for a scanner plugged into this computer or connected over Wi-Fi."}
         </p>
         {devices.length > 1 ? (
           <label className="mt-4 block text-[13px] font-medium text-muted-strong">

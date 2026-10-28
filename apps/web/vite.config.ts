@@ -10,14 +10,15 @@ function scannerBridge(): Plugin {
   let child: ChildProcess | null = null;
   return {
     name: "yaren-scanner-bridge",
-    configureServer() {
-      child = spawn(process.execPath, [fileURLToPath(new URL("./scanner/bridge.mjs", import.meta.url))], {
-        stdio: "inherit",
-      });
-      return () => {
+    configureServer(server) {
+      const stop = () => {
         child?.kill();
         child = null;
       };
+      child = spawn(process.execPath, [fileURLToPath(new URL("./scanner/bridge.mjs", import.meta.url))], {
+        stdio: "inherit",
+      });
+      server.httpServer?.on("close", stop);
     },
   };
 }

@@ -82,7 +82,7 @@ async function listScanners() {
   const output = await runScanner(["list"]);
   const parsed = JSON.parse(output.trim() || "[]");
   const items = Array.isArray(parsed) ? parsed : parsed ? [parsed] : [];
-  return items.filter((item) => item && typeof item.id === "string" && typeof item.name === "string");
+  return items.filter((item) => item && typeof item.id === "string" && typeof item.name === "string" && !/camera|facetime|isight|continuity|iphone|ipad|webcam/i.test(item.name));
 }
 
 async function scan(deviceId) {

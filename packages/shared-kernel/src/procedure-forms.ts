@@ -64,6 +64,15 @@ const associatedServices = {
   ],
 } as const satisfies ProcedureFormSection;
 
+const anatomicalSite = {
+  id: "anatomical_site",
+  label: "Anatomical site",
+  kind: "text",
+  required: true,
+  summary: true,
+  maxLength: 200,
+} as const satisfies ProcedureField;
+
 const clinicalNotes = [
   { id: "steps", label: "Steps", kind: "textarea", required: true, maxLength: 500 },
   { id: "findings", label: "Findings / Outcome", kind: "textarea", required: true, maxLength: 500 },
@@ -93,7 +102,7 @@ export const procedureForms: readonly ProcedureFormDefinition[] = [
         id: "clinical",
         title: "Clinical Details",
         fields: [
-          { id: "anatomical_site", label: "Anatomical site", kind: "text", required: true, summary: true, maxLength: 200 },
+          anatomicalSite,
           ...clinicalNotes,
         ],
       },
@@ -110,6 +119,7 @@ export const procedureForms: readonly ProcedureFormDefinition[] = [
         id: "clinical",
         title: "Clinical Details",
         fields: [
+          anatomicalSite,
           ...clinicalNotes,
         ],
       },
@@ -134,7 +144,7 @@ export const procedureForms: readonly ProcedureFormDefinition[] = [
         fields: [
           { id: "delivery_method", label: "Delivery method", kind: "select", required: true, summary: true, options: ["Nasal cannula", "Face mask", "Non-rebreather mask", "Venturi mask"] },
           { id: "flow_rate", label: "Flow rate (L/min)", kind: "number", required: true, summary: true, min: 1, max: 60, step: 1 },
-          { id: "oxygen_hours", label: "Duration of oxygen supply (hours)", kind: "number", required: true, summary: true, min: 0.5, max: 24, step: 0.5 },
+          { id: "oxygen_hours", label: "Duration of oxygen supply (hours)", kind: "number", required: true, summary: true, min: 0.5, max: 24, step: 0.5, setsQuantity: true },
           { id: "monitoring_hours", label: "Duration of monitoring (hours)", kind: "number", required: true, summary: true, min: 0.5, max: 24, step: 0.5, whenAssociated: monitoringService, setsAssociatedQuantity: monitoringService },
         ],
       },
@@ -151,11 +161,11 @@ export const procedureForms: readonly ProcedureFormDefinition[] = [
         id: "clinical",
         title: "Clinical Details",
         fields: [
-          { id: "catheter_type", label: "Catheter type", kind: "select", required: true, summary: true, options: ["Foley catheter", "Nelaton catheter", "Coude catheter"] },
+          { id: "catheter_type", label: "Catheter type", kind: "select", required: true, summary: true, options: ["Foley catheter 2-way", "Foley catheter 3-way", "Nelaton catheter", "Coude catheter", "Condom"] },
           { id: "catheter_material", label: "Catheter material", kind: "select", required: true, options: ["Latex", "Silicone", "Coated catheter"] },
           { id: "route", label: "Route", kind: "select", required: true, summary: true, options: ["Urethral", "Suprapubic"] },
           { id: "size_fr", label: "Size (Fr)", kind: "select", required: true, summary: true, options: frenchSizes },
-          { id: "sample_collection", label: "Sample collection", kind: "select", required: false, options: ["Routine urine analysis", "Urine culture"] },
+          { id: "sample_collection", label: "Sample collection", kind: "select", required: false, options: ["Not required", "Routine urine analysis", "Urine culture"] },
           ...catheterNotes,
         ],
       },
@@ -180,7 +190,7 @@ export const procedureForms: readonly ProcedureFormDefinition[] = [
         id: "clinical",
         title: "Clinical Details",
         fields: [
-          { id: "anatomical_site", label: "Anatomical site", kind: "text", required: true, summary: true, maxLength: 200 },
+          anatomicalSite,
           ...clinicalNotes,
         ],
       },

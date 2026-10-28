@@ -30,21 +30,36 @@
     self.browser.browsedDeviceTypeMask = ICDeviceTypeMaskScanner
         | ICDeviceLocationTypeMaskLocal
         | ICDeviceLocationTypeMaskBonjour
-        | ICDeviceLocationTypeMaskShared;
+        | ICDeviceLocationTypeMaskShared
+        | ICDeviceLocationTypeMaskBluetooth;
     [self.browser start];
-    NSTimeInterval listWait = [self.mode isEqualToString:@"list"] ? 4 : 12;
+    NSTimeInterval listWait = [self.mode isEqualToString:@"list"] ? 8 : 12;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(listWait * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         if (self.finished) return;
         if ([self.mode isEqualToString:@"list"]) [self finishList];
-        else if (!self.startedScan) [self fail:@"No scanner is connected."];
+        else if (!self.startedScan) [self fail:@"No scanner is plugged in or connected over Wi-Fi."];
     });
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(90 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         if (!self.finished) [self fail:@"The scanner did not finish."];
     });
 }
 
+- (BOOL)isScanner:(ICDevice *)device {
+    if (![device isKindOfClass:[ICScannerDevice class]]) return NO;
+    NSUInteger kind = device.type;
+    if ((kind & ICDeviceTypeMaskCamera) != 0) return NO;
+    if ((kind & ICDeviceTypeMaskScanner) == 0) return NO;
+    NSUInteger place = ICDeviceLocationTypeMaskLocal | ICDeviceLocationTypeMaskBonjour | ICDeviceLocationTypeMaskShared | ICDeviceLocationTypeMaskBluetooth;
+    if ((kind & place) == 0) return NO;
+    NSString *lower = device.name.lowercaseString ?: @"";
+    for (NSString *word in @[@"camera", @"facetime", @"isight", @"continuity", @"iphone", @"ipad", @"webcam"]) {
+        if ([lower containsString:word]) return NO;
+    }
+    return YES;
+}
+
 - (void)deviceBrowser:(ICDeviceBrowser *)browser didAddDevice:(ICDevice *)device moreComing:(BOOL)moreComing {
-    if (![device isKindOfClass:[ICScannerDevice class]]) return;
+    if (![self isScanner:device]) return;
     [self.scanners addObject:(ICScannerDevice *)device];
     if ([self.mode isEqualToString:@"scan"] && !moreComing) [self beginScan];
 }
@@ -141,7 +156,7 @@
     }
     if (!scanner) {
         if (self.deviceId.length > 0 && self.scanners.count == 0) return;
-        [self fail:self.scanners.count == 0 ? @"No scanner is connected." : @"The selected scanner is not connected."];
+        [self fail:self.scanners.count == 0 ? @"No scanner is plugged in or connected over Wi-Fi." : @"The selected scanner is not connected."];
         return;
     }
     self.startedScan = YES;

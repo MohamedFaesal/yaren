@@ -390,7 +390,7 @@ export function RegisterPage({ token, actor }: { token: string; actor: User }) {
                     <input className={field} name="passport_number" value={passport} onChange={(event) => { setPassport(event.target.value); fields.clearField("passport_number"); }} placeholder="Optional" disabled={!canRegister} />
                   </Field>
                   <Field label="Biological Gender" error={fields.errorOf("gender")}>
-                    <SearchSelect name="gender" value={gender} onChange={(value) => { setGender(value as "male" | "female"); fields.clearField("gender"); }} options={genderOptions} placeholder="Choose biological gender" disabled={!canRegister} required />
+                    <SearchSelect name="gender" value={gender} onChange={(value) => { setGender(value as "male" | "female"); fields.clearField("gender"); }} options={genderOptions} placeholder="Choose biological gender" disabled={!canRegister} fixedMenu required />
                   </Field>
                 </div>
               </CollapsibleSection>
@@ -468,27 +468,31 @@ export function RegisterPage({ token, actor }: { token: string; actor: User }) {
                       required
                     />
                   </Field>
-                  <Field className="md:col-span-2" label="Visit type" error={fields.errorOf("professional_service_id")}>
-                    <SearchSelect
-                      name="professional_service_id"
-                      value={professionalServiceId}
-                      onChange={(value) => { setProfessionalServiceId(value); fields.clearField("professional_service_id"); }}
-                      options={professionalServices.map((service) => ({ value: service.id, label: service.name, hint: service.code }))}
-                      placeholder={clinicId ? "Choose a visit type" : "Choose a clinic first"}
-                      disabled={!canRegister || !clinicId}
-                      fixedMenu
-                      required
-                    />
-                  </Field>
-                  <Field label="Hotel room" error={fields.errorOf("hotel_room_no")}>
-                    <input className={field} name="hotel_room_no" value={room} onChange={(event) => { setRoom(event.target.value); fields.clearField("hotel_room_no"); }} required disabled={!canRegister} />
-                  </Field>
-                  <Field label="Check-in date" error={fields.errorOf("hotel_checkin_date")}>
-                    <input className={field} name="hotel_checkin_date" type="date" value={checkin} onChange={(event) => { setCheckin(event.target.value); fields.clearField("hotel_checkin_date"); }} disabled={!canRegister} />
-                  </Field>
-                  <Field label="Check-out date" error={fields.errorOf("hotel_checkout_date")}>
-                    <input className={field} name="hotel_checkout_date" type="date" value={checkout} onChange={(event) => { setCheckout(event.target.value); fields.clearField("hotel_checkout_date"); }} disabled={!canRegister} />
-                  </Field>
+                  <div className="grid grid-cols-2 gap-4 md:col-span-2">
+                    <Field className="min-w-0" label="Visit type" error={fields.errorOf("professional_service_id")}>
+                      <SearchSelect
+                        name="professional_service_id"
+                        value={professionalServiceId}
+                        onChange={(value) => { setProfessionalServiceId(value); fields.clearField("professional_service_id"); }}
+                        options={professionalServices.map((service) => ({ value: service.id, label: service.name, hint: service.code }))}
+                        placeholder={clinicId ? "Choose a visit type" : "Choose a clinic first"}
+                        disabled={!canRegister || !clinicId}
+                        fixedMenu
+                        required
+                      />
+                    </Field>
+                    <Field className="min-w-0" label="Hotel room" error={fields.errorOf("hotel_room_no")}>
+                      <input className={field} name="hotel_room_no" value={room} onChange={(event) => { setRoom(event.target.value); fields.clearField("hotel_room_no"); }} required disabled={!canRegister} />
+                    </Field>
+                  </div>
+                  <div className="grid grid-cols-2 gap-4 md:col-span-2">
+                    <Field className="min-w-0" label="Check-in date" error={fields.errorOf("hotel_checkin_date")}>
+                      <input className={`${field} min-w-0`} name="hotel_checkin_date" type="date" value={checkin} onChange={(event) => { setCheckin(event.target.value); fields.clearField("hotel_checkin_date"); }} disabled={!canRegister} />
+                    </Field>
+                    <Field className="min-w-0" label="Check-out date" error={fields.errorOf("hotel_checkout_date")}>
+                      <input className={`${field} min-w-0`} name="hotel_checkout_date" type="date" value={checkout} onChange={(event) => { setCheckout(event.target.value); fields.clearField("hotel_checkout_date"); }} disabled={!canRegister} />
+                    </Field>
+                  </div>
                 </div>
               </CollapsibleSection>
 
