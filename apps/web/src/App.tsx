@@ -21,6 +21,7 @@ import { PatientViewPage } from "./pages/PatientViewPage";
 import { RegisterPage } from "./pages/RegisterPage";
 import { VisitsPage } from "./pages/VisitsPage";
 import { TriagePage } from "./pages/TriagePage";
+import { InvestigationsPage } from "./pages/InvestigationsPage";
 import { DoctorCasesPage } from "./pages/DoctorCasesPage";
 import { EncounterPage } from "./pages/EncounterPage";
 import { SettingsPage } from "./pages/SettingsPage";
@@ -118,6 +119,7 @@ export function App() {
           <Route path="/clinics/:id" element={<ClinicViewPage token={session.token} actor={session.user} />} />
           <Route path="/patients" element={<PatientsPage token={session.token} actor={session.user} />} />
           <Route path="/patients/triage" element={<TriagePage token={session.token} actor={session.user} />} />
+          <Route path="/patients/investigations" element={<InvestigationsPage token={session.token} actor={session.user} />} />
           <Route path="/patients/to-doctor" element={<DoctorCasesPage token={session.token} actor={session.user} />} />
           <Route path="/patients/to-doctor/:id/encounter" element={<EncounterPage token={session.token} />} />
           <Route path="/patients/visits" element={<VisitsPage token={session.token} actor={session.user} />} />
@@ -211,6 +213,9 @@ function AppShell({
           <NavSection title="Care">
             {canAct(user, "visit", "create") ? <NavLink to="/patients/register" className={navClass}><RegisterIcon />Register</NavLink> : null}
             {canAct(user, "triage", "view") ? <TriageNavLink token={token} pathname={pathname} /> : null}
+            {canAct(user, "triage", "view") || canAct(user, "visit", "view") ? (
+              <NavLink to="/patients/investigations" className={navClass}><InvestigationsIcon />Investigations</NavLink>
+            ) : null}
             {canSeeDoctorCases(user) ? <DoctorCasesNavLink token={token} pathname={pathname} /> : null}
             {canAct(user, "visit", "view") ? <NavLink to="/patients/visits" className={navClass}><VisitsIcon />Visits</NavLink> : null}
             {canAct(user, "patient", "view") ? <NavLink to="/patients" end className={navClass}><PatientsIcon />Patients</NavLink> : null}
@@ -571,6 +576,7 @@ function heading(pathname: string) {
     if (!id) return "Patients";
     if (id === "visits") return "Visits";
     if (id === "triage") return "Nurse Dashboard";
+    if (id === "investigations") return "Investigations";
     if (id === "to-doctor") return "Doctor Dashboard";
     if (id === "register") return "Register";
     if (id === "new") return "New patient";
@@ -649,6 +655,10 @@ function ToDoctorIcon() {
 
 function TriageIcon() {
   return <Icon><path d="M12 4v16" /><path d="M4 12h16" /><circle cx="12" cy="12" r="8" /></Icon>;
+}
+
+function InvestigationsIcon() {
+  return <Icon><path d="M9 3h6" /><path d="M10 3v6l-4 8a3 3 0 0 0 2.6 4.5h6.8A3 3 0 0 0 18 17l-4-8V3" /><path d="M9 14h6" /></Icon>;
 }
 
 function RegisterIcon() {

@@ -229,6 +229,8 @@ export type TriageQueueItem = {
   status_changed_at: string;
   assigned_doctor_id: string | null;
   assigned_doctor_name: string | null;
+  assigned_nurse_id?: string | null;
+  assigned_nurse_name?: string | null;
   hotel_room_no: string | null;
   clinic_id: string;
   clinic_name: string;
@@ -251,6 +253,8 @@ export type DoctorCase = {
   status_changed_at: string;
   assigned_doctor_id: string | null;
   assigned_doctor_name: string | null;
+  assigned_nurse_id?: string | null;
+  assigned_nurse_name?: string | null;
   hotel_room_no: string | null;
   clinic_id: string;
   clinic_name: string;
@@ -297,7 +301,10 @@ export type ClinicalEncounter = {
   patient_advices: PatientAdvice[];
 };
 
-export type Icd10Code = { code: string; title: string };
+export type Icd11Code = { code: string; title: string };
+
+export type InvestigationStatus = "ordered" | "collected" | "sent" | "result_uploaded" | "completed";
+export type InvestigationPriority = "emergency" | "urgent" | "normal";
 
 export type EncounterInvestigation = {
   id: string;
@@ -306,8 +313,187 @@ export type EncounterInvestigation = {
   code: string;
   unit: string;
   price: number | null;
-  priority: "emergency" | "urgent" | "normal";
+  priority: InvestigationPriority;
+  category?: string;
+  status?: InvestigationStatus;
+  requires_collection?: boolean;
+  ordered_at?: string | null;
+  ordered_by_name?: string | null;
+  collected_at?: string | null;
+  collected_by_name?: string | null;
+  sent_at?: string | null;
+  sent_by_name?: string | null;
+  result_uploaded_at?: string | null;
+  result_uploaded_by_name?: string | null;
+  completed_at?: string | null;
+  result_file_url?: string | null;
+  result_original_name?: string | null;
 };
+
+export type VisitInvestigation = EncounterInvestigation & {
+  visit_id?: string;
+  patient_id?: string;
+  clinic_id?: string;
+  clinic_name?: string;
+  hotel_name?: string;
+  hotel_room_no?: string | null;
+  visit_status?: VisitCareStatus;
+  patient_name?: string;
+  patient_mrn?: string;
+  patient_gender?: string | null;
+  patient_nationality?: string | null;
+  patient_age_at_visit?: number | null;
+};
+
+export type SampleCollectionItem = {
+  visit_id: string;
+  patient_id: string;
+  clinic_id: string;
+  hotel_room_no: string | null;
+  status: VisitCareStatus;
+  assigned_nurse_id: string | null;
+  assigned_nurse_name: string | null;
+  status_changed_at: string;
+  clinic_name: string;
+  hotel_name: string;
+  patient_name: string;
+  patient_mrn: string;
+  patient_gender: string | null;
+  patient_nationality: string | null;
+  patient_age_at_visit: number | null;
+  highest_priority: InvestigationPriority;
+  open_count: number;
+  collectable_count: number;
+  sendable_count: number;
+  ordered_at: string | null;
+};
+
+export type InvestigationPage = {
+  items: VisitInvestigation[];
+  total: number;
+  page: number;
+  page_size: number;
+  summary: Record<InvestigationStatus, number>;
+};
+
+export function investigationStatusLabel(status?: InvestigationStatus | null) {
+  if (status === "ordered") return "Ordered";
+  if (status === "collected") return "Collected";
+  if (status === "sent") return "Sent";
+  if (status === "result_uploaded") return "Result uploaded";
+  if (status === "completed") return "Completed";
+  return "—";
+}
+
+export function investigationStatusClass(status?: InvestigationStatus | null) {
+  if (status === "ordered") return "bg-panel text-blue";
+  if (status === "collected") return "bg-warning-soft text-warning";
+  if (status === "sent") return "bg-panel-strong text-blue-strong";
+  if (status === "result_uploaded") return "bg-success-soft text-success";
+  if (status === "completed") return "bg-success-soft text-success";
+  return "bg-surface-2 text-muted-strong";
+}
+
+export function investigationPriorityLabel(priority?: InvestigationPriority | null) {
+  if (priority === "emergency") return "Emergency";
+  if (priority === "urgent") return "Urgent";
+  if (priority === "normal") return "Normal";
+  return "—";
+}
+
+export function investigationPriorityClass(priority?: InvestigationPriority | null) {
+  if (priority === "emergency") return "bg-danger-soft text-danger";
+  if (priority === "urgent") return "bg-warning-soft text-warning";
+  if (priority === "normal") return "bg-success-soft text-success";
+  return "bg-surface-2 text-muted-strong";
+}
+
+export type NurseDashboardSummary = {
+  waiting_for_triage: number;
+  triage_in_progress: number;
+  to_doctor: number;
+  under_nursing_care: number;
+  samples_to_collect: number;
+};
+
+export type NursingPlanStatus = "none" | "ordered" | "in_progress" | "completed";
+export type MonitoringStatus = "none" | "in_progress" | "completed";
+
+export type NursingCareItem = {
+  visit_id: string;
+  patient_id: string;
+  clinic_id: string;
+  hotel_room_no: string | null;
+  status: VisitCareStatus;
+  nursing_plan_status: NursingPlanStatus;
+  monitoring_status: MonitoringStatus;
+  status_changed_at: string | null;
+  clinic_name: string;
+  hotel_name: string;
+  patient_name: string;
+  patient_mrn: string;
+  patient_gender: string | null;
+  patient_nationality: string | null;
+  patient_age_at_visit: number | null;
+  order_time: string | null;
+  triage_category: TriageCategory | null;
+  medication_count: number;
+  procedure_count: number;
+};
+
+export type MonitoringOrderedService = {
+  id: string;
+  name: string;
+  code: string;
+  kind: "procedure" | "associated" | "medication_monitoring";
+  detail: string | null;
+  quantity: number | null;
+  unit: string | null;
+};
+
+export type MonitoringItem = {
+  visit_id: string;
+  patient_id: string;
+  clinic_id: string;
+  hotel_room_no: string | null;
+  status: VisitCareStatus;
+  monitoring_status: MonitoringStatus;
+  nursing_plan_status: NursingPlanStatus;
+  clinic_name: string;
+  hotel_name: string;
+  patient_name: string;
+  patient_mrn: string;
+  patient_gender: string | null;
+  patient_nationality: string | null;
+  patient_age_at_visit: number | null;
+  ordered_services: MonitoringOrderedService[];
+};
+
+export function nursingPlanStatusLabel(status?: NursingPlanStatus | null) {
+  if (status === "ordered") return "Ordered";
+  if (status === "in_progress") return "In Progress";
+  if (status === "completed") return "Completed";
+  return "—";
+}
+
+export function nursingPlanStatusClass(status?: NursingPlanStatus | null) {
+  if (status === "ordered") return "bg-warning-soft text-warning";
+  if (status === "in_progress") return "bg-panel text-blue";
+  if (status === "completed") return "bg-success-soft text-success";
+  return "bg-surface-2 text-muted-strong";
+}
+
+export function monitoringStatusLabel(status?: MonitoringStatus | null) {
+  if (status === "in_progress") return "In Progress";
+  if (status === "completed") return "Completed";
+  return "—";
+}
+
+export function monitoringStatusClass(status?: MonitoringStatus | null) {
+  if (status === "in_progress") return "bg-panel text-blue";
+  if (status === "completed") return "bg-success-soft text-success";
+  return "bg-surface-2 text-muted-strong";
+}
 
 export type CatalogMedication = {
   id: string;
@@ -367,6 +553,32 @@ export type ProcedureOrder = {
 export type PatientAdvice = {
   id: string;
   text: string;
+};
+
+export type NursingPlanDetail = {
+  visit: {
+    id: string;
+    patient_id: string;
+    patient_name: string;
+    patient_mrn: string;
+    patient_gender: string | null;
+    patient_nationality: string | null;
+    patient_age_at_visit: number | null;
+    hotel_room_no: string | null;
+    clinic_name: string;
+    visit_type: VisitType;
+    nursing_plan_status: NursingPlanStatus;
+    monitoring_status: MonitoringStatus;
+    triage_category: TriageCategory | null;
+  };
+  plan: {
+    provisional_diagnoses: { code: string; title: string }[];
+    medication_orders: MedicationOrder[];
+    procedure_orders: ProcedureOrder[];
+    patient_advices: PatientAdvice[];
+    management_plan: string;
+    finished_at: string | null;
+  };
 };
 
 export type EncounterFile = {

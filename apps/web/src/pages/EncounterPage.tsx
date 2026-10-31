@@ -4,16 +4,18 @@ import { procedureDetailErrors, procedureFieldActive, procedureFields, procedure
 import {
   api,
   formatPrice,
+  investigationStatusClass,
+  investigationStatusLabel,
   type CatalogMedication,
   type ClinicalEncounter,
   type EncounterRecord,
-  type Icd10Code,
+  type Icd11Code,
   type MedicalService,
   type MedicationOrder,
   type ProcedureOrder,
 } from "../api";
 import { useToast } from "../toast";
-import { ConfirmDialog, Page, RemoveButton, SearchSelect, field, fieldInvalid, label, messageOf, primary, secondary } from "./ui";
+import { Page, RemoveButton, SearchSelect, field, fieldInvalid, label, messageOf, primary, secondary } from "./ui";
 
 type EncounterTab = "history" | "vitals" | "examination" | "investigations" | "diagnosis" | "plan";
 type PlanTab = "medications" | "procedures" | "advice";
@@ -57,6 +59,10 @@ export function EncounterPage({ token }: { token: string }) {
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [confirmFinish, setConfirmFinish] = useState(false);
+  const [finishNurseId, setFinishNurseId] = useState("");
+  const [finishNurseError, setFinishNurseError] = useState<string | null>(null);
+  const [nurses, setNurses] = useState<{ id: string; name: string }[]>([]);
+  const [nursesLoading, setNursesLoading] = useState(false);
   const [tab, setTab] = useState<EncounterTab>("history");
   const [planTab, setPlanTab] = useState<PlanTab>("medications");
   const [allergyName, setAllergyName] = useState("");
@@ -190,8 +196,32 @@ export function EncounterPage({ token }: { token: string }) {
       return;
     }
     setError(null);
+    setFinishNurseError(null);
+    setFinishNurseId("");
     setConfirmFinish(true);
   }
+
+  useEffect(() => {
+    if (!confirmFinish || !visit?.clinic_id) return;
+    let cancelled = false;
+    setNursesLoading(true);
+    api<{ items: { id: string; name: string }[] }>(`/api/clinics/${visit.clinic_id}/nurses`, {}, token)
+      .then((data) => {
+        if (!cancelled) setNurses(data.items);
+      })
+      .catch((caught) => {
+        if (!cancelled) {
+          setNurses([]);
+          setFinishNurseError(messageOf(caught));
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setNursesLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [confirmFinish, visit?.clinic_id, token]);
 
   async function saveStep() {
     if (!form || locked || !id) return;
@@ -244,19 +274,24 @@ export function EncounterPage({ token }: { token: string }) {
       setConfirmFinish(false);
       return;
     }
+    if (!finishNurseId) {
+      setFinishNurseError("Choose the nurse who will handle this patient.");
+      return;
+    }
     setSaving(true);
     setError(null);
+    setFinishNurseError(null);
+    const nurseName = nurses.find((item) => item.id === finishNurseId)?.name;
     try {
       await api<EncounterRecord>(`/api/doctor-cases/${id}/encounter/finish`, {
         method: "POST",
-        body: JSON.stringify(form),
+        body: JSON.stringify({ ...withoutIncompleteRows(form), assigned_nurse_id: finishNurseId }),
       }, token);
       if (id) localStorage.removeItem(savedStepsKey(id));
-      toast.success("Encounter finished", `${visit?.patient_name ?? "The patient"} has been seen.`);
+      toast.success("Encounter finished", `${visit?.patient_name ?? "The patient"} was sent to ${nurseName ?? "the nurse"}.`);
       navigate("/patients/to-doctor");
     } catch (caught) {
-      setError(messageOf(caught));
-      setConfirmFinish(false);
+      setFinishNurseError(messageOf(caught));
     } finally {
       setSaving(false);
     }
@@ -460,15 +495,24 @@ export function EncounterPage({ token }: { token: string }) {
                 </div>
               )}
             >
-              <p className="mb-3 text-sm text-muted">Investigation services for this clinic.</p>
+              <p className="mb-3 text-sm text-muted">{locked ? "Ordered investigations and their results for this visit." : "Investigation services for this clinic."}</p>
               <div className="overflow-x-auto">
                 <table className="w-full min-w-[36rem] text-left text-sm">
                   <thead className="text-xs uppercase tracking-wide text-muted">
-                    <tr><th className="px-2 py-2">#</th><th className="px-2 py-2">Code</th><th className="px-2 py-2">Service</th><th className="px-2 py-2">Priority</th><th className="px-2 py-2">Unit</th><th className="px-2 py-2">Price</th><th className="px-2 py-2">Actions</th></tr>
+                    <tr>
+                      <th className="px-2 py-2">#</th>
+                      <th className="px-2 py-2">Code</th>
+                      <th className="px-2 py-2">Service</th>
+                      <th className="px-2 py-2">Priority</th>
+                      {locked ? <th className="px-2 py-2">Status</th> : null}
+                      <th className="px-2 py-2">Unit</th>
+                      <th className="px-2 py-2">Price</th>
+                      <th className="px-2 py-2">Actions</th>
+                    </tr>
                   </thead>
                   <tbody>
                     {form.investigations.length === 0 ? (
-                      <tr><td className="px-2 py-6 text-muted" colSpan={7}>No services added yet.</td></tr>
+                      <tr><td className="px-2 py-6 text-muted" colSpan={locked ? 8 : 7}>No services added yet.</td></tr>
                     ) : form.investigations.map((item, index) => (
                       <tr key={item.id} className="border-t border-line-soft">
                         <td className="px-2 py-2 text-muted">{index + 1}</td>
@@ -486,10 +530,25 @@ export function EncounterPage({ token }: { token: string }) {
                             {investigationPriorities.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
                           </select>
                         </td>
+                        {locked ? (
+                          <td className="px-2 py-2">
+                            <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${investigationStatusClass(item.status)}`}>
+                              {investigationStatusLabel(item.status)}
+                            </span>
+                          </td>
+                        ) : null}
                         <td className="px-2 py-2 text-muted">{item.unit || "—"}</td>
                         <td className="px-2 py-2">{listedServicePrice(services, item.service_id, item.price, visit.patient_nationality)}</td>
                         <td className="px-2 py-2">
-                          {locked ? null : <RemoveButton onClick={() => update({ investigations: form.investigations.filter((row) => row.id !== item.id) })} />}
+                          {locked ? (
+                            item.result_file_url ? (
+                              <a className={`${secondary} inline-flex h-8 items-center px-3 text-xs`} href={item.result_file_url} target="_blank" rel="noreferrer">
+                                Open report
+                              </a>
+                            ) : <span className="text-xs text-muted">—</span>
+                          ) : (
+                            <RemoveButton onClick={() => update({ investigations: form.investigations.filter((row) => row.id !== item.id) })} />
+                          )}
                         </td>
                       </tr>
                     ))}
@@ -503,7 +562,7 @@ export function EncounterPage({ token }: { token: string }) {
             <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,1fr)_22rem]">
               <Panel title="Provisional Diagnoses" required>
                 <p className="mb-3 text-sm text-muted">Add every problem for this visit. The first one is the principal diagnosis sent to insurance.</p>
-                <Icd10Picker
+                <Icd11Picker
                   token={token}
                   locked={locked}
                   items={form.provisional_diagnoses}
@@ -656,15 +715,27 @@ export function EncounterPage({ token }: { token: string }) {
           )}
         </div>
       )}
-      <ConfirmDialog
-        open={confirmFinish}
-        title="Finish this encounter?"
-        body="The visit leaves the doctor queue and the note can no longer be edited."
-        confirmLabel="Finish Encounter & Send to Nurse"
-        pending={saving}
-        onCancel={() => setConfirmFinish(false)}
-        onConfirm={() => void finish()}
-      />
+      {confirmFinish ? (
+        <FinishEncounterDialog
+          patientName={visit?.patient_name ?? "this patient"}
+          nurses={nurses}
+          nursesLoading={nursesLoading}
+          nurseId={finishNurseId}
+          error={finishNurseError}
+          pending={saving}
+          onNurseChange={(value) => {
+            setFinishNurseId(value);
+            setFinishNurseError(null);
+          }}
+          onCancel={() => {
+            if (saving) return;
+            setConfirmFinish(false);
+            setFinishNurseId("");
+            setFinishNurseError(null);
+          }}
+          onConfirm={() => void finish()}
+        />
+      ) : null}
       {orderDialog && form && visit ? (
         <MedicationOrderDialog
           order={orderDialog}
@@ -725,6 +796,20 @@ function normalize(encounter: ClinicalEncounter): ClinicalEncounter {
       unit: item.unit ?? "",
       price: item.price ?? null,
       priority: item.priority ?? "normal",
+      category: item.category,
+      status: item.status,
+      requires_collection: item.requires_collection,
+      ordered_at: item.ordered_at,
+      ordered_by_name: item.ordered_by_name,
+      collected_at: item.collected_at,
+      collected_by_name: item.collected_by_name,
+      sent_at: item.sent_at,
+      sent_by_name: item.sent_by_name,
+      result_uploaded_at: item.result_uploaded_at,
+      result_uploaded_by_name: item.result_uploaded_by_name,
+      completed_at: item.completed_at,
+      result_file_url: item.result_file_url,
+      result_original_name: item.result_original_name,
     })),
     provisional_diagnoses: encounter.provisional_diagnoses ?? [],
     medication_orders: (encounter.medication_orders ?? []).map((item) => {
@@ -1121,7 +1206,97 @@ function associatedChargeLabel(service: ProcedureServiceValue, quantity: number,
   const total = Math.round(service.price * quantity * 100) / 100;
   return `${currency} ${formatPrice(service.price)} × ${formatQuantity(quantity)} · ${currency} ${formatPrice(total)}`;
 }
-function Icd10Picker({
+function FinishEncounterDialog({
+  patientName,
+  nurses,
+  nursesLoading,
+  nurseId,
+  error,
+  pending,
+  onNurseChange,
+  onCancel,
+  onConfirm,
+}: {
+  patientName: string;
+  nurses: { id: string; name: string }[];
+  nursesLoading: boolean;
+  nurseId: string;
+  error: string | null;
+  pending?: boolean;
+  onNurseChange: (value: string) => void;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  useEffect(() => {
+    function onKey(event: KeyboardEvent) {
+      if (event.key === "Escape" && !pending) onCancel();
+    }
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onCancel, pending]);
+
+  const nurseInvalid = Boolean(error) && !nurseId;
+
+  return (
+    <div
+      className="triage-dialog-backdrop fixed inset-0 z-50 grid place-items-center bg-shell/50 px-4 backdrop-blur-[2px]"
+      role="presentation"
+      onMouseDown={() => {
+        if (!pending) onCancel();
+      }}
+    >
+      <div
+        className="triage-dialog-panel w-full max-w-md rounded-2xl bg-surface p-6 shadow-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="finish-encounter-title"
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <h2 id="finish-encounter-title" className="text-xl font-bold text-ink">Finish this encounter?</h2>
+        <p className="mt-2 text-sm leading-6 text-muted-strong">
+          {patientName} leaves the doctor queue and the note can no longer be edited. Choose the nurse who will handle the next steps.
+        </p>
+        <div className="mt-4">
+          <label className={label} htmlFor="finish-nurse">
+            Nurse <span className="text-danger">*</span>
+          </label>
+          <select
+            id="finish-nurse"
+            className={`${field} mt-1.5 ${nurseInvalid || (error && !nursesLoading) ? fieldInvalid : ""}`}
+            value={nurseId}
+            disabled={pending || nursesLoading || nurses.length === 0}
+            required
+            onChange={(event) => onNurseChange(event.target.value)}
+          >
+            <option value="">{nursesLoading ? "Loading nurses…" : nurses.length === 0 ? "No nurses available" : "Select a nurse"}</option>
+            {nurses.map((nurse) => (
+              <option key={nurse.id} value={nurse.id}>{nurse.name}</option>
+            ))}
+          </select>
+          {nurses.length === 0 && !nursesLoading ? (
+            <p className="mt-2 text-xs text-muted">No nurses found for this clinic. Assign clinic access to a Nurse user.</p>
+          ) : (
+            <p className="mt-2 text-xs text-muted">Required. This nurse receives the patient after the encounter.</p>
+          )}
+        </div>
+        {error ? <p className="mt-3 text-sm text-danger">{error}</p> : null}
+        <div className="mt-6 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+          <button type="button" className={`${secondary} w-full sm:w-auto`} onClick={onCancel} disabled={pending}>Cancel</button>
+          <button
+            type="button"
+            className={`${primary} w-full sm:w-auto`}
+            onClick={onConfirm}
+            disabled={pending || nursesLoading || nurses.length === 0}
+          >
+            {pending ? "Sending…" : "Finish Encounter & Send to Nurse"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Icd11Picker({
   token,
   locked,
   items,
@@ -1130,12 +1305,12 @@ function Icd10Picker({
 }: {
   token: string;
   locked: boolean;
-  items: Icd10Code[];
+  items: Icd11Code[];
   legacy: string;
-  onChange: (items: Icd10Code[]) => void;
+  onChange: (items: Icd11Code[]) => void;
 }) {
   const [query, setQuery] = useState("");
-  const [results, setResults] = useState<Icd10Code[]>([]);
+  const [results, setResults] = useState<Icd11Code[]>([]);
   const [searching, setSearching] = useState(false);
   const chosen = new Set(items.map((item) => item.code));
   const legacyNote = items.length === 0 && legacy.trim();
@@ -1150,7 +1325,7 @@ function Icd10Picker({
     let cancelled = false;
     setSearching(true);
     const timer = window.setTimeout(() => {
-      api<{ items: Icd10Code[] }>(`/api/icd10?q=${encodeURIComponent(needle)}`, {}, token)
+      api<{ items: Icd11Code[] }>(`/api/icd11?q=${encodeURIComponent(needle)}`, {}, token)
         .then((data) => {
           if (!cancelled) setResults(data.items);
         })
@@ -1167,7 +1342,7 @@ function Icd10Picker({
     };
   }, [query, token]);
 
-  function add(item: Icd10Code) {
+  function add(item: Icd11Code) {
     if (chosen.has(item.code)) return;
     onChange([...items, item]);
     setQuery("");
@@ -1176,7 +1351,7 @@ function Icd10Picker({
 
   return (
     <div className="space-y-3">
-      {items.length === 0 ? <p className="text-sm text-muted">{locked ? "No ICD-10 codes were recorded." : "No problems added yet."}</p> : (
+      {items.length === 0 ? <p className="text-sm text-muted">{locked ? "No ICD-11 codes were recorded." : "No problems added yet."}</p> : (
         <ul className="space-y-2">
           {items.map((item, index) => (
             <li key={item.code} className={`rounded-xl border px-4 py-3 ${index === 0 ? "border-blue bg-panel" : "border-line bg-surface"}`}>
@@ -1201,7 +1376,7 @@ function Icd10Picker({
       )}
       {legacyNote ? (
         <p className="rounded-xl border border-warning-line bg-warning-soft px-4 py-3 text-sm text-warning">
-          The saved note is not an ICD-10 code: “{legacyNote}”. Add a code for each problem to replace it.
+          The saved note is not an ICD-11 code: “{legacyNote}”. Add a code for each problem to replace it.
         </p>
       ) : null}
       {locked ? null : (
@@ -1209,13 +1384,13 @@ function Icd10Picker({
           <input
             className={field}
             value={query}
-            placeholder="Search, for example J06.9 or sore throat"
+            placeholder="Search, for example CA07.0 or pharyngitis"
             onChange={(event) => setQuery(event.target.value)}
           />
           {query.trim().length >= 2 ? (
             <ul className="ui-pop absolute z-20 mt-1 max-h-72 w-full overflow-auto rounded-xl border border-line bg-surface py-1 shadow-[var(--menu-shadow)]">
-              {searching && results.length === 0 ? <li className="px-3 py-2 text-sm text-muted">Searching ICD-10…</li> : null}
-              {!searching && results.length === 0 ? <li className="px-3 py-2 text-sm text-muted">No ICD-10 codes match.</li> : null}
+              {searching && results.length === 0 ? <li className="px-3 py-2 text-sm text-muted">Searching ICD-11…</li> : null}
+              {!searching && results.length === 0 ? <li className="px-3 py-2 text-sm text-muted">No ICD-11 codes match.</li> : null}
               {results.map((item) => (
                 <li key={item.code}>
                   <button
@@ -1237,7 +1412,7 @@ function Icd10Picker({
   );
 }
 
-function InsuranceDiagnosis({ visit, items }: { visit: EncounterRecord["visit"]; items: Icd10Code[] }) {
+function InsuranceDiagnosis({ visit, items }: { visit: EncounterRecord["visit"]; items: Icd11Code[] }) {
   const when = visit.triage_completed_at ? formatDay(visit.triage_completed_at) : null;
   const patientLine = [
     visit.patient_age_at_visit != null ? `${visit.patient_age_at_visit} years` : null,
@@ -2781,7 +2956,7 @@ function missingForStep(form: ClinicalEncounter, step: EncounterTab) {
     if (form.spo2 == null || Number.isNaN(form.spo2)) return "Enter the oxygen saturation.";
   }
   if (step === "examination" && !form.examination.findings.trim()) return "Enter the examination findings.";
-  if (step === "diagnosis" && form.provisional_diagnoses.length === 0) return "Add at least one ICD-10-CM diagnosis.";
+  if (step === "diagnosis" && form.provisional_diagnoses.length === 0) return "Add at least one ICD-11 diagnosis.";
   return null;
 }
 

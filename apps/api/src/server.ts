@@ -7,6 +7,7 @@ import { ApplicationError } from "@yaren/shared-kernel";
 import { createDatabase, migrate } from "@yaren/database";
 import { readEnv, type Env } from "./env.js";
 import { registerAuth, seedSuperAdmin } from "./modules/auth.js";
+import { seedDummyOrg } from "./modules/seed-dummy.js";
 import { registerUsers } from "./modules/users.js";
 import { registerHotels } from "./modules/hotels.js";
 import { registerClinics } from "./modules/clinics.js";
@@ -19,7 +20,9 @@ import { registerSettings } from "./modules/settings.js";
 import { registerServices } from "./modules/services.js";
 import { registerMedications } from "./modules/medications.js";
 import { registerEncounters } from "./modules/encounters.js";
-import { registerIcd10 } from "./modules/icd10.js";
+import { registerInvestigations } from "./modules/investigations.js";
+import { registerNurseCare } from "./modules/nurse-care.js";
+import { registerIcd11 } from "./modules/icd11.js";
 import { registerNotifications } from "./modules/notifications.js";
 import { startActivityLog } from "./modules/activity.js";
 import { ensureUploadDirs, maxVisitDocumentBytes, uploadsRoot } from "./uploads.js";
@@ -29,6 +32,7 @@ export async function buildServer() {
   const { pool } = createDatabase(env.DATABASE_URL);
   await migrate(pool);
   await seedSuperAdmin(pool, env);
+  await seedDummyOrg(pool);
   await ensureUploadDirs();
 
   const app = Fastify({ logger: true });
@@ -62,7 +66,9 @@ export async function buildServer() {
   registerServices(app, pool);
   registerMedications(app, pool);
   registerEncounters(app, pool);
-  registerIcd10(app);
+  registerInvestigations(app, pool);
+  registerNurseCare(app, pool);
+  registerIcd11(app);
   registerNotifications(app, pool);
   startActivityLog(app, pool);
 

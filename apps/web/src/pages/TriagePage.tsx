@@ -2,6 +2,10 @@ import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } 
 import { Link, useSearchParams } from "react-router";
 import {
   api,
+  type MonitoringItem,
+  type NurseDashboardSummary,
+  type NursingCareItem,
+  type SampleCollectionItem,
   type TriageAllergy,
   type TriageCategory,
   type TriageDetail,
@@ -17,6 +21,15 @@ import {
 import { canAct } from "../access";
 import { useActiveClinic } from "../ClinicWorkspace";
 import { useToast } from "../toast";
+import {
+  ManagementPlanModal,
+  MonitoringPanel,
+  NurseSummaryTiles,
+  NursingTasksPanel,
+  RecordMonitoringModal,
+  SampleCollectionCard,
+  TestsOrderedModal,
+} from "./NurseDashboardPanels";
 import { field, label, messageOf, primary, secondary } from "./ui";
 
 const historyOptions = [
@@ -99,6 +112,26 @@ export function TriagePage({ token, actor }: { token: string; actor: User }) {
   const [waitSettings, setWaitSettings] = useState<GeneralSettings>({ triage_wait_minutes: 20, doctor_wait_minutes: 20, clinics: [] });
   const [saving, setSaving] = useState(false);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [sampleItems, setSampleItems] = useState<SampleCollectionItem[]>([]);
+  const [sampleLoading, setSampleLoading] = useState(false);
+  const [sampleBusy, setSampleBusy] = useState<string | null>(null);
+  const [nurseSummary, setNurseSummary] = useState<NurseDashboardSummary>({
+    waiting_for_triage: 0,
+    triage_in_progress: 0,
+    to_doctor: 0,
+    under_nursing_care: 0,
+    samples_to_collect: 0,
+  });
+  const [summaryLoading, setSummaryLoading] = useState(false);
+  const [careItems, setCareItems] = useState<NursingCareItem[]>([]);
+  const [careLoading, setCareLoading] = useState(false);
+  const [monitorItems, setMonitorItems] = useState<MonitoringItem[]>([]);
+  const [monitorLoading, setMonitorLoading] = useState(false);
+  const [testsModal, setTestsModal] = useState<SampleCollectionItem | null>(null);
+  const [planModal, setPlanModal] = useState<NursingCareItem | null>(null);
+  const [monitorModal, setMonitorModal] = useState<MonitoringItem | null>(null);
+  const [sampleTick, setSampleTick] = useState(0);
+  const [careTick, setCareTick] = useState(0);
   const requestId = useRef(0);
   const selected = detail?.visit ?? null;
   const canEdit = canAct(actor, "triage", "update", selected ? { ownerId: selected.patient_added_by, clinicId: selected.clinic_id } : undefined);
@@ -312,14 +345,143 @@ export function TriagePage({ token, actor }: { token: string; actor: User }) {
     return () => document.removeEventListener("keydown", onKey);
   }, [selectedKey]);
 
+  useEffect(() => {
+    let cancelled = false;
+    setSampleLoading(true);
+    const params = new URLSearchParams();
+    if (clinicId) params.set("clinic_id", clinicId);
+    api<{ items: SampleCollectionItem[] }>(`/api/nurse/sample-collection?${params}`, {}, token)
+      .then((data) => {
+        if (!cancelled) setSampleItems(data.items);
+      })
+      .catch(() => {
+        if (!cancelled) setSampleItems([]);
+      })
+      .finally(() => {
+        if (!cancelled) setSampleLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [token, clinicId, sampleTick, careTick, queue.summary.waiting_for_investigation]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setSummaryLoading(true);
+    const params = new URLSearchParams();
+    if (clinicId) params.set("clinic_id", clinicId);
+    api<NurseDashboardSummary>(`/api/nurse/dashboard-summary?${params}`, {}, token)
+      .then((data) => {
+        if (!cancelled) setNurseSummary(data);
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setNurseSummary({
+            waiting_for_triage: queue.summary.waiting_for_triage,
+            triage_in_progress: 0,
+            to_doctor: queue.summary.to_doctor,
+            under_nursing_care: 0,
+            samples_to_collect: sampleItems.length,
+          });
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setSummaryLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [token, clinicId, sampleTick, careTick, queue.summary.waiting_for_triage, queue.summary.to_doctor, sampleItems.length]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setCareLoading(true);
+    const params = new URLSearchParams();
+    if (clinicId) params.set("clinic_id", clinicId);
+    api<{ items: NursingCareItem[] }>(`/api/nurse/nursing-care?${params}`, {}, token)
+      .then((data) => {
+        if (!cancelled) setCareItems(data.items);
+      })
+      .catch(() => {
+        if (!cancelled) setCareItems([]);
+      })
+      .finally(() => {
+        if (!cancelled) setCareLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [token, clinicId, careTick]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setMonitorLoading(true);
+    const params = new URLSearchParams();
+    if (clinicId) params.set("clinic_id", clinicId);
+    api<{ items: MonitoringItem[] }>(`/api/nurse/monitoring?${params}`, {}, token)
+      .then((data) => {
+        if (!cancelled) setMonitorItems(data.items);
+      })
+      .catch(() => {
+        if (!cancelled) setMonitorItems([]);
+      })
+      .finally(() => {
+        if (!cancelled) setMonitorLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [token, clinicId, careTick]);
+
+  function refreshNursePanels() {
+    setSampleTick((value) => value + 1);
+    setCareTick((value) => value + 1);
+  }
+
+  async function collectVisit(item: SampleCollectionItem) {
+    setSampleBusy(`${item.visit_id}:collect`);
+    try {
+      const data = await api<{ updated: number }>(`/api/visits/${item.visit_id}/investigations/collect`, { method: "POST" }, token);
+      toast.success("Samples collected", `${data.updated} test${data.updated === 1 ? "" : "s"} marked collected for ${item.patient_name}.`);
+      refreshNursePanels();
+    } catch (caught) {
+      toast.error("Could not collect", messageOf(caught));
+    } finally {
+      setSampleBusy(null);
+    }
+  }
+
+  async function sendVisit(item: SampleCollectionItem) {
+    setSampleBusy(`${item.visit_id}:send`);
+    try {
+      const data = await api<{ updated: number }>(`/api/visits/${item.visit_id}/investigations/send`, { method: "POST" }, token);
+      toast.success("Sent to lab", `${data.updated} test${data.updated === 1 ? "" : "s"} sent for ${item.patient_name}.`);
+      refreshNursePanels();
+    } catch (caught) {
+      toast.error("Could not send", messageOf(caught));
+    } finally {
+      setSampleBusy(null);
+    }
+  }
+
+  function openTestsModal(item: SampleCollectionItem) {
+    setTestsModal(item);
+  }
+
+  const testsModalItem = testsModal
+    ? sampleItems.find((item) => item.visit_id === testsModal.visit_id) ?? testsModal
+    : null;
+
   return (
     <section className="space-y-4">
       <header>
         <h1 className="text-2xl font-bold tracking-tight text-ink">Nurse Dashboard</h1>
-        <p className="mt-1 text-sm text-muted-strong">Choose a patient, complete triage, then send them to a doctor.</p>
+        <p className="mt-1 text-sm text-muted-strong">Triage patients, deliver nursing care, collect samples, and record monitoring.</p>
       </header>
 
       {error && !selectedKey ? <p className="rounded-xl border border-danger-line bg-danger-soft px-4 py-3 text-sm text-danger" role="alert">{error}</p> : null}
+
+      <NurseSummaryTiles summary={nurseSummary} loading={summaryLoading} />
 
       <div className="min-w-0 rounded-2xl border border-line bg-surface p-4 shadow-card">
           <div className="-mx-4 -mt-4 mb-4 flex flex-wrap gap-1 border-b border-line px-2" role="tablist">
@@ -343,7 +505,7 @@ export function TriagePage({ token, actor }: { token: string; actor: User }) {
           <div className="mb-3 flex items-center gap-2">
             <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-panel text-blue"><QueueIcon /></span>
             <div className="min-w-0 flex-1">
-              <h2 className="text-sm font-semibold text-ink">Patient queue</h2>
+              <h2 className="text-sm font-semibold text-ink">Patient Queue</h2>
               <p className="text-xs text-muted">{loading ? "Loading" : `${queue.total} visit${queue.total === 1 ? "" : "s"}`}</p>
             </div>
           </div>
@@ -361,16 +523,17 @@ export function TriagePage({ token, actor }: { token: string; actor: User }) {
             />
           </label>
 
-          <div>
+          <div className="overflow-x-auto">
             {queue.items.length === 0 ? (
               <p className="px-2 py-8 text-center text-sm text-muted">{loading ? "Loading queue…" : "No patients match this queue."}</p>
             ) : (
-              <>
-                <div className="grid grid-cols-[minmax(0,1fr)_7.5rem_6.75rem_13.5rem] gap-x-3 px-3 pb-2 text-[11px] font-semibold uppercase tracking-wide text-muted">
-                  <span>Name, MRN, room</span>
-                  <span>Registration</span>
+              <div className="min-w-[44rem]">
+                <div className="grid grid-cols-[minmax(0,1.4fr)_7rem_6.5rem_11rem_7.5rem] gap-x-3 px-3 pb-2 text-[11px] font-semibold uppercase tracking-wide text-muted">
+                  <span>Patient</span>
+                  <span>Registered</span>
                   <span>Elapsed</span>
                   <span>Status</span>
+                  <span>Action</span>
                 </div>
                 <div className="space-y-2">
                   {queue.items.map((item) => {
@@ -380,30 +543,38 @@ export function TriagePage({ token, actor }: { token: string; actor: User }) {
                       ? Math.max(0, new Date(item.triage_completed_at!).getTime() - new Date(item.created_at).getTime())
                       : Math.max(0, now - new Date(item.created_at).getTime());
                     const waiting = item.status === "waiting_for_triage" && !item.triage_id;
+                    const actionLabel = triageDone ? "View" : waiting ? "Start triage" : "Continue";
                     return (
-                      <button
+                      <div
                         key={item.id}
-                        type="button"
-                        onClick={() => selectVisit(item)}
-                        className={`grid w-full grid-cols-[minmax(0,1fr)_7.5rem_6.75rem_13.5rem] items-center gap-x-3 rounded-xl border px-3 py-2.5 text-left transition ${active ? "border-blue bg-panel" : "border-line-soft bg-surface hover:border-line hover:bg-surface-2"}`}
+                        className={`grid w-full grid-cols-[minmax(0,1.4fr)_7rem_6.5rem_11rem_7.5rem] items-center gap-x-3 rounded-xl border px-3 py-2.5 ${active ? "border-blue bg-panel" : "border-line-soft bg-surface"}`}
                       >
-                        <span className="min-w-0">
-                          <span className="block truncate font-semibold text-ink">{item.patient_name}</span>
-                          <span className="mt-0.5 block truncate text-xs text-muted">{item.patient_mrn} · {visitTypeLabel(item.visit_type)} · Room {item.hotel_room_no || "—"}</span>
-                        </span>
+                        <div className="min-w-0">
+                          <p className="truncate font-semibold text-ink">{item.patient_name}</p>
+                          <p className="mt-0.5 truncate text-xs text-muted">
+                            {item.patient_mrn} · {visitTypeLabel(item.visit_type)} · Room {item.hotel_room_no || "—"}
+                            {item.assigned_nurse_name ? ` · ${item.assigned_nurse_name}` : ""}
+                          </p>
+                        </div>
                         <span className="text-xs font-medium text-muted-strong">{formatRegistered(item.created_at)}</span>
-                        <span>
-                          <span className={`block font-mono text-sm font-semibold tabular-nums ${elapsed >= waitMinutes(waitSettings, item.clinic_id, "triage") * 60_000 ? "text-danger" : "text-ink"}`}>{clockLabel(elapsed)}</span>
-                          <span className={`mt-0.5 block text-xs font-semibold ${triageDone ? "text-success" : "text-blue"}`}>{triageDone ? "Finished" : waiting ? "Start" : "View"}</span>
+                        <span className={`font-mono text-sm font-semibold tabular-nums ${elapsed >= waitMinutes(waitSettings, item.clinic_id, "triage") * 60_000 ? "text-danger" : "text-ink"}`}>
+                          {clockLabel(elapsed)}
                         </span>
                         <span className="justify-self-start">
                           <StatusBadge status={item.status} compact />
                         </span>
-                      </button>
+                        <button
+                          type="button"
+                          className={`${waiting ? primary : secondary} h-8 justify-self-start px-3 text-xs`}
+                          onClick={() => selectVisit(item)}
+                        >
+                          {actionLabel}
+                        </button>
+                      </div>
                     );
                   })}
                 </div>
-              </>
+              </div>
             )}
           </div>
 
@@ -416,6 +587,58 @@ export function TriagePage({ token, actor }: { token: string; actor: User }) {
             </div>
           </div>
       </div>
+
+      <div className="grid gap-4 xl:grid-cols-3">
+        <NursingTasksPanel
+          items={careItems}
+          loading={careLoading}
+          now={now}
+          busyId={null}
+          onViewPlan={setPlanModal}
+        />
+        <SampleCollectionCard
+          items={sampleItems}
+          loading={sampleLoading}
+          busyId={sampleBusy}
+          onViewTests={openTestsModal}
+          onCollect={(item) => void collectVisit(item)}
+          onSend={(item) => void sendVisit(item)}
+        />
+        <MonitoringPanel
+          items={monitorItems}
+          loading={monitorLoading}
+          onRecord={setMonitorModal}
+        />
+      </div>
+
+      {testsModalItem ? (
+        <TestsOrderedModal
+          token={token}
+          item={testsModalItem}
+          busyId={sampleBusy}
+          onClose={() => setTestsModal(null)}
+          onCollect={(item) => void collectVisit(item)}
+          onSend={(item) => void sendVisit(item)}
+        />
+      ) : null}
+
+      {planModal ? (
+        <ManagementPlanModal
+          token={token}
+          item={planModal}
+          onClose={() => setPlanModal(null)}
+          onChanged={refreshNursePanels}
+        />
+      ) : null}
+
+      {monitorModal ? (
+        <RecordMonitoringModal
+          token={token}
+          item={monitorModal}
+          onClose={() => setMonitorModal(null)}
+          onSaved={refreshNursePanels}
+        />
+      ) : null}
 
       {selectedKey ? (
         <div className="triage-dialog-backdrop fixed inset-0 z-50 grid place-items-center bg-shell/45 p-3 sm:p-4" role="presentation" onMouseDown={closeAssessment}>

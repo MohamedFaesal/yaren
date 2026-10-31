@@ -94,6 +94,30 @@ export async function saveEncounterFile(
   };
 }
 
+export async function saveInvestigationResult(
+  visitId: string,
+  investigationId: string,
+  file: { mimetype: string; filename?: string; toBuffer: () => Promise<Buffer> },
+  previousPath?: string | null,
+) {
+  const extension = documentTypes.get(file.mimetype);
+  if (!extension) throw new ApplicationError(422, "invalid_document", "Use a PDF, JPEG, PNG, or WebP file");
+  const buffer = await file.toBuffer();
+  if (buffer.byteLength === 0) throw new ApplicationError(422, "invalid_document", "Choose a file to upload");
+  if (buffer.byteLength > maxVisitDocumentBytes) throw new ApplicationError(422, "document_too_large", "File must be 10 MB or smaller");
+  await ensureUploadDirs();
+  const folder = path.join(root, "visit-docs", visitId);
+  await mkdir(folder, { recursive: true });
+  const relative = `visit-docs/${visitId}/investigation-${investigationId}.${extension}`;
+  await writeFile(path.join(root, relative), buffer);
+  if (previousPath && previousPath !== relative) await removeUpload(previousPath);
+  return {
+    path: relative,
+    originalName: file.filename?.trim() || `investigation-result.${extension}`,
+    mimeType: file.mimetype,
+  };
+}
+
 export async function removeUpload(photoPath: string | null | undefined) {
   if (!photoPath) return;
   await unlink(path.join(root, photoPath)).catch(() => undefined);

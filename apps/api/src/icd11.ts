@@ -2,12 +2,12 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-export type Icd10Code = { code: string; title: string };
+export type Icd11Code = { code: string; title: string };
 
-type Entry = Icd10Code & { bare: string; hay: string };
+type Entry = Icd11Code & { bare: string; hay: string };
 
-// CMS ICD-10-CM FY2026 billable codes (public domain). Dotted for display.
-const entries: Entry[] = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "data/icd10-cm.txt"), "utf8")
+// WHO ICD-11 MMS 2025-01 Simple Tabulation (stem codes; extension chapter X omitted).
+const entries: Entry[] = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "data/icd11-mms.txt"), "utf8")
   .split("\n")
   .flatMap((line) => {
     const tab = line.indexOf("\t");
@@ -18,18 +18,18 @@ const entries: Entry[] = readFileSync(join(dirname(fileURLToPath(import.meta.url
     return [{ code, title, bare: code.replace(".", "").toLowerCase(), hay: title.toLowerCase() }];
   });
 
-const byCode = new Map(entries.map((entry) => [entry.code, entry.title]));
+const byCode = new Map(entries.map((entry) => [entry.code.toUpperCase(), entry.title]));
 
-export function icd10Title(code: string) {
+export function icd11Title(code: string) {
   return byCode.get(code.trim().toUpperCase()) ?? null;
 }
 
-export function searchIcd10(query: string, limit = 25): Icd10Code[] {
+export function searchIcd11(query: string, limit = 25): Icd11Code[] {
   const needle = query.trim().toLowerCase();
   if (needle.length < 2) return [];
   const bare = needle.replace(/\./g, "");
-  const prefix: Icd10Code[] = [];
-  const text: Icd10Code[] = [];
+  const prefix: Icd11Code[] = [];
+  const text: Icd11Code[] = [];
   for (const entry of entries) {
     if (entry.bare.startsWith(bare)) prefix.push(entry);
     else if (entry.hay.includes(needle)) text.push(entry);

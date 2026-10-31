@@ -73,12 +73,12 @@ const triageCompleteSchema = z.object({
   assigned_doctor_id: z.string().uuid({ error: "Assign a doctor" }),
 });
 
-const visitQueueColumns = `v.id, v.patient_id, v.status, v.visit_type, v.status_changed_at, v.assigned_doctor_id,
+const visitQueueColumns = `v.id, v.patient_id, v.status, v.visit_type, v.status_changed_at, v.assigned_doctor_id, v.assigned_nurse_id,
   v.hotel_room_no, v.clinic_id, c.name AS clinic_name, h.name AS hotel_name,
   p.name AS patient_name, p.mrn AS patient_mrn, p.added_by AS patient_added_by,
   v.created_at, v.updated_at,
   t.id AS triage_id, t.triage_category, t.completed_at AS triage_completed_at,
-  d.name AS assigned_doctor_name`;
+  d.name AS assigned_doctor_name, nurse.name AS assigned_nurse_name`;
 
 type Db = pg.Pool | pg.PoolClient;
 
@@ -117,6 +117,7 @@ export function registerTriage(app: FastifyInstance, pool: pg.Pool) {
       JOIN patients p ON p.id = v.patient_id
       LEFT JOIN patient_visit_triages t ON t.visit_id = v.id
       LEFT JOIN users d ON d.id = v.assigned_doctor_id
+      LEFT JOIN users nurse ON nurse.id = v.assigned_nurse_id
       ${where}`;
 
     const counts = await pool.query<{ status: string; count: number }>(
@@ -355,7 +356,39 @@ export function registerTriage(app: FastifyInstance, pool: pg.Pool) {
     const result = await pool.query<{ id: string; name: string }>(
       `SELECT DISTINCT u.id, u.name
        FROM users u
-       WHERE ${doctorForClinicSql}
+       WHERE ${staffForClinicSql("Doctor")}
+       ORDER BY u.name ASC`,
+      [clinicId],
+    );
+    return { items: result.rows };
+  });
+
+  app.get("/api/clinics/:clinicId/nurses", { preHandler: authenticate }, async (request) => {
+    const { clinicId } = request.params as { clinicId: string };
+    const access = await loadAccess(pool, request.user);
+    const allowed = can(access, request.user.sub, {
+      resource: "triage",
+      action: "view",
+      ownerId: request.user.sub,
+      clinicId,
+    }) || can(access, request.user.sub, {
+      resource: "triage",
+      action: "update",
+      ownerId: request.user.sub,
+      clinicId,
+    }) || can(access, request.user.sub, {
+      resource: "visit",
+      action: "view",
+      ownerId: request.user.sub,
+      clinicId,
+    });
+    if (!allowed) throw new ApplicationError(403, "forbidden", "You cannot view nurses for this clinic");
+    const clinic = await pool.query("SELECT id FROM clinics WHERE id = $1 AND deleted_at IS NULL", [clinicId]);
+    if (!clinic.rows[0]) throw new ApplicationError(404, "not_found", "Clinic was not found");
+    const result = await pool.query<{ id: string; name: string }>(
+      `SELECT DISTINCT u.id, u.name
+       FROM users u
+       WHERE ${staffForClinicSql("Nurse")}
        ORDER BY u.name ASC`,
       [clinicId],
     );
@@ -697,9 +730,10 @@ async function upsertTriage(
   return findTriage(db, visitId);
 }
 
-const doctorForClinicSql = `u.deleted_at IS NULL
+function staffForClinicSql(role: "Doctor" | "Nurse") {
+  return `u.deleted_at IS NULL
   AND u.is_active
-  AND u.role = 'Doctor'
+  AND u.role = '${role}'
   AND (
     u.type = 'super-admin'
     OR EXISTS (
@@ -731,16 +765,30 @@ const doctorForClinicSql = `u.deleted_at IS NULL
         )
     )
   )`;
+}
 
 async function assertDoctorForClinic(pool: pg.Pool, doctorId: string, clinicId: string) {
   const result = await pool.query(
     `SELECT u.id
      FROM users u
      WHERE u.id = $2
-       AND ${doctorForClinicSql}`,
+       AND ${staffForClinicSql("Doctor")}`,
     [clinicId, doctorId],
   );
   if (!result.rows[0]) throw new ApplicationError(422, "unknown_doctor", "Choose a doctor for this clinic");
+}
+
+export async function assertNurseForClinic(pool: pg.Pool | pg.PoolClient, nurseId: string, clinicId: string) {
+  const result = await pool.query(
+    `SELECT u.id, u.name
+     FROM users u
+     WHERE u.id = $2
+       AND ${staffForClinicSql("Nurse")}`,
+    [clinicId, nurseId],
+  );
+  const row = result.rows[0] as { id: string; name: string } | undefined;
+  if (!row) throw new ApplicationError(422, "unknown_nurse", "Choose a nurse for this clinic");
+  return row;
 }
 
 function isUuid(value: string) {

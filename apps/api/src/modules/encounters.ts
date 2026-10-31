@@ -7,7 +7,9 @@ import { authenticate, parse } from "../http.js";
 import { loadAccess, workspaceClinicOptionsWhere } from "../permissions.js";
 import { fileUrl, removeUpload, saveEncounterFile } from "../uploads.js";
 import { changed, noteActivity } from "./activity.js";
-import { icd10Title } from "../icd10.js";
+import { assertNurseForClinic } from "./triage.js";
+import { icd11Title } from "../icd11.js";
+import { listVisitInvestigations, materializeInvestigations } from "../investigation-helpers.js";
 
 const systems = ["general", "heent", "respiratory", "cardiovascular", "abdomen", "cns", "musculoskeletal", "skin", "other"] as const;
 const appearances = ["well", "ill", "toxic"] as const;
@@ -122,7 +124,10 @@ const encounterSchema = z.object({
   })).max(40).optional().transform((value) => value ?? []),
 });
 
-const finishSchema = encounterSchema.superRefine((value, context) => {
+const finishSchema = encounterSchema.extend({
+  assigned_nurse_id: z.string({ error: "Choose the nurse who will handle this patient" })
+    .uuid({ error: "Choose the nurse who will handle this patient" }),
+}).superRefine((value, context) => {
   if (!value.chief_complaint.trim()) {
     context.addIssue({ code: "custom", message: "Enter the chief complaint", path: ["chief_complaint"] });
   }
@@ -145,7 +150,7 @@ const finishSchema = encounterSchema.superRefine((value, context) => {
     context.addIssue({ code: "custom", message: "Enter the examination findings", path: ["examination", "findings"] });
   }
   if (value.provisional_diagnoses.length === 0) {
-    context.addIssue({ code: "custom", message: "Add at least one ICD-10-CM diagnosis", path: ["provisional_diagnoses"] });
+    context.addIssue({ code: "custom", message: "Add at least one ICD-11 diagnosis", path: ["provisional_diagnoses"] });
   }
 });
 
@@ -169,6 +174,8 @@ type CaseRow = {
   patient_age_at_visit: number | null;
   assigned_doctor_id: string;
   assigned_doctor_name: string | null;
+  assigned_nurse_id: string | null;
+  assigned_nurse_name: string | null;
   chief_complaint: string | null;
   temperature_c: number | string | null;
   pulse: number | null;
@@ -208,22 +215,36 @@ export function registerEncounters(app: FastifyInstance, pool: pg.Pool) {
     const { id } = request.params as { id: string };
     const visit = await loadCase(pool, request.user, id);
     if (visit.status !== "to_doctor") throw new ApplicationError(422, "encounter_finished", "This encounter is already finished");
-    const body = await applyRouteProcedures(pool, id, resolveDiagnosis(parse(finishSchema, request.body)));
+    const parsed = parse(finishSchema, request.body);
+    const nurse = await assertNurseForClinic(pool, parsed.assigned_nurse_id, visit.clinic_id);
+    const { assigned_nurse_id, ...encounterInput } = parsed;
+    const body = await applyRouteProcedures(pool, id, resolveDiagnosis(encounterInput));
     const client = await pool.connect();
     try {
       await client.query("BEGIN");
       await saveEncounter(client, id, body, request.user.sub);
+      if (body.investigations.length > 0) {
+        await materializeInvestigations(client, id, body.investigations, request.user.sub);
+      }
       const nextStatus = body.investigations.length > 0 ? "waiting_for_investigation" : "diagnosed";
+      const hasNursingPlan = body.medication_orders.length > 0
+        || body.procedure_orders.length > 0
+        || body.patient_advices.length > 0
+        || Boolean(body.management_plan?.trim());
       await client.query(
         `UPDATE patient_visits
-         SET status = $2, status_changed_at = now(), updated_at = now()
+         SET status = $2,
+             assigned_nurse_id = $3,
+             nursing_plan_status = CASE WHEN $4::boolean THEN 'ordered' ELSE nursing_plan_status END,
+             status_changed_at = now(),
+             updated_at = now()
          WHERE id = $1 AND deleted_at IS NULL AND status = 'to_doctor'`,
-        [id, nextStatus],
+        [id, nextStatus, assigned_nurse_id, hasNursingPlan],
       );
       await client.query(
-        `INSERT INTO patient_visit_status_history (visit_id, from_status, to_status, changed_by)
-         VALUES ($1, 'to_doctor', $2, $3)`,
-        [id, nextStatus, request.user.sub],
+        `INSERT INTO patient_visit_status_history (visit_id, from_status, to_status, changed_by, note)
+         VALUES ($1, 'to_doctor', $2, $3, $4)`,
+        [id, nextStatus, request.user.sub, `Assigned to nurse ${nurse.name}`],
       );
       await client.query("COMMIT");
     } catch (error) {
@@ -235,8 +256,11 @@ export function registerEncounters(app: FastifyInstance, pool: pg.Pool) {
     noteActivity(request, {
       entity: "patient",
       entityId: visit.patient_id,
-      summary: `Finished the clinical encounter for ${visit.patient_name}`,
-      changes: [changed("Status", "To see the doctor", body.investigations.length > 0 ? "Waiting for investigation" : "Diagnosed")].filter((item) => item !== null),
+      summary: `Finished the clinical encounter for ${visit.patient_name} and sent to ${nurse.name}`,
+      changes: [
+        changed("Status", "To see the doctor", body.investigations.length > 0 ? "Waiting for investigation" : "Diagnosed"),
+        changed("Nurse", null, nurse.name),
+      ].filter((item) => item !== null),
     });
     const finished = await loadCase(pool, request.user, id);
     return presentEncounter(pool, finished);
@@ -296,7 +320,7 @@ async function loadCase(pool: pg.Pool, user: { sub: string; type: string; role: 
   }
   if (!isUuid(id)) throw new ApplicationError(404, "not_found", "Case was not found");
   const found = await pool.query(
-    `SELECT v.id, v.patient_id, v.status, v.visit_type, v.currency, v.status_changed_at, v.hotel_room_no, v.clinic_id, v.assigned_doctor_id,
+    `SELECT v.id, v.patient_id, v.status, v.visit_type, v.currency, v.status_changed_at, v.hotel_room_no, v.clinic_id, v.assigned_doctor_id, v.assigned_nurse_id,
             c.name AS clinic_name, h.name AS hotel_name,
             p.name AS patient_name, p.mrn AS patient_mrn, p.gender AS patient_gender,
             p.nationality AS patient_nationality,
@@ -304,13 +328,14 @@ async function loadCase(pool: pg.Pool, user: { sub: string; type: string; role: 
             t.chief_complaint, t.temperature_c, t.pulse, t.respiratory_rate, t.spo2, t.blood_pressure,
             t.allergies, t.medications, t.relevant_history, t.relevant_history_items, t.relevant_history_other,
             t.initial_assessment, t.triage_category, t.completed_at AS triage_completed_at,
-            d.name AS assigned_doctor_name, n.name AS completed_by_name
+            d.name AS assigned_doctor_name, nurse.name AS assigned_nurse_name, n.name AS completed_by_name
      FROM patient_visits v
      JOIN clinics c ON c.id = v.clinic_id
      JOIN hotels h ON h.id = c.hotel_id
      JOIN patients p ON p.id = v.patient_id
      JOIN patient_visit_triages t ON t.visit_id = v.id
      LEFT JOIN users d ON d.id = v.assigned_doctor_id
+     LEFT JOIN users nurse ON nurse.id = v.assigned_nurse_id
      LEFT JOIN users n ON n.id = t.completed_by
      WHERE v.id = $1
        AND v.deleted_at IS NULL
@@ -342,8 +367,8 @@ function resolveDiagnosis(body: EncounterBody): EncounterBody {
   for (const item of body.provisional_diagnoses) {
     const code = item.code.toUpperCase();
     if (seen.has(code)) continue;
-    const title = icd10Title(code);
-    if (!title) throw new ApplicationError(422, "invalid_body", "provisional_diagnoses: Choose a valid ICD-10-CM code");
+    const title = icd11Title(code);
+    if (!title) throw new ApplicationError(422, "invalid_body", "provisional_diagnoses: Choose a valid ICD-11 code");
     seen.add(code);
     diagnoses.push({ code, title });
   }
@@ -710,9 +735,12 @@ async function presentEncounter(pool: pg.Pool, visit: CaseRow) {
      ORDER BY created_at ASC`,
     [visit.id],
   );
+  const finished = visit.status !== "to_doctor" || Boolean(row?.finished_at);
+  const tableInvestigations = finished ? await listVisitInvestigations(pool, visit.id) : [];
+  const encounter = row ? storedEncounter(row, tableInvestigations) : blankEncounter(visit);
   return {
     visit,
-    encounter: row ? storedEncounter(row) : blankEncounter(visit),
+    encounter,
     files: files.rows.map((file) => ({
       id: file.id,
       original_name: file.original_name,
@@ -721,11 +749,11 @@ async function presentEncounter(pool: pg.Pool, visit: CaseRow) {
       created_at: file.created_at,
     })),
     saved: Boolean(row),
-    finished: visit.status !== "to_doctor" || Boolean(row?.finished_at),
+    finished,
   };
 }
 
-function storedEncounter(row: Record<string, unknown>) {
+function storedEncounter(row: Record<string, unknown>, tableInvestigations: Awaited<ReturnType<typeof listVisitInvestigations>> = []) {
   const examination = (row.examination ?? {}) as {
     general_appearance?: string;
     consciousness?: string;
@@ -734,6 +762,10 @@ function storedEncounter(row: Record<string, unknown>) {
     findings?: string;
     notes?: Record<string, string>;
   };
+  const draftInvestigations = Array.isArray(row.investigations) ? row.investigations.flatMap((item) => {
+    const notice = presentInvestigation(item);
+    return notice ? [notice] : [];
+  }) : [];
   return {
     chief_complaint: text(row.chief_complaint),
     history_of_present_illness: text(row.history_of_present_illness),
@@ -756,10 +788,7 @@ function storedEncounter(row: Record<string, unknown>) {
     },
     provisional_diagnoses: presentDiagnoses(row),
     provisional_diagnosis: presentDiagnoses(row).length > 0 ? "" : text(row.provisional_diagnosis),
-    investigations: Array.isArray(row.investigations) ? row.investigations.flatMap((item) => {
-      const notice = presentInvestigation(item);
-      return notice ? [notice] : [];
-    }) : [],
+    investigations: tableInvestigations.length > 0 ? tableInvestigations : draftInvestigations,
     management_plan: text(row.management_plan),
     allergies: Array.isArray(row.allergies) ? row.allergies : [],
     medications: Array.isArray(row.medications) ? row.medications : [],
@@ -808,12 +837,12 @@ function presentDiagnoses(row: Record<string, unknown>) {
     if (item === null || typeof item !== "object") return [];
     const record = item as Record<string, unknown>;
     const code = typeof record.code === "string" ? record.code.trim().toUpperCase() : "";
-    const title = icd10Title(code) ?? (typeof record.title === "string" ? record.title.trim() : "");
+    const title = icd11Title(code) ?? (typeof record.title === "string" ? record.title.trim() : "");
     return code && title ? [{ code, title }] : [];
   });
   if (diagnoses.length > 0) return diagnoses;
   const code = text(row.provisional_diagnosis_code).toUpperCase();
-  const title = icd10Title(code);
+  const title = icd11Title(code);
   return code && title ? [{ code, title }] : [];
 }
 
