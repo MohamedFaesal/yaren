@@ -3,13 +3,9 @@ import type pg from "pg";
 import { ApplicationError } from "@yaren/shared-kernel";
 import { authenticate } from "../http.js";
 import {
-  investigationPriorities,
-  investigationStatuses,
   listVisitInvestigations,
   maybeCompleteVisitInvestigations,
   presentInvestigationRow,
-  type InvestigationPriority,
-  type InvestigationStatus,
 } from "../investigation-helpers.js";
 import { can, canList, loadAccess, workspaceClinicOptionsWhere } from "../permissions.js";
 import { removeUpload, saveInvestigationResult } from "../uploads.js";
@@ -23,114 +19,119 @@ export function registerInvestigations(app: FastifyInstance, pool: pg.Pool) {
     if (!canList(access, "triage") && !canList(access, "visit")) {
       throw new ApplicationError(403, "forbidden", "You cannot view investigations");
     }
-    const query = readListQuery(request.query);
+    const query = readVisitListQuery(request.query);
     const values: unknown[] = [];
-    const clauses = [`v.deleted_at IS NULL`, `p.deleted_at IS NULL`];
+    const baseClauses = [`v.deleted_at IS NULL`, `p.deleted_at IS NULL`];
     const workspace = workspaceClinicOptionsWhere(access);
     if (workspace && !workspace.allClinics) {
       values.push(workspace.params[0]);
-      clauses.push(`v.clinic_id = ANY($${values.length}::uuid[])`);
+      baseClauses.push(`v.clinic_id = ANY($${values.length}::uuid[])`);
     }
     if (query.clinicId) {
       values.push(query.clinicId);
-      clauses.push(`v.clinic_id = $${values.length}`);
-    }
-    if (query.status) {
-      values.push(query.status);
-      clauses.push(`i.status = $${values.length}`);
-    }
-    if (query.priority) {
-      values.push(query.priority);
-      clauses.push(`i.priority = $${values.length}`);
+      baseClauses.push(`v.clinic_id = $${values.length}`);
     }
     if (query.q) {
       const pattern = `%${escapeLike(query.q)}%`;
-      values.push(pattern, pattern, pattern, pattern);
-      const start = values.length - 3;
-      clauses.push(`(
+      values.push(pattern, pattern);
+      const start = values.length - 1;
+      baseClauses.push(`(
         p.name ILIKE $${start} ESCAPE '\\'
         OR p.mrn ILIKE $${start + 1} ESCAPE '\\'
-        OR i.name ILIKE $${start + 2} ESCAPE '\\'
-        OR COALESCE(i.code, '') ILIKE $${start + 3} ESCAPE '\\'
       )`);
     }
-    const where = `WHERE ${clauses.join(" AND ")}`;
-    const from = `
-      FROM patient_visit_investigations i
-      JOIN patient_visits v ON v.id = i.visit_id
-      JOIN clinics c ON c.id = v.clinic_id
-      JOIN hotels h ON h.id = c.hotel_id
-      JOIN patients p ON p.id = v.patient_id
-      LEFT JOIN users o ON o.id = i.ordered_by
-      LEFT JOIN users collector ON collector.id = i.collected_by
-      LEFT JOIN users sender ON sender.id = i.sent_by
-      LEFT JOIN users uploader ON uploader.id = i.result_uploaded_by
-      ${where}`;
-    const counted = await pool.query<{ total: number }>(`SELECT count(*)::int AS total ${from}`, values);
+    const baseWhere = baseClauses.join(" AND ");
+    const visitStatsCte = `
+      WITH visit_stats AS (
+        SELECT
+          v.id AS visit_id,
+          v.patient_id,
+          v.clinic_id,
+          v.hotel_room_no,
+          v.status AS visit_status,
+          c.name AS clinic_name,
+          h.name AS hotel_name,
+          p.name AS patient_name,
+          p.mrn AS patient_mrn,
+          p.gender AS patient_gender,
+          p.nationality AS patient_nationality,
+          EXTRACT(YEAR FROM age((v.created_at AT TIME ZONE 'UTC')::date, p.birthdate))::int AS patient_age_at_visit,
+          e.case_priority,
+          count(i.id)::int AS test_count,
+          count(*) FILTER (WHERE i.status = 'completed')::int AS completed_count,
+          count(*) FILTER (WHERE i.status IN ('ordered', 'collected'))::int AS early_count,
+          count(*) FILTER (WHERE i.status IN ('sent', 'result_uploaded'))::int AS sent_count,
+          min(i.ordered_at) AS ordered_at,
+          CASE
+            WHEN count(i.id) > 0 AND count(*) FILTER (WHERE i.status = 'completed') = count(i.id) THEN 'completed'
+            WHEN count(*) FILTER (WHERE i.status = 'completed') > 0
+              AND count(*) FILTER (WHERE i.status <> 'completed') > 0 THEN 'partially_completed'
+            WHEN count(*) FILTER (WHERE i.status IN ('ordered', 'collected')) = 0
+              AND count(*) FILTER (WHERE i.status = 'completed') = 0
+              AND count(*) FILTER (WHERE i.status IN ('sent', 'result_uploaded')) > 0 THEN 'sent'
+            ELSE 'other'
+          END AS overall_status
+        FROM patient_visits v
+        JOIN clinics c ON c.id = v.clinic_id
+        JOIN hotels h ON h.id = c.hotel_id
+        JOIN patients p ON p.id = v.patient_id
+        JOIN patient_visit_investigations i ON i.visit_id = v.id
+        LEFT JOIN patient_visit_encounters e ON e.visit_id = v.id
+        WHERE ${baseWhere}
+        GROUP BY v.id, v.patient_id, v.clinic_id, v.hotel_room_no, v.status, c.name, h.name,
+                 p.name, p.mrn, p.gender, p.nationality, p.birthdate, v.created_at, e.case_priority
+      )`;
+    const filterClause = query.overallStatus
+      ? `WHERE overall_status = $${values.length + 1}`
+      : "";
+    const filterValues = query.overallStatus ? [...values, query.overallStatus] : values;
+
+    const summaryResult = await pool.query<{ overall_status: string; count: number }>(
+      `${visitStatsCte}
+       SELECT overall_status, count(*)::int AS count
+       FROM visit_stats
+       GROUP BY overall_status`,
+      values,
+    );
+    const summary = {
+      all: 0,
+      sent: 0,
+      partially_completed: 0,
+      completed: 0,
+    };
+    for (const row of summaryResult.rows) {
+      summary.all += row.count;
+      if (row.overall_status === "sent") summary.sent = row.count;
+      if (row.overall_status === "partially_completed") summary.partially_completed = row.count;
+      if (row.overall_status === "completed") summary.completed = row.count;
+    }
+
+    const counted = await pool.query<{ total: number }>(
+      `${visitStatsCte}
+       SELECT count(*)::int AS total FROM visit_stats ${filterClause}`,
+      filterValues,
+    );
     const total = counted.rows[0]?.total ?? 0;
     const pages = Math.max(1, Math.ceil(total / query.pageSize));
     const page = Math.min(query.page, pages);
-    const summary = await pool.query<{ status: string; count: number }>(
-      `SELECT i.status, count(*)::int AS count
-       FROM patient_visit_investigations i
-       JOIN patient_visits v ON v.id = i.visit_id
-       JOIN patients p ON p.id = v.patient_id
-       WHERE v.deleted_at IS NULL AND p.deleted_at IS NULL
-         ${workspace && !workspace.allClinics ? `AND v.clinic_id = ANY($1::uuid[])` : ""}
-         ${query.clinicId ? `AND v.clinic_id = $${workspace && !workspace.allClinics ? 2 : 1}` : ""}
-       GROUP BY i.status`,
-      [
-        ...(workspace && !workspace.allClinics ? [workspace.params[0]] : []),
-        ...(query.clinicId ? [query.clinicId] : []),
-      ],
-    );
     const result = await pool.query(
-      `SELECT i.*,
-              v.patient_id, v.clinic_id, v.hotel_room_no, v.status AS visit_status, v.assigned_nurse_id,
-              c.name AS clinic_name, h.name AS hotel_name,
-              p.name AS patient_name, p.mrn AS patient_mrn, p.gender AS patient_gender, p.nationality AS patient_nationality,
-              EXTRACT(YEAR FROM age((v.created_at AT TIME ZONE 'UTC')::date, p.birthdate))::int AS patient_age_at_visit,
-              o.name AS ordered_by_name,
-              collector.name AS collected_by_name,
-              sender.name AS sent_by_name,
-              uploader.name AS result_uploaded_by_name
-       ${from}
+      `${visitStatsCte}
+       SELECT *
+       FROM visit_stats
+       ${filterClause}
        ORDER BY
-         CASE i.priority WHEN 'emergency' THEN 0 WHEN 'urgent' THEN 1 ELSE 2 END,
-         i.ordered_at DESC
-       LIMIT $${values.length + 1} OFFSET $${values.length + 2}`,
-      [...values, query.pageSize, (page - 1) * query.pageSize],
+         CASE case_priority WHEN 'emergency' THEN 0 WHEN 'urgent' THEN 1 WHEN 'stable' THEN 2 ELSE 3 END,
+         ordered_at DESC NULLS LAST
+       LIMIT $${filterValues.length + 1} OFFSET $${filterValues.length + 2}`,
+      [...filterValues, query.pageSize, (page - 1) * query.pageSize],
     );
-    const counts = {
-      ordered: 0,
-      collected: 0,
-      sent: 0,
-      result_uploaded: 0,
-      completed: 0,
-    };
-    for (const row of summary.rows) {
-      if (row.status in counts) counts[row.status as keyof typeof counts] = row.count;
-    }
+
     return {
-      items: result.rows.map((row) => ({
-        ...presentInvestigationRow(row as Record<string, unknown>),
-        visit_id: String((row as { visit_id: string }).visit_id),
-        patient_id: String((row as { patient_id: string }).patient_id),
-        clinic_id: String((row as { clinic_id: string }).clinic_id),
-        clinic_name: String((row as { clinic_name: string }).clinic_name),
-        hotel_name: String((row as { hotel_name: string }).hotel_name),
-        hotel_room_no: (row as { hotel_room_no: string | null }).hotel_room_no,
-        visit_status: String((row as { visit_status: string }).visit_status),
-        patient_name: String((row as { patient_name: string }).patient_name),
-        patient_mrn: String((row as { patient_mrn: string }).patient_mrn),
-        patient_gender: (row as { patient_gender: string | null }).patient_gender,
-        patient_nationality: (row as { patient_nationality: string | null }).patient_nationality,
-        patient_age_at_visit: (row as { patient_age_at_visit: number | null }).patient_age_at_visit,
-      })),
+      items: result.rows.map((row) => presentInvestigationVisit(row as Record<string, unknown>)),
       total,
       page,
       page_size: query.pageSize,
-      summary: counts,
+      summary,
     };
   });
 
@@ -175,6 +176,7 @@ export function registerInvestigations(app: FastifyInstance, pool: pg.Pool) {
               p.name AS patient_name, p.mrn AS patient_mrn, p.gender AS patient_gender, p.nationality AS patient_nationality,
               EXTRACT(YEAR FROM age((v.created_at AT TIME ZONE 'UTC')::date, p.birthdate))::int AS patient_age_at_visit,
               nurse.name AS assigned_nurse_name,
+              e.case_priority,
               (
                 SELECT i.priority
                 FROM patient_visit_investigations i
@@ -206,8 +208,10 @@ export function registerInvestigations(app: FastifyInstance, pool: pg.Pool) {
        JOIN hotels h ON h.id = c.hotel_id
        JOIN patients p ON p.id = v.patient_id
        LEFT JOIN users nurse ON nurse.id = v.assigned_nurse_id
+       LEFT JOIN patient_visit_encounters e ON e.visit_id = v.id
        ${where}
        ORDER BY
+         CASE e.case_priority WHEN 'emergency' THEN 0 WHEN 'urgent' THEN 1 WHEN 'stable' THEN 2 ELSE 3 END,
          CASE (
            SELECT i.priority FROM patient_visit_investigations i
            WHERE i.visit_id = v.id
@@ -217,7 +221,14 @@ export function registerInvestigations(app: FastifyInstance, pool: pg.Pool) {
          ordered_at ASC`,
       values,
     );
-    return { items: result.rows };
+    return {
+      items: result.rows.map((row) => ({
+        ...row,
+        case_priority: row.case_priority === "stable" || row.case_priority === "urgent" || row.case_priority === "emergency"
+          ? row.case_priority
+          : null,
+      })),
+    };
   });
 
   app.get("/api/patients/:patientId/visits/:visitId/investigations", { preHandler: authenticate }, async (request) => {
@@ -345,7 +356,8 @@ export function registerInvestigations(app: FastifyInstance, pool: pg.Pool) {
     const { id } = request.params as { id: string };
     const row = await loadInvestigation(pool, id);
     await assertResultUpload(pool, request, row);
-    if (row.status !== "sent" && row.status !== "result_uploaded") {
+    const replacing = Boolean(row.result_file_path) || row.status === "completed" || row.status === "result_uploaded";
+    if (row.status !== "sent" && row.status !== "result_uploaded" && row.status !== "completed") {
       throw new ApplicationError(422, "invalid_status", "Send the investigation to the lab before uploading a result");
     }
     const file = await request.file();
@@ -362,7 +374,7 @@ export function registerInvestigations(app: FastifyInstance, pool: pg.Pool) {
              result_mime_type = $4,
              result_uploaded_at = now(),
              result_uploaded_by = $5,
-             completed_at = now(),
+             completed_at = COALESCE(completed_at, now()),
              updated_at = now()
          WHERE id = $1`,
         [id, saved.path, saved.originalName, saved.mimeType, request.user.sub],
@@ -372,7 +384,7 @@ export function registerInvestigations(app: FastifyInstance, pool: pg.Pool) {
       noteActivity(request, {
         entity: "patient",
         entityId: row.patient_id,
-        summary: `Uploaded result for ${row.name} (${row.patient_name})`,
+        summary: `${replacing ? "Re-uploaded" : "Uploaded"} result for ${row.name} (${row.patient_name})`,
         changes: [
           changed("Investigation status", statusLabel(row.status), "Completed"),
           completedVisit ? changed("Status", "Waiting for investigation", "Diagnosed") : null,
@@ -392,10 +404,14 @@ export function registerInvestigations(app: FastifyInstance, pool: pg.Pool) {
 async function assertVisitAccess(
   pool: pg.Pool,
   request: { user: { sub: string; type: string; role: string } },
-  visit: { clinic_id: string; patient_added_by: string },
+  visit: { clinic_id: string; patient_added_by: string; assigned_doctor_id?: string | null },
 ) {
   const access = await loadAccess(pool, request.user);
-  const allowed = can(access, request.user.sub, {
+  const assignedDoctor = request.user.role === "Doctor" && visit.assigned_doctor_id === request.user.sub;
+  const allowed = assignedDoctor
+    || request.user.type === "super-admin"
+    || request.user.type === "admin"
+    || can(access, request.user.sub, {
     resource: "triage",
     action: "view",
     ownerId: visit.patient_added_by,
@@ -488,6 +504,7 @@ async function findVisit(pool: pg.Pool, patientId: string, visitId: string) {
   if (!isUuid(patientId) || !isUuid(visitId)) throw new ApplicationError(404, "not_found", "Visit was not found");
   const result = await pool.query(
     `SELECT v.id, v.patient_id, v.clinic_id, v.hotel_room_no, v.status, v.visit_type, v.assigned_nurse_id,
+            v.assigned_doctor_id,
             c.name AS clinic_name, h.name AS hotel_name,
             p.name AS patient_name, p.mrn AS patient_mrn, p.gender AS patient_gender, p.nationality AS patient_nationality,
             p.added_by AS patient_added_by,
@@ -507,6 +524,7 @@ async function findVisit(pool: pg.Pool, patientId: string, visitId: string) {
     status: string;
     visit_type: string;
     assigned_nurse_id: string | null;
+    assigned_doctor_id: string | null;
     clinic_name: string;
     hotel_name: string;
     patient_name: string;
@@ -541,34 +559,59 @@ async function findVisitById(pool: pg.Pool, visitId: string) {
   return row;
 }
 
-function readListQuery(query: unknown) {
+const visitOverallStatuses = ["sent", "partially_completed", "completed"] as const;
+type VisitOverallStatus = (typeof visitOverallStatuses)[number];
+
+function presentInvestigationVisit(row: Record<string, unknown>) {
+  const casePriority = row.case_priority === "stable" || row.case_priority === "urgent" || row.case_priority === "emergency"
+    ? row.case_priority
+    : null;
+  const overall = row.overall_status === "sent" || row.overall_status === "partially_completed" || row.overall_status === "completed"
+    ? row.overall_status
+    : "other";
+  return {
+    visit_id: String(row.visit_id),
+    patient_id: String(row.patient_id),
+    clinic_id: String(row.clinic_id),
+    hotel_room_no: typeof row.hotel_room_no === "string" ? row.hotel_room_no : null,
+    visit_status: String(row.visit_status),
+    clinic_name: String(row.clinic_name),
+    hotel_name: String(row.hotel_name),
+    patient_name: String(row.patient_name),
+    patient_mrn: String(row.patient_mrn),
+    patient_gender: typeof row.patient_gender === "string" ? row.patient_gender : null,
+    patient_nationality: typeof row.patient_nationality === "string" ? row.patient_nationality : null,
+    patient_age_at_visit: row.patient_age_at_visit == null ? null : Number(row.patient_age_at_visit),
+    case_priority: casePriority,
+    test_count: Number(row.test_count ?? 0),
+    overall_status: overall,
+    ordered_at: row.ordered_at ? new Date(String(row.ordered_at)).toISOString() : null,
+  };
+}
+
+function readVisitListQuery(query: unknown) {
   const source = query !== null && typeof query === "object" ? query as Record<string, unknown> : {};
   const text = (key: string) => (typeof source[key] === "string" ? source[key].trim() : "");
   const page = Number(text("page") || "1");
   const pageSize = Number(text("page_size") || "50");
   const q = text("q");
   const clinicId = text("clinic_id");
-  const status = text("status");
-  const priority = text("priority");
+  const overallStatus = text("overall_status") || text("status");
   if (!Number.isInteger(page) || page < 1) throw new ApplicationError(422, "invalid_query", "Page must be 1 or greater");
   if (!Number.isInteger(pageSize) || pageSize < 1 || pageSize > 100) {
     throw new ApplicationError(422, "invalid_query", "Page size must be between 1 and 100");
   }
   if (q.length > 200) throw new ApplicationError(422, "invalid_query", "Search is too long");
   if (clinicId && !isUuid(clinicId)) throw new ApplicationError(422, "invalid_query", "Unknown clinic");
-  if (status && !investigationStatuses.includes(status as InvestigationStatus)) {
+  if (overallStatus && !visitOverallStatuses.includes(overallStatus as VisitOverallStatus)) {
     throw new ApplicationError(422, "invalid_query", "Unknown status");
-  }
-  if (priority && !investigationPriorities.includes(priority as InvestigationPriority)) {
-    throw new ApplicationError(422, "invalid_query", "Unknown priority");
   }
   return {
     page,
     pageSize,
     q,
     clinicId: clinicId || null,
-    status: (status || null) as InvestigationStatus | null,
-    priority: (priority || null) as InvestigationPriority | null,
+    overallStatus: (overallStatus || null) as VisitOverallStatus | null,
   };
 }
 

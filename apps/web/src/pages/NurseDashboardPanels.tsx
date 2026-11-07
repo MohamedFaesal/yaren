@@ -1,6 +1,8 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import {
   api,
+  casePriorityClass,
+  casePriorityLabel,
   investigationPriorityClass,
   investigationPriorityLabel,
   investigationStatusClass,
@@ -10,9 +12,11 @@ import {
   nursingPlanStatusClass,
   nursingPlanStatusLabel,
   visitTypeLabel,
+  type CasePriority,
   type EncounterInvestigation,
   type InvestigationPriority,
   type MonitoringItem,
+  type MonitoringObservation,
   type MonitoringOrderedService,
   type NurseDashboardSummary,
   type NursingCareItem,
@@ -37,11 +41,11 @@ export function NurseSummaryTiles({
     { label: "Samples to Collect", value: summary.samples_to_collect, tone: "border-warning-line bg-warning-soft text-warning" },
   ];
   return (
-    <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+    <div className="grid grid-cols-2 gap-2 sm:gap-3 lg:grid-cols-5">
       {tiles.map((tile) => (
-        <article key={tile.label} className={`rounded-2xl border px-4 py-4 shadow-card ${tile.tone}`}>
-          <p className="text-xs font-semibold uppercase tracking-wide opacity-80">{tile.label}</p>
-          <p className="mt-2 text-3xl font-bold tabular-nums">{loading ? "—" : tile.value}</p>
+        <article key={tile.label} className={`rounded-2xl border px-3 py-3 shadow-card sm:px-4 sm:py-4 ${tile.tone} ${tile.label === "Samples to Collect" ? "col-span-2 lg:col-span-1" : ""}`}>
+          <p className="text-[10px] font-semibold uppercase tracking-wide opacity-80 sm:text-xs">{tile.label}</p>
+          <p className="mt-1.5 text-2xl font-bold tabular-nums sm:mt-2 sm:text-3xl">{loading ? "—" : tile.value}</p>
         </article>
       ))}
     </div>
@@ -62,10 +66,10 @@ export function NursingTasksPanel({
   onViewPlan: (item: NursingCareItem) => void;
 }) {
   return (
-    <section className="rounded-2xl border border-line bg-surface p-4 shadow-card">
+    <section className="rounded-2xl border border-line bg-surface p-3 shadow-card sm:p-4">
       <div className="mb-3 flex items-center gap-2">
-        <span className="grid h-8 w-8 place-items-center rounded-lg bg-panel text-blue"><CareIcon /></span>
-        <div>
+        <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-panel text-blue"><CareIcon /></span>
+        <div className="min-w-0">
           <h2 className="text-sm font-semibold text-ink">Nursing Tasks & Ongoing Care</h2>
           <p className="text-xs text-muted">{loading ? "Loading" : `${items.length} patient${items.length === 1 ? "" : "s"}`}</p>
         </div>
@@ -73,48 +77,35 @@ export function NursingTasksPanel({
       {items.length === 0 ? (
         <p className="px-2 py-8 text-center text-sm text-muted">{loading ? "Loading nursing tasks…" : "No patients under nursing care."}</p>
       ) : (
-        <div className="overflow-x-auto">
-          <table className="min-w-full text-left text-sm">
-            <thead>
-              <tr className="border-b border-line text-[11px] font-semibold uppercase tracking-wide text-muted">
-                <th className="px-2 py-2">Patient</th>
-                <th className="px-2 py-2">Order Time</th>
-                <th className="px-2 py-2">Elapsed</th>
-                <th className="px-2 py-2">Status</th>
-                <th className="px-2 py-2">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {items.map((item) => {
-                const elapsed = item.order_time ? Math.max(0, now - new Date(item.order_time).getTime()) : 0;
-                return (
-                  <tr key={item.visit_id} className="border-b border-line-soft last:border-0">
-                    <td className="px-2 py-3">
-                      <p className="font-semibold text-ink">{item.patient_name}</p>
-                      <p className="text-xs text-muted">{item.patient_mrn}</p>
-                    </td>
-                    <td className="px-2 py-3 text-muted">{item.order_time ? formatClock(item.order_time) : "—"}</td>
-                    <td className="px-2 py-3 font-mono text-sm tabular-nums text-ink">{clockLabel(elapsed)}</td>
-                    <td className="px-2 py-3">
-                      <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${nursingPlanStatusClass(item.nursing_plan_status)}`}>
-                        {nursingPlanStatusLabel(item.nursing_plan_status)}
-                      </span>
-                    </td>
-                    <td className="px-2 py-3">
-                      <button
-                        type="button"
-                        className={`${secondary} h-8 px-3 text-xs`}
-                        disabled={busyId === item.visit_id}
-                        onClick={() => onViewPlan(item)}
-                      >
-                        View management plan
-                      </button>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+        <div className="space-y-2">
+          {items.map((item) => {
+            const elapsed = item.order_time ? Math.max(0, now - new Date(item.order_time).getTime()) : 0;
+            return (
+              <article key={item.visit_id} className="rounded-xl border border-line-soft bg-surface-2/40 p-3">
+                <div className="flex flex-wrap items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <p className="font-semibold text-ink">{item.patient_name}</p>
+                    <p className="text-xs text-muted">{item.patient_mrn}</p>
+                  </div>
+                  <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${nursingPlanStatusClass(item.nursing_plan_status)}`}>
+                    {nursingPlanStatusLabel(item.nursing_plan_status)}
+                  </span>
+                </div>
+                <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-strong">
+                  <span>Ordered {item.order_time ? formatClock(item.order_time) : "—"}</span>
+                  <span className="font-mono tabular-nums text-ink">{clockLabel(elapsed)}</span>
+                </div>
+                <button
+                  type="button"
+                  className={`${secondary} mt-3 h-9 w-full px-3 text-xs sm:w-auto`}
+                  disabled={busyId === item.visit_id}
+                  onClick={() => onViewPlan(item)}
+                >
+                  View management plan
+                </button>
+              </article>
+            );
+          })}
         </div>
       )}
     </section>
@@ -137,10 +128,10 @@ export function SampleCollectionCard({
   onSend: (item: SampleCollectionItem) => void;
 }) {
   return (
-    <section className="rounded-2xl border border-line bg-surface p-4 shadow-card">
+    <section className="rounded-2xl border border-line bg-surface p-3 shadow-card sm:p-4">
       <div className="mb-3 flex items-center gap-2">
-        <span className="grid h-8 w-8 place-items-center rounded-lg bg-warning-soft text-warning"><SampleIcon /></span>
-        <div>
+        <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-warning-soft text-warning"><SampleIcon /></span>
+        <div className="min-w-0">
           <h2 className="text-sm font-semibold text-ink">Sample Collection</h2>
           <p className="text-xs text-muted">{loading ? "Loading" : `${items.length} patient${items.length === 1 ? "" : "s"}`}</p>
         </div>
@@ -148,64 +139,45 @@ export function SampleCollectionCard({
       {items.length === 0 ? (
         <p className="px-2 py-8 text-center text-sm text-muted">{loading ? "Loading samples…" : "No samples waiting."}</p>
       ) : (
-        <div className="overflow-x-auto">
-          <table className="min-w-full text-left text-sm">
-            <thead>
-              <tr className="border-b border-line text-[11px] font-semibold uppercase tracking-wide text-muted">
-                <th className="px-2 py-2">Patient</th>
-                <th className="px-2 py-2">Priority</th>
-                <th className="px-2 py-2">Tests</th>
-                <th className="px-2 py-2">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {items.map((item) => (
-                <tr key={item.visit_id} className="border-b border-line-soft last:border-0">
-                  <td className="px-2 py-3">
-                    <p className="font-semibold text-ink">{item.patient_name}</p>
-                    <p className="text-xs text-muted">{item.patient_mrn} · Room {item.hotel_room_no || "—"}</p>
-                  </td>
-                  <td className="px-2 py-3">
-                    <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${investigationPriorityClass(item.highest_priority)}`}>
-                      {investigationPriorityLabel(item.highest_priority)}
-                    </span>
-                  </td>
-                  <td className="px-2 py-3">
-                    <button type="button" className={`${secondary} h-8 px-3 text-xs`} onClick={() => onViewTests(item)}>
-                      View tests ordered
-                    </button>
-                  </td>
-                  <td className="px-2 py-3">
-                    <div className="flex flex-wrap gap-2">
-                      {item.collectable_count > 0 ? (
-                        <button
-                          type="button"
-                          className={`${secondary} h-8 px-3 text-xs`}
-                          disabled={busyId === `${item.visit_id}:collect` || busyId === `${item.visit_id}:send`}
-                          onClick={() => onCollect(item)}
-                        >
-                          {busyId === `${item.visit_id}:collect` ? "Collecting…" : "Mark as Collected"}
-                        </button>
-                      ) : null}
-                      {item.sendable_count > 0 ? (
-                        <button
-                          type="button"
-                          className={`${primary} h-8 px-3 text-xs`}
-                          disabled={busyId === `${item.visit_id}:collect` || busyId === `${item.visit_id}:send`}
-                          onClick={() => onSend(item)}
-                        >
-                          {busyId === `${item.visit_id}:send` ? "Sending…" : "Send to Lab"}
-                        </button>
-                      ) : null}
-                      {item.collectable_count === 0 && item.sendable_count === 0 ? (
-                        <span className="text-xs text-muted">—</span>
-                      ) : null}
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+        <div className="space-y-2">
+          {items.map((item) => (
+            <article key={item.visit_id} className="rounded-xl border border-line-soft bg-surface-2/40 p-3">
+              <div className="flex flex-wrap items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <p className="font-semibold text-ink">{item.patient_name}</p>
+                  <p className="text-xs text-muted">{item.patient_mrn} · Room {item.hotel_room_no || "—"}</p>
+                </div>
+                <span className={`inline-flex rounded-full border px-2.5 py-1 text-xs font-semibold ${casePriorityClass(item.case_priority)}`}>
+                  {casePriorityLabel(item.case_priority)}
+                </span>
+              </div>
+              <div className="mt-3 grid gap-2">
+                <button type="button" className={`${secondary} h-9 w-full px-3 text-xs`} onClick={() => onViewTests(item)}>
+                  View tests ordered
+                </button>
+                {item.collectable_count > 0 ? (
+                  <button
+                    type="button"
+                    className={`${secondary} h-9 w-full px-3 text-xs`}
+                    disabled={busyId === `${item.visit_id}:collect` || busyId === `${item.visit_id}:send`}
+                    onClick={() => onCollect(item)}
+                  >
+                    {busyId === `${item.visit_id}:collect` ? "Collecting…" : "Mark as Collected"}
+                  </button>
+                ) : null}
+                {item.sendable_count > 0 ? (
+                  <button
+                    type="button"
+                    className={`${primary} h-9 w-full px-3 text-xs`}
+                    disabled={busyId === `${item.visit_id}:collect` || busyId === `${item.visit_id}:send`}
+                    onClick={() => onSend(item)}
+                  >
+                    {busyId === `${item.visit_id}:send` ? "Sending…" : "Send to Lab"}
+                  </button>
+                ) : null}
+              </div>
+            </article>
+          ))}
         </div>
       )}
     </section>
@@ -215,17 +187,22 @@ export function SampleCollectionCard({
 export function MonitoringPanel({
   items,
   loading,
+  busyId,
   onRecord,
+  onComplete,
 }: {
   items: MonitoringItem[];
   loading?: boolean;
+  busyId?: string | null;
   onRecord: (item: MonitoringItem) => void;
+  onComplete: (item: MonitoringItem) => void;
 }) {
+  const [viewing, setViewing] = useState<MonitoringItem | null>(null);
   return (
-    <section className="rounded-2xl border border-line bg-surface p-4 shadow-card">
+    <section className="rounded-2xl border border-line bg-surface p-3 shadow-card sm:p-4">
       <div className="mb-3 flex items-center gap-2">
-        <span className="grid h-8 w-8 place-items-center rounded-lg bg-panel text-blue"><MonitorIcon /></span>
-        <div>
+        <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-panel text-blue"><MonitorIcon /></span>
+        <div className="min-w-0">
           <h2 className="text-sm font-semibold text-ink">Monitoring / Observations</h2>
           <p className="text-xs text-muted">{loading ? "Loading" : `${items.length} patient${items.length === 1 ? "" : "s"}`}</p>
         </div>
@@ -233,48 +210,168 @@ export function MonitoringPanel({
       {items.length === 0 ? (
         <p className="px-2 py-8 text-center text-sm text-muted">{loading ? "Loading monitoring…" : "No patients in monitoring."}</p>
       ) : (
-        <div className="overflow-x-auto">
-          <table className="min-w-full text-left text-sm">
-            <thead>
-              <tr className="border-b border-line text-[11px] font-semibold uppercase tracking-wide text-muted">
-                <th className="px-2 py-2">Patient</th>
-                <th className="px-2 py-2">Ordered services</th>
-                <th className="px-2 py-2">Status</th>
-                <th className="px-2 py-2">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {items.map((item) => (
-                <tr key={item.visit_id} className="border-b border-line-soft last:border-0 align-top">
-                  <td className="px-2 py-3">
-                    <p className="font-semibold text-ink">{item.patient_name}</p>
-                    <p className="text-xs text-muted">{item.patient_mrn}</p>
-                  </td>
-                  <td className="px-2 py-3">
-                    <OrderedServicesList services={item.ordered_services} />
-                  </td>
-                  <td className="px-2 py-3">
-                    <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${monitoringStatusClass(item.monitoring_status)}`}>
-                      {monitoringStatusLabel(item.monitoring_status)}
-                    </span>
-                  </td>
-                  <td className="px-2 py-3">
-                    {item.monitoring_status === "in_progress" ? (
-                      <button type="button" className={`${primary} h-8 px-3 text-xs`} onClick={() => onRecord(item)}>
-                        Record
-                      </button>
-                    ) : (
-                      <span className="text-xs text-muted">Done</span>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+        <div className="space-y-2">
+          {items.map((item) => {
+            const serviceCount = item.ordered_services.length;
+            const completing = busyId === `${item.visit_id}:complete`;
+            return (
+              <article key={item.visit_id} className="rounded-xl border border-line-soft bg-surface-2/40 p-3">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate font-semibold text-ink">{item.patient_name}</p>
+                    <p className="truncate text-xs text-muted">
+                      {item.patient_mrn}
+                      {serviceCount > 0 ? ` · ${serviceCount} service${serviceCount === 1 ? "" : "s"}` : " · No services"}
+                    </p>
+                  </div>
+                  <span className={`inline-flex shrink-0 rounded-full px-2.5 py-1 text-xs font-semibold ${monitoringStatusClass(item.monitoring_status)}`}>
+                    {monitoringStatusLabel(item.monitoring_status)}
+                  </span>
+                </div>
+                <div className="mt-2">
+                  <PatientPriorityBanner priority={item.case_priority} compact />
+                </div>
+                {item.monitoring_status === "in_progress" ? (
+                  <div className="mt-2.5 grid gap-2">
+                    <button type="button" className={`${secondary} h-9 w-full px-3 text-xs`} onClick={() => setViewing(item)}>
+                      {recordLabel(item.observations?.length ?? 0)}
+                    </button>
+                    <button type="button" className={`${primary} h-9 w-full px-3 text-xs`} disabled={completing} onClick={() => onRecord(item)}>
+                      Record
+                    </button>
+                    <button
+                      type="button"
+                      className={`${secondary} h-9 w-full px-3 text-xs`}
+                      disabled={completing}
+                      onClick={() => onComplete(item)}
+                    >
+                      {completing ? "Completing…" : "Complete"}
+                    </button>
+                  </div>
+                ) : (
+                  <div className="mt-2.5 grid gap-2">
+                    <button type="button" className={`${secondary} h-9 w-full px-3 text-xs`} onClick={() => setViewing(item)}>
+                      {recordLabel(item.observations?.length ?? 0)}
+                    </button>
+                    <p className="text-center text-xs text-muted">Done</p>
+                  </div>
+                )}
+              </article>
+            );
+          })}
         </div>
       )}
+      {viewing ? <MonitoringRecordsModal item={viewing} onClose={() => setViewing(null)} /> : null}
     </section>
   );
+}
+
+function recordLabel(count: number) {
+  if (count === 0) return "View records";
+  return count === 1 ? "View 1 record" : `View ${count} records`;
+}
+
+function MonitoringRecordsModal({ item, onClose }: { item: MonitoringItem; onClose: () => void }) {
+  const records = item.observations ?? [];
+  return (
+    <ModalShell
+      title="Monitoring records"
+      onClose={onClose}
+      wide
+      footer={<button type="button" className={`${secondary} w-full sm:w-auto`} onClick={onClose}>Close</button>}
+    >
+      <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_16rem] lg:items-start">
+        <PatientHero
+          name={item.patient_name}
+          mrn={item.patient_mrn}
+          age={item.patient_age_at_visit}
+          gender={item.patient_gender}
+          nationality={item.patient_nationality}
+          room={item.hotel_room_no}
+          clinicName={item.clinic_name}
+        />
+        <PatientPriorityBanner priority={item.case_priority} compact />
+      </div>
+      {records.length === 0 ? (
+        <p className="mt-4 text-sm text-muted">No readings recorded yet.</p>
+      ) : (
+        <ul className="mt-4 space-y-3">
+          {records.map((row, index) => (
+            <ReadingCard key={row.id} row={row} latest={index === 0} />
+          ))}
+        </ul>
+      )}
+    </ModalShell>
+  );
+}
+
+function ReadingCard({ row, latest = false, compact = false }: { row: MonitoringObservation; latest?: boolean; compact?: boolean }) {
+  return (
+    <li className="rounded-2xl border border-line bg-canvas p-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-sm font-bold text-ink">{row.recorded_at ? formatWhen(row.recorded_at) : "—"}</p>
+        <span className="flex items-center gap-1.5">
+          {latest ? <span className="rounded-full bg-blue px-2 py-0.5 text-[11px] font-semibold text-white">Latest</span> : null}
+          <span className="rounded-full bg-success-soft px-2 py-0.5 text-[11px] font-semibold text-success">{row.recorded_by_name?.trim() || "Nurse"}</span>
+        </span>
+      </div>
+      <dl className={`mt-3 grid gap-2 ${compact ? "grid-cols-2" : "grid-cols-2 sm:grid-cols-5"}`}>
+        <ReadingVital tone="temp" label="Temp" value={row.temperature_c == null ? "—" : `${row.temperature_c} °C`} alert={outOfRange("temp", row.temperature_c)} />
+        <ReadingVital tone="pulse" label="Pulse" value={row.pulse == null ? "—" : `${row.pulse} /min`} alert={outOfRange("pulse", row.pulse)} />
+        <ReadingVital tone="bp" label="BP" value={row.blood_pressure?.trim() ? `${row.blood_pressure}` : "—"} alert={outOfRangePressure(row.blood_pressure)} />
+        <ReadingVital tone="rr" label="RR" value={row.respiratory_rate == null ? "—" : `${row.respiratory_rate} /min`} alert={outOfRange("rr", row.respiratory_rate)} />
+        <ReadingVital tone="spo2" label="SpO2" value={row.spo2 == null ? "—" : `${row.spo2}%`} alert={outOfRange("spo2", row.spo2)} />
+      </dl>
+      {row.notes.trim() ? <p className="mt-2 whitespace-pre-wrap rounded-xl bg-surface px-3 py-2 text-sm text-ink">{row.notes}</p> : null}
+    </li>
+  );
+}
+
+function ReadingVital({
+  tone,
+  label,
+  value,
+  alert,
+}: {
+  tone: "temp" | "pulse" | "bp" | "rr" | "spo2";
+  label: string;
+  value: string;
+  alert?: boolean;
+}) {
+  const palette = alert
+    ? "bg-danger-soft text-danger ring-1 ring-danger-line"
+    : tone === "temp"
+      ? "bg-warning-soft text-warning"
+      : tone === "pulse"
+        ? "bg-panel text-blue"
+        : tone === "bp"
+          ? "bg-surface text-warning ring-1 ring-gold"
+          : tone === "rr"
+            ? "bg-success-soft text-success"
+            : "bg-panel-strong text-blue-strong";
+  return (
+    <div className={`rounded-xl px-2.5 py-2 ${palette}`}>
+      <dt className="text-[10px] font-bold uppercase tracking-wide">{label}</dt>
+      <dd className={`mt-0.5 text-sm font-bold ${alert ? "text-danger" : "text-ink"}`}>{value}</dd>
+    </div>
+  );
+}
+
+function outOfRange(kind: "temp" | "pulse" | "rr" | "spo2", value: number | null) {
+  if (value == null || !Number.isFinite(value)) return false;
+  if (kind === "temp") return value >= 38;
+  if (kind === "pulse") return value >= 100;
+  if (kind === "rr") return value >= 22;
+  return value < 94;
+}
+
+function outOfRangePressure(value: string | null) {
+  if (!value) return false;
+  const match = value.match(/(\d+)\s*\/\s*(\d+)/);
+  if (!match) return false;
+  const systolic = Number(match[1]);
+  const diastolic = Number(match[2]);
+  return systolic >= 140 || diastolic >= 90 || systolic < 90;
 }
 
 export function TestsOrderedModal({
@@ -316,6 +413,66 @@ export function TestsOrderedModal({
     };
   }, [token, item.patient_id, item.visit_id, item.collectable_count, item.sendable_count]);
 
+  function printOrderedTests() {
+    const popup = window.open("", "_blank", "width=800,height=900");
+    if (!popup) return;
+    const patientLine = [
+      item.patient_age_at_visit != null ? `${item.patient_age_at_visit} years` : null,
+      item.patient_gender === "male" ? "Male" : item.patient_gender === "female" ? "Female" : null,
+      item.patient_nationality,
+    ].filter(Boolean).join(" · ");
+    const rows = items.map((row, index) => `
+      <tr>
+        <td>${index + 1}</td>
+        <td class="code">${escapeHtml(row.code || "—")}</td>
+        <td>${escapeHtml(row.name)}</td>
+        <td>${escapeHtml(investigationPriorityLabel(row.priority))}</td>
+        <td>${escapeHtml(investigationStatusLabel(row.status))}</td>
+        <td>${escapeHtml(row.ordered_at ? formatWhen(row.ordered_at) : "—")}</td>
+      </tr>
+    `).join("");
+    popup.document.open();
+    popup.document.write(`<!DOCTYPE html>
+      <html lang="en">
+        <head>
+          <meta charset="utf-8" />
+          <title>Tests ordered ${escapeHtml(item.patient_name)}</title>
+          <style>
+            body { margin: 24px; color: #12263a; font: 14px/1.45 Inter, ui-sans-serif, system-ui, sans-serif; }
+            h1 { margin: 4px 0 0; font-size: 22px; }
+            .eyebrow { margin: 0; color: #0f7f91; font-size: 11px; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; }
+            table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+            th, td { border: 1px solid #d0dbe1; padding: 8px 10px; text-align: left; vertical-align: top; }
+            th { background: #f4f7f8; font-size: 11px; letter-spacing: 0.04em; text-transform: uppercase; }
+            .facts { margin-top: 16px; }
+            .facts td { width: 50%; }
+            .label { display: block; color: #6b7f8f; font-size: 11px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; }
+            .code { font-family: ui-monospace, monospace; font-weight: 700; white-space: nowrap; }
+          </style>
+        </head>
+        <body>
+          <p class="eyebrow">Yaren Healthcare</p>
+          <h1>Tests ordered</h1>
+          <table class="facts">
+            <tr>
+              <td><span class="label">Patient</span>${escapeHtml(item.patient_name)}<br />${escapeHtml(item.patient_mrn)}${patientLine ? ` / ${escapeHtml(patientLine)}` : ""}</td>
+              <td><span class="label">Clinic</span>${escapeHtml(item.clinic_name)}<br />Room ${escapeHtml(item.hotel_room_no || "—")}</td>
+            </tr>
+            <tr>
+              <td><span class="label">Patient priority</span>${escapeHtml(casePriorityLabel(item.case_priority))}</td>
+              <td><span class="label">Printed</span>${escapeHtml(formatWhen(new Date().toISOString()))}</td>
+            </tr>
+          </table>
+          <table>
+            <thead><tr><th>#</th><th>Code</th><th>Test</th><th>Priority</th><th>Status</th><th>Ordered</th></tr></thead>
+            <tbody>${rows}</tbody>
+          </table>
+          <script>window.addEventListener("load", function () { window.focus(); window.print(); });</script>
+        </body>
+      </html>`);
+    popup.document.close();
+  }
+
   return (
     <ModalShell
       title="Tests Ordered"
@@ -325,6 +482,10 @@ export function TestsOrderedModal({
         <>
           <button type="button" className={`${secondary} w-full sm:w-auto`} disabled={collectBusy || sendBusy} onClick={onClose}>
             Close
+          </button>
+          <button type="button" className={`${secondary} w-full gap-1.5 sm:w-auto`} disabled={loading || items.length === 0} onClick={printOrderedTests}>
+            <PrintIcon />
+            Print
           </button>
           {item.collectable_count > 0 ? (
             <button
@@ -357,11 +518,11 @@ export function TestsOrderedModal({
         nationality={item.patient_nationality}
         room={item.hotel_room_no}
         clinicName={item.clinic_name}
-        priority={item.highest_priority}
+        casePriority={item.case_priority}
       />
       {error ? <p className="mt-4 text-sm text-danger">{error}</p> : null}
-      <div className="mt-4 overflow-x-auto rounded-xl border border-line">
-        <table className="min-w-full text-left text-sm">
+      <div className="mt-4 -mx-1 overflow-x-auto rounded-xl border border-line sm:mx-0">
+        <table className="min-w-[36rem] w-full text-left text-sm">
           <thead>
             <tr className="bg-panel text-[11px] font-semibold uppercase tracking-wide text-blue">
               <th className="px-3 py-2.5">#</th>
@@ -463,9 +624,14 @@ export function ManagementPlanModal({
     }
   }
 
-  const priority = detail?.visit.triage_category === "emergency" || detail?.visit.triage_category === "urgent"
-    ? detail.visit.triage_category
-    : "normal";
+  const casePriority = detail?.visit.case_priority ?? null;
+  const priorityTone = casePriority === "emergency"
+    ? "bg-danger-soft border-danger-line text-danger"
+    : casePriority === "urgent"
+      ? "bg-warning-soft border-warning-line text-warning"
+      : casePriority === "stable"
+        ? "bg-success-soft border-success/20 text-success"
+        : "bg-surface-2 border-line text-muted-strong";
 
   const canStart = detail?.visit.nursing_plan_status === "ordered" || detail?.visit.nursing_plan_status === "in_progress";
   const canMonitor = detail != null && detail.visit.monitoring_status !== "completed";
@@ -520,6 +686,7 @@ export function ManagementPlanModal({
             room={detail.visit.hotel_room_no}
             clinicName={detail.visit.clinic_name}
             visitType={visitTypeLabel(detail.visit.visit_type)}
+            casePriority={casePriority}
           />
           <div className="mt-4 space-y-3">
             <PlanSection title="Diagnosis" tone="bg-panel border-panel-strong text-blue">
@@ -528,14 +695,18 @@ export function ManagementPlanModal({
               ) : (
                 <ul className="list-disc space-y-1 pl-5 text-sm text-ink">
                   {detail.plan.provisional_diagnoses.map((row) => (
-                    <li key={row.code}><span className="font-mono text-xs text-blue">{row.code}</span> {row.title}</li>
+                    <li key={row.id || `${row.code}:${row.title}`}>
+                      {row.source === "icd11" && row.code ? <span className="font-mono text-xs text-blue">{row.code} </span> : null}
+                      {row.title}
+                      {row.source === "free_text" ? <span className="text-xs text-muted"> (Free Diagnose)</span> : null}
+                    </li>
                   ))}
                 </ul>
               )}
             </PlanSection>
-            <PlanSection title="Priority" tone="bg-danger-soft border-danger-line text-danger">
-              <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${investigationPriorityClass(priority === "emergency" ? "emergency" : priority === "urgent" ? "urgent" : "normal")}`}>
-                {priority === "emergency" ? "Emergency" : priority === "urgent" ? "Urgent" : "Normal"}
+            <PlanSection title="Patient Priority" tone={priorityTone}>
+              <span className={`inline-flex rounded-full border px-2.5 py-1 text-xs font-semibold ${casePriorityClass(casePriority)}`}>
+                {casePriorityLabel(casePriority)}
               </span>
             </PlanSection>
             <PlanSection title="Medication Orders" tone="bg-warning-soft border-warning-line text-warning">
@@ -587,11 +758,13 @@ export function RecordMonitoringModal({
   item,
   onClose,
   onSaved,
+  onCompleted,
 }: {
   token: string;
   item: MonitoringItem;
   onClose: () => void;
   onSaved: () => void;
+  onCompleted: () => void;
 }) {
   const toast = useToast();
   const [temperature, setTemperature] = useState("36.8");
@@ -602,6 +775,39 @@ export function RecordMonitoringModal({
   const [spo2, setSpo2] = useState("");
   const [notes, setNotes] = useState("");
   const [pending, setPending] = useState(false);
+  const [completing, setCompleting] = useState(false);
+  const [history, setHistory] = useState<MonitoringObservation[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(true);
+
+  async function loadHistory() {
+    setHistoryLoading(true);
+    try {
+      const data = await api<{ items: MonitoringObservation[] }>(
+        `/api/patients/${item.patient_id}/visits/${item.visit_id}/monitoring/observations`,
+        {},
+        token,
+      );
+      setHistory(data.items);
+    } catch (caught) {
+      toast.error("Could not load history", messageOf(caught));
+    } finally {
+      setHistoryLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    void loadHistory();
+  }, [token, item.patient_id, item.visit_id]);
+
+  function clearForm() {
+    setTemperature("36.8");
+    setPulse("");
+    setSystolic("");
+    setDiastolic("");
+    setRespiratory("");
+    setSpo2("");
+    setNotes("");
+  }
 
   async function submit(event: FormEvent) {
     event.preventDefault();
@@ -619,15 +825,33 @@ export function RecordMonitoringModal({
           notes,
         }),
       }, token);
-      toast.success("Sent to the doctor", `Monitoring recorded for ${item.patient_name}.`);
+      toast.success("Observation saved", `Reading recorded for ${item.patient_name}.`);
+      clearForm();
+      await loadHistory();
       onSaved();
-      onClose();
     } catch (caught) {
       toast.error("Could not save", messageOf(caught));
     } finally {
       setPending(false);
     }
   }
+
+  async function completeMonitoring() {
+    setCompleting(true);
+    try {
+      await api(`/api/patients/${item.patient_id}/visits/${item.visit_id}/monitoring/complete`, { method: "POST" }, token);
+      toast.success("Monitoring completed", `${item.patient_name} is done with observations.`);
+      onCompleted();
+      onClose();
+    } catch (caught) {
+      toast.error("Could not complete", messageOf(caught));
+    } finally {
+      setCompleting(false);
+    }
+  }
+
+  const busy = pending || completing;
+  const canComplete = history.length > 0;
 
   return (
     <ModalShell
@@ -636,57 +860,89 @@ export function RecordMonitoringModal({
       wide
       footer={
         <>
-          <button type="button" className={`${secondary} w-full sm:w-auto`} disabled={pending} onClick={onClose}>
+          <button type="button" className={`${secondary} w-full sm:w-auto`} disabled={busy} onClick={onClose}>
             Close
           </button>
-          <button type="submit" form="record-monitoring-form" className={`${primary} w-full sm:w-auto`} disabled={pending}>
-            {pending ? "Saving…" : "Save and Send to the Doctor"}
+          <button
+            type="button"
+            className={`${secondary} w-full sm:w-auto`}
+            disabled={busy || !canComplete}
+            onClick={() => void completeMonitoring()}
+          >
+            {completing ? "Completing…" : "Complete monitoring"}
+          </button>
+          <button type="submit" form="record-monitoring-form" className={`${primary} w-full sm:w-auto`} disabled={busy}>
+            {pending ? "Saving…" : "Save Observation"}
           </button>
         </>
       }
     >
-      <PatientHero
-        name={item.patient_name}
-        mrn={item.patient_mrn}
-        age={item.patient_age_at_visit}
-        gender={item.patient_gender}
-        nationality={item.patient_nationality}
-        room={item.hotel_room_no}
-        clinicName={item.clinic_name}
-      />
-      <div className="mt-4 rounded-xl border border-panel-strong bg-panel px-4 py-3">
-        <p className="text-xs font-semibold uppercase tracking-wide text-blue">Ordered from management plan</p>
-        <div className="mt-2">
-          <OrderedServicesList services={item.ordered_services} empty="No management plan services ordered for monitoring." />
+      <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_16rem] lg:items-start">
+        <PatientHero
+          name={item.patient_name}
+          mrn={item.patient_mrn}
+          age={item.patient_age_at_visit}
+          gender={item.patient_gender}
+          nationality={item.patient_nationality}
+          room={item.hotel_room_no}
+          clinicName={item.clinic_name}
+        />
+        <PatientPriorityBanner priority={item.case_priority} compact />
+      </div>
+      <div className="mt-4 grid gap-4 lg:grid-cols-[minmax(0,1.2fr)_minmax(16rem,0.8fr)] lg:items-start">
+        <form id="record-monitoring-form" className="rounded-2xl border border-line bg-canvas p-3 sm:p-4" onSubmit={(event) => void submit(event)}>
+          <h3 className="text-sm font-bold text-ink">New reading</h3>
+          <div className="mt-3 grid gap-2 sm:grid-cols-2">
+            <VitalField tone="temp" label="Temperature" unit="°C" hint="36.0 – 37.5" value={temperature} onChange={setTemperature} placeholder="36.8" />
+            <VitalField tone="pulse" label="Heart rate" unit="bpm" hint="60 – 100" value={pulse} onChange={setPulse} placeholder="72" />
+            <div className="rounded-2xl border border-gold bg-surface px-3 py-2.5 sm:col-span-2">
+              <span className="flex items-baseline justify-between gap-2">
+                <span className="text-[11px] font-bold uppercase tracking-wide text-warning">Blood pressure</span>
+                <span className="text-[11px] font-medium text-warning/80">90/60 – 120/80</span>
+              </span>
+              <span className="mt-1 flex items-baseline gap-2">
+                <input className="w-full bg-transparent text-2xl font-bold tracking-tight text-ink outline-none placeholder:text-muted-soft" inputMode="numeric" value={systolic} placeholder="120" aria-label="Systolic" onChange={(event) => setSystolic(event.target.value)} />
+                <span className="text-lg font-bold text-muted">/</span>
+                <input className="w-full bg-transparent text-2xl font-bold tracking-tight text-ink outline-none placeholder:text-muted-soft" inputMode="numeric" value={diastolic} placeholder="80" aria-label="Diastolic" onChange={(event) => setDiastolic(event.target.value)} />
+                <span className="shrink-0 text-xs font-semibold text-warning">mmHg</span>
+              </span>
+            </div>
+            <VitalField tone="rr" label="Respiratory rate" unit="/min" hint="12 – 20" value={respiratory} onChange={setRespiratory} placeholder="16" />
+            <VitalField tone="spo2" label="Oxygen saturation" unit="%" hint="≥ 95" value={spo2} onChange={setSpo2} placeholder="98" />
+          </div>
+          <label className="mt-3 block">
+            <span className="text-xs font-bold uppercase tracking-wide text-muted-strong">Notes</span>
+            <textarea
+              className={`${field} mt-1.5 min-h-24 bg-surface`}
+              maxLength={500}
+              value={notes}
+              placeholder="Enter nursing notes..."
+              onChange={(event) => setNotes(event.target.value)}
+            />
+            <span className="mt-1 block text-right text-xs text-muted">{notes.length}/500</span>
+          </label>
+        </form>
+        <div className="grid gap-3">
+          <section className="rounded-2xl border border-panel-strong bg-panel/60 p-3">
+            <h3 className="text-xs font-bold uppercase tracking-wide text-blue">Ordered services</h3>
+            <div className="mt-2">
+              <OrderedServicesList services={item.ordered_services} empty="No management plan services ordered for monitoring." />
+            </div>
+          </section>
+          <section className="rounded-2xl border border-success/30 bg-success-soft/70 p-3">
+            <h3 className="text-xs font-bold uppercase tracking-wide text-success">Previous readings{history.length > 0 ? ` · ${history.length}` : ""}</h3>
+            {historyLoading ? <p className="mt-2 text-sm text-muted">Loading history…</p> : null}
+            {!historyLoading && history.length === 0 ? <p className="mt-2 text-sm text-muted">No readings yet.</p> : null}
+            {history.length > 0 ? (
+              <ul className="mt-2 max-h-[28rem] space-y-2 overflow-y-auto">
+                {history.map((row, index) => (
+                  <ReadingCard key={row.id} row={row} latest={index === 0} compact />
+                ))}
+              </ul>
+            ) : null}
+          </section>
         </div>
       </div>
-      <form id="record-monitoring-form" className="mt-4 space-y-4" onSubmit={(event) => void submit(event)}>
-        <VitalRow label="Temperature" unit="°C" range="(36.0 – 37.5)" value={temperature} onChange={setTemperature} />
-        <VitalRow label="Heart Rate" unit="bpm" range="(60 – 100)" value={pulse} onChange={setPulse} />
-        <div className="grid gap-2 sm:grid-cols-[8rem_minmax(0,1fr)_auto]">
-          <p className="text-sm font-semibold text-ink">Blood Pressure</p>
-          <div className="flex items-center gap-2">
-            <input className={field} value={systolic} onChange={(event) => setSystolic(event.target.value)} placeholder="120" />
-            <span className="text-muted">/</span>
-            <input className={field} value={diastolic} onChange={(event) => setDiastolic(event.target.value)} placeholder="80" />
-            <span className="text-xs text-muted">mmHg</span>
-          </div>
-          <p className="text-xs text-muted sm:text-right">(90/60 – 120/80)</p>
-        </div>
-        <VitalRow label="Respiratory Rate" unit="/min" range="(12 – 20)" value={respiratory} onChange={setRespiratory} />
-        <VitalRow label="Oxygen Saturation" unit="%" range="(≥ 95)" value={spo2} onChange={setSpo2} />
-        <div>
-          <label className="text-sm font-semibold text-ink">Notes</label>
-          <textarea
-            className={`${field} mt-1.5 min-h-28`}
-            maxLength={500}
-            value={notes}
-            placeholder="Enter nursing notes..."
-            onChange={(event) => setNotes(event.target.value)}
-          />
-          <p className="mt-1 text-right text-xs text-muted">{notes.length}/500</p>
-        </div>
-      </form>
     </ModalShell>
   );
 }
@@ -712,22 +968,26 @@ function ModalShell({
     return () => document.removeEventListener("keydown", onKey);
   }, [onClose]);
   return (
-    <div className="triage-dialog-backdrop fixed inset-0 z-[60] grid place-items-center bg-shell/50 px-4 py-6" role="presentation" onMouseDown={onClose}>
+    <div
+      className="triage-dialog-backdrop fixed inset-0 z-[60] grid place-items-stretch bg-shell/50 p-0 sm:place-items-center sm:px-4 sm:py-6"
+      role="presentation"
+      onMouseDown={onClose}
+    >
       <div
-        className={`triage-dialog-panel flex max-h-[calc(100vh-3rem)] w-full flex-col overflow-hidden rounded-2xl bg-surface shadow-dialog ${wide ? "max-w-3xl" : "max-w-xl"}`}
+        className={`triage-dialog-panel flex h-[100dvh] max-h-[100dvh] w-full flex-col overflow-hidden rounded-none bg-surface shadow-dialog sm:h-auto sm:max-h-[calc(100dvh-3rem)] sm:rounded-2xl ${wide ? "sm:max-w-3xl" : "sm:max-w-xl"}`}
         role="dialog"
         aria-modal="true"
         onMouseDown={(event) => event.stopPropagation()}
       >
-        <div className="flex items-start justify-between gap-3 border-b border-line-soft px-5 py-4 sm:px-6">
-          <h2 className="text-xl font-bold text-blue">{title}</h2>
-          <button type="button" className="grid h-9 w-9 place-items-center rounded-lg text-muted hover:bg-surface-2 hover:text-ink" aria-label="Close" onClick={onClose}>
+        <div className="flex items-start justify-between gap-3 border-b border-line-soft px-4 py-3 sm:px-6 sm:py-4">
+          <h2 className="pr-2 text-lg font-bold text-blue sm:text-xl">{title}</h2>
+          <button type="button" className="grid h-10 w-10 shrink-0 place-items-center rounded-lg text-muted hover:bg-surface-2 hover:text-ink" aria-label="Close" onClick={onClose}>
             ×
           </button>
         </div>
-        <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4 sm:px-6">{children}</div>
+        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-4 sm:px-6">{children}</div>
         {footer ? (
-          <div className="flex flex-col-reverse gap-2 border-t border-line-soft bg-surface px-5 py-4 sm:flex-row sm:justify-end sm:px-6">
+          <div className="flex flex-col-reverse gap-2 border-t border-line-soft bg-surface px-4 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:flex-row sm:flex-wrap sm:justify-end sm:px-6 sm:py-4 sm:pb-4">
             {footer}
           </div>
         ) : null}
@@ -745,6 +1005,7 @@ function PatientHero({
   room,
   clinicName,
   priority,
+  casePriority,
   visitType,
 }: {
   name: string;
@@ -755,6 +1016,7 @@ function PatientHero({
   room: string | null;
   clinicName: string;
   priority?: InvestigationPriority | "emergency" | "urgent" | "normal";
+  casePriority?: CasePriority | null;
   visitType?: string;
 }) {
   return (
@@ -770,12 +1032,105 @@ function PatientHero({
           <p className="text-xs text-muted">{[visitType, `Room: ${room || clinicName || "—"}`].filter(Boolean).join(" | ")}</p>
         </div>
       </div>
-      {priority ? (
+      {casePriority ? (
+        <p className={`mt-3 inline-flex rounded-full border px-3 py-1 text-xs font-semibold ${casePriorityClass(casePriority)}`}>
+          Patient Priority: {casePriorityLabel(casePriority)}
+        </p>
+      ) : priority ? (
         <p className={`mt-3 inline-flex rounded-full px-3 py-1 text-xs font-semibold ${investigationPriorityClass(priority === "emergency" ? "emergency" : priority === "urgent" ? "urgent" : "normal")}`}>
-          Patient Priority: {investigationPriorityLabel(priority === "emergency" ? "emergency" : priority === "urgent" ? "urgent" : "normal")}
+          Lab Priority: {investigationPriorityLabel(priority === "emergency" ? "emergency" : priority === "urgent" ? "urgent" : "normal")}
         </p>
       ) : null}
     </div>
+  );
+}
+
+function PatientPriorityBanner({ priority, compact = false }: { priority?: CasePriority | null; compact?: boolean }) {
+  const tone = priority === "emergency"
+    ? { card: "border-danger bg-danger-soft text-danger", chip: "bg-danger text-white" }
+    : priority === "urgent"
+      ? { card: "border-warning bg-warning-soft text-warning", chip: "bg-warning text-white" }
+      : priority === "stable"
+        ? { card: "border-success bg-success-soft text-success", chip: "bg-success text-white" }
+        : { card: "border-line bg-surface-2 text-muted-strong", chip: "bg-surface-3 text-muted" };
+  const hint = priority === "emergency"
+    ? "Immediate action required"
+    : priority === "urgent"
+      ? "Needs prompt attention; monitor closely"
+      : priority === "stable"
+        ? "Condition is controlled; routine nursing care"
+        : "No priority was saved on this encounter";
+  const iconClass = compact ? "h-4 w-4" : "h-5 w-5";
+  const icon = priority === "emergency"
+    ? <PriorityEmergencyIcon className={iconClass} />
+    : priority === "urgent"
+      ? <PriorityUrgentIcon className={iconClass} />
+      : priority === "stable"
+        ? <PriorityStableIcon className={iconClass} />
+        : <PriorityMissingIcon className={iconClass} />;
+  if (compact) {
+    return (
+      <div className={`flex items-center gap-2 rounded-xl border px-2.5 py-2 ${tone.card}`}>
+        <span className={`grid h-7 w-7 shrink-0 place-items-center rounded-lg ${tone.chip}`}>{icon}</span>
+        <span className="min-w-0">
+          <span className="block text-[10px] font-semibold uppercase tracking-wide opacity-80">Patient priority</span>
+          <span className="block truncate text-sm font-bold">{casePriorityLabel(priority)}</span>
+        </span>
+      </div>
+    );
+  }
+  return (
+    <div className={`flex items-start gap-3 rounded-2xl border-2 px-4 py-3.5 ${tone.card}`}>
+      <span className={`grid h-11 w-11 shrink-0 place-items-center rounded-xl ${tone.chip}`}>{icon}</span>
+      <span className="min-w-0">
+        <span className="block text-[11px] font-bold uppercase tracking-wide opacity-80">Patient priority</span>
+        <span className="mt-0.5 block text-lg font-bold leading-6">{casePriorityLabel(priority)}</span>
+        <span className="mt-1 block text-sm font-medium leading-5 opacity-90">{hint}</span>
+      </span>
+    </div>
+  );
+}
+
+function PriorityStableIcon({ className = "h-4 w-4" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <circle cx="12" cy="12" r="8" />
+      <path d="M8.5 12.5l2.2 2.2 4.8-5.2" />
+    </svg>
+  );
+}
+
+function PriorityUrgentIcon({ className = "h-4 w-4" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M12 3.5l9 16H3l9-16z" />
+      <path d="M12 10v4" />
+      <path d="M12 17h.01" />
+    </svg>
+  );
+}
+
+function PriorityEmergencyIcon({ className = "h-4 w-4" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M12 3v4" />
+      <path d="M12 17v4" />
+      <path d="M4.9 6.5l2.8 2.8" />
+      <path d="M16.3 14.7l2.8 2.8" />
+      <path d="M3 12h4" />
+      <path d="M17 12h4" />
+      <circle cx="12" cy="12" r="2.2" />
+    </svg>
+  );
+}
+
+function PriorityMissingIcon({ className = "h-4 w-4" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <circle cx="12" cy="12" r="8" />
+      <path d="M12 8v5" />
+      <path d="M12 16h.01" />
+    </svg>
   );
 }
 
@@ -791,49 +1146,100 @@ function PlanSection({ title, tone, children }: { title: string; tone: string; c
 function OrderedServicesList({
   services,
   empty = "No services ordered in the management plan.",
+  detailed = false,
 }: {
   services: MonitoringOrderedService[];
   empty?: string;
+  detailed?: boolean;
 }) {
   if (!services.length) {
     return <p className="text-xs text-muted">{empty}</p>;
   }
   return (
-    <ul className="space-y-2">
-      {services.map((service) => (
-        <li key={service.id} className="min-w-[10rem]">
-          <p className="font-semibold text-ink">{service.name}</p>
-          {service.code ? <p className="text-[11px] font-mono text-blue">{service.code}</p> : null}
-          {service.detail ? <p className="text-xs text-muted-strong">{service.detail}</p> : null}
+    <ul className={detailed ? "space-y-3" : "space-y-2"}>
+      {services.map((service, index) => (
+        <li
+          key={service.id}
+          className={detailed ? "rounded-lg border border-panel-strong/60 bg-surface px-3 py-2.5" : "min-w-0"}
+        >
+          <div className="flex items-start gap-2">
+            {detailed ? <span className="mt-0.5 text-xs font-semibold tabular-nums text-muted">{index + 1}.</span> : null}
+            <div className="min-w-0 flex-1">
+              <p className="break-words font-semibold text-ink">{service.name}</p>
+              {service.code ? <p className="text-[11px] font-mono text-blue">{service.code}</p> : null}
+              {service.detail ? <p className="mt-0.5 text-xs text-muted-strong">{service.detail}</p> : null}
+              {detailed && (service.quantity != null || service.unit || service.kind !== "procedure") ? (
+                <p className="mt-1 text-[11px] text-muted">
+                  {[
+                    service.quantity != null ? `Qty ${service.quantity}${service.unit ? ` ${service.unit}` : ""}` : null,
+                    service.kind === "associated" ? "Associated service" : service.kind === "medication_monitoring" ? "From medication order" : null,
+                  ].filter(Boolean).join(" · ")}
+                </p>
+              ) : null}
+            </div>
+          </div>
         </li>
       ))}
     </ul>
   );
 }
 
-function VitalRow({
+function VitalField({
+  tone,
   label,
   unit,
-  range,
+  hint,
   value,
   onChange,
+  placeholder,
 }: {
+  tone: "temp" | "pulse" | "rr" | "spo2";
   label: string;
   unit: string;
-  range: string;
+  hint: string;
   value: string;
   onChange: (value: string) => void;
+  placeholder: string;
 }) {
+  const palette = tone === "temp"
+    ? "border-warning-line bg-warning-soft text-warning"
+    : tone === "pulse"
+      ? "border-panel-strong bg-panel text-blue"
+      : tone === "rr"
+        ? "border-success/30 bg-success-soft text-success"
+        : "border-panel-strong bg-panel-strong text-blue-strong";
   return (
-    <div className="grid gap-2 sm:grid-cols-[8rem_minmax(0,1fr)_auto]">
-      <p className="text-sm font-semibold text-ink">{label}</p>
-      <div className="flex items-center gap-2">
-        <input className={field} value={value} onChange={(event) => onChange(event.target.value)} />
-        <span className="text-xs text-muted">{unit}</span>
-      </div>
-      <p className="text-xs text-muted sm:text-right">{range}</p>
-    </div>
+    <label className={`block rounded-2xl border px-3 py-2.5 ${palette}`}>
+      <span className="flex items-baseline justify-between gap-2">
+        <span className="text-[11px] font-bold uppercase tracking-wide">{label}</span>
+        <span className="text-[11px] font-medium opacity-75">{hint}</span>
+      </span>
+      <span className="mt-1 flex items-baseline gap-1.5">
+        <input
+          className="w-full bg-transparent text-2xl font-bold tracking-tight text-ink outline-none placeholder:text-muted-soft"
+          inputMode="decimal"
+          value={value}
+          placeholder={placeholder}
+          onChange={(event) => onChange(event.target.value)}
+        />
+        <span className="shrink-0 text-xs font-semibold">{unit}</span>
+      </span>
+    </label>
   );
+}
+
+function PrintIcon() {
+  return (
+    <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M6 9V3h12v6" />
+      <path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2" />
+      <rect x="6" y="14" width="12" height="7" rx="1" />
+    </svg>
+  );
+}
+
+function escapeHtml(value: string) {
+  return value.replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[character] ?? character));
 }
 
 function initials(name: string) {

@@ -62,10 +62,13 @@ const encounterSchema = z.object({
     }),
   }),
   provisional_diagnoses: z.array(z.object({
-    code: z.string().trim().min(1).max(10),
-    title: z.string().trim().max(500).optional().transform((value) => value ?? ""),
+    id: z.string().uuid().optional(),
+    code: z.string().trim().max(32).optional().transform((value) => value ?? ""),
+    title: z.string().trim().min(1, "Enter the diagnosis").max(500),
+    source: z.enum(["icd11", "free_text"]).optional(),
   })).max(20).optional().transform((value) => value ?? []),
   provisional_diagnosis: optionalText,
+  case_priority: z.enum(["", "stable", "urgent", "emergency"]).optional().transform((value) => value ?? ""),
   investigations: z.array(z.object({
     id: z.string().uuid(),
     service_id: z.string().uuid().nullable().optional().transform((value) => value ?? null),
@@ -150,7 +153,10 @@ const finishSchema = encounterSchema.extend({
     context.addIssue({ code: "custom", message: "Enter the examination findings", path: ["examination", "findings"] });
   }
   if (value.provisional_diagnoses.length === 0) {
-    context.addIssue({ code: "custom", message: "Add at least one ICD-11 diagnosis", path: ["provisional_diagnoses"] });
+    context.addIssue({ code: "custom", message: "Add at least one diagnosis", path: ["provisional_diagnoses"] });
+  }
+  if (!value.case_priority) {
+    context.addIssue({ code: "custom", message: "Choose how critical this case is", path: ["case_priority"] });
   }
 });
 
@@ -363,16 +369,36 @@ async function loadCase(pool: pg.Pool, user: { sub: string; type: string; role: 
 
 function resolveDiagnosis(body: EncounterBody): EncounterBody {
   const seen = new Set<string>();
-  const diagnoses: { code: string; title: string }[] = [];
+  const diagnoses: { id: string; code: string; title: string; source: "icd11" | "free_text" }[] = [];
   for (const item of body.provisional_diagnoses) {
-    const code = item.code.toUpperCase();
-    if (seen.has(code)) continue;
-    const title = icd11Title(code);
-    if (!title) throw new ApplicationError(422, "invalid_body", "provisional_diagnoses: Choose a valid ICD-11 code");
-    seen.add(code);
-    diagnoses.push({ code, title });
+    const title = item.title.trim();
+    if (!title) continue;
+    const explicitFree = item.source === "free_text" || !item.code.trim();
+    if (explicitFree) {
+      const key = `free:${title.toLowerCase()}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      diagnoses.push({
+        id: item.id && isUuid(item.id) ? item.id : randomUUID(),
+        code: "",
+        title,
+        source: "free_text",
+      });
+      continue;
+    }
+    const code = item.code.trim().toUpperCase();
+    if (seen.has(`icd:${code}`)) continue;
+    const catalogTitle = icd11Title(code);
+    if (!catalogTitle) throw new ApplicationError(422, "invalid_body", "provisional_diagnoses: Choose a valid ICD-11 code");
+    seen.add(`icd:${code}`);
+    diagnoses.push({
+      id: item.id && isUuid(item.id) ? item.id : randomUUID(),
+      code,
+      title: catalogTitle,
+      source: "icd11",
+    });
   }
-  const summary = diagnoses.map((item) => `${item.code} ${item.title}`).join("\n");
+  const summary = diagnoses.map((item) => item.source === "icd11" ? `${item.code} ${item.title}` : item.title).join("\n");
   return {
     ...body,
     provisional_diagnoses: diagnoses,
@@ -659,13 +685,15 @@ async function saveEncounter(db: pg.Pool | pg.PoolClient, visitId: string, body:
     `INSERT INTO patient_visit_encounters (
        visit_id, chief_complaint, history_of_present_illness, past_history, medication_allergy_history,
        temperature_c, pulse, respiratory_rate, blood_pressure, spo2, pain_score, vitals_recorded_at,
-       examination, provisional_diagnosis, provisional_diagnosis_code, provisional_diagnoses, investigations, management_plan, allergies, medications,
+       examination, provisional_diagnosis, provisional_diagnosis_code, provisional_diagnoses, case_priority,
+       investigations, management_plan, allergies, medications,
        medication_orders, procedure_orders, patient_advices,
        finished_at, finished_by, updated_at
      ) VALUES (
        $1, $2, $3, $4, $24,
        $5, $6, $7, $8, $9, $10, $11,
-       $12::jsonb, $13, $22, $23::jsonb, $14::jsonb, $15, $16::jsonb, $17::jsonb,
+       $12::jsonb, $13, $22, $23::jsonb, $25,
+       $14::jsonb, $15, $16::jsonb, $17::jsonb,
        $18::jsonb, $19::jsonb, $20::jsonb,
        CASE WHEN $21::uuid IS NULL THEN NULL ELSE now() END, $21, now()
      )
@@ -685,6 +713,7 @@ async function saveEncounter(db: pg.Pool | pg.PoolClient, visitId: string, body:
        provisional_diagnosis = EXCLUDED.provisional_diagnosis,
        provisional_diagnosis_code = EXCLUDED.provisional_diagnosis_code,
        provisional_diagnoses = EXCLUDED.provisional_diagnoses,
+       case_priority = EXCLUDED.case_priority,
        investigations = EXCLUDED.investigations,
        management_plan = EXCLUDED.management_plan,
        allergies = EXCLUDED.allergies,
@@ -718,9 +747,12 @@ async function saveEncounter(db: pg.Pool | pg.PoolClient, visitId: string, body:
       JSON.stringify(body.procedure_orders),
       JSON.stringify(body.patient_advices),
       finishedBy,
-      body.provisional_diagnoses.length === 1 ? body.provisional_diagnoses[0]?.code ?? null : null,
+      body.provisional_diagnoses.length === 1 && body.provisional_diagnoses[0]?.source === "icd11"
+        ? body.provisional_diagnoses[0]?.code || null
+        : null,
       JSON.stringify(body.provisional_diagnoses),
       body.medication_allergy_history || null,
+      body.case_priority || null,
     ],
   );
 }
@@ -788,6 +820,7 @@ function storedEncounter(row: Record<string, unknown>, tableInvestigations: Awai
     },
     provisional_diagnoses: presentDiagnoses(row),
     provisional_diagnosis: presentDiagnoses(row).length > 0 ? "" : text(row.provisional_diagnosis),
+    case_priority: presentCasePriority(row.case_priority),
     investigations: tableInvestigations.length > 0 ? tableInvestigations : draftInvestigations,
     management_plan: text(row.management_plan),
     allergies: Array.isArray(row.allergies) ? row.allergies : [],
@@ -821,6 +854,7 @@ function blankEncounter(_visit: CaseRow) {
     },
     provisional_diagnoses: [],
     provisional_diagnosis: "",
+    case_priority: "" as const,
     investigations: [],
     management_plan: "",
     allergies: [],
@@ -831,19 +865,37 @@ function blankEncounter(_visit: CaseRow) {
   };
 }
 
-function presentDiagnoses(row: Record<string, unknown>) {
+function presentCasePriority(value: unknown): "" | "stable" | "urgent" | "emergency" {
+  return value === "stable" || value === "urgent" || value === "emergency" ? value : "";
+}
+
+function presentDiagnoses(row: Record<string, unknown>): { id: string; code: string; title: string; source: "icd11" | "free_text" }[] {
   const stored = Array.isArray(row.provisional_diagnoses) ? row.provisional_diagnoses : [];
-  const diagnoses = stored.flatMap((item) => {
-    if (item === null || typeof item !== "object") return [];
+  const diagnoses: { id: string; code: string; title: string; source: "icd11" | "free_text" }[] = [];
+  for (const item of stored) {
+    if (item === null || typeof item !== "object") continue;
     const record = item as Record<string, unknown>;
-    const code = typeof record.code === "string" ? record.code.trim().toUpperCase() : "";
-    const title = icd11Title(code) ?? (typeof record.title === "string" ? record.title.trim() : "");
-    return code && title ? [{ code, title }] : [];
-  });
+    const rawTitle = typeof record.title === "string" ? record.title.trim() : "";
+    const rawCode = typeof record.code === "string" ? record.code.trim() : "";
+    const source: "icd11" | "free_text" = record.source === "free_text" || (!rawCode && rawTitle)
+      ? "free_text"
+      : "icd11";
+    if (source === "free_text") {
+      if (!rawTitle) continue;
+      const id = typeof record.id === "string" && isUuid(record.id) ? record.id : randomUUID();
+      diagnoses.push({ id, code: "", title: rawTitle, source });
+      continue;
+    }
+    const code = rawCode.toUpperCase();
+    const title = icd11Title(code) ?? rawTitle;
+    if (!code || !title) continue;
+    const id = typeof record.id === "string" && isUuid(record.id) ? record.id : randomUUID();
+    diagnoses.push({ id, code, title, source });
+  }
   if (diagnoses.length > 0) return diagnoses;
   const code = text(row.provisional_diagnosis_code).toUpperCase();
   const title = icd11Title(code);
-  return code && title ? [{ code, title }] : [];
+  return code && title ? [{ id: randomUUID(), code, title, source: "icd11" }] : [];
 }
 
 function presentInvestigation(value: unknown) {

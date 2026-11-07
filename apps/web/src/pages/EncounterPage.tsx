@@ -1,13 +1,17 @@
-import { useEffect, useId, useState, type FormEvent, type ReactNode } from "react";
-import { Link, useNavigate, useParams } from "react-router";
+import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router";
 import { procedureDetailErrors, procedureFieldActive, procedureFields, procedureFormById, procedureServiceCharges, quantityForAssociatedService, quantityForProcedureForm, readServices, readStaff, readText, type ProcedureDetails, type ProcedureField, type ProcedureFormDefinition, type ProcedureServiceValue } from "@yaren/shared-kernel";
 import {
   api,
+  casePriorityClass,
+  casePriorityLabel,
   formatPrice,
   investigationStatusClass,
   investigationStatusLabel,
+  type CasePriority,
   type CatalogMedication,
   type ClinicalEncounter,
+  type EncounterDiagnosis,
   type EncounterRecord,
   type Icd11Code,
   type MedicalService,
@@ -50,9 +54,21 @@ const investigationPriorities = [
   { value: "normal", label: "Normal" },
 ] as const;
 
+const encounterTabs = new Set<EncounterTab>(["history", "vitals", "examination", "investigations", "diagnosis", "plan"]);
+const planTabs = new Set<PlanTab>(["medications", "procedures", "advice"]);
+
+function readEncounterTab(value: string | null): EncounterTab {
+  return value && encounterTabs.has(value as EncounterTab) ? value as EncounterTab : "history";
+}
+
+function readPlanTab(value: string | null): PlanTab {
+  return value && planTabs.has(value as PlanTab) ? value as PlanTab : "medications";
+}
+
 export function EncounterPage({ token }: { token: string }) {
   const { id } = useParams();
   const navigate = useNavigate();
+  const [params, setParams] = useSearchParams();
   const toast = useToast();
   const [record, setRecord] = useState<EncounterRecord | null>(null);
   const [form, setForm] = useState<ClinicalEncounter | null>(null);
@@ -63,8 +79,8 @@ export function EncounterPage({ token }: { token: string }) {
   const [finishNurseError, setFinishNurseError] = useState<string | null>(null);
   const [nurses, setNurses] = useState<{ id: string; name: string }[]>([]);
   const [nursesLoading, setNursesLoading] = useState(false);
-  const [tab, setTab] = useState<EncounterTab>("history");
-  const [planTab, setPlanTab] = useState<PlanTab>("medications");
+  const tab = readEncounterTab(params.get("section"));
+  const planTab = readPlanTab(params.get("plan"));
   const [allergyName, setAllergyName] = useState("");
   const [medicationName, setMedicationName] = useState("");
   const [savedSteps, setSavedSteps] = useState<EncounterTab[]>([]);
@@ -76,6 +92,37 @@ export function EncounterPage({ token }: { token: string }) {
   const [showOrderErrors, setShowOrderErrors] = useState(false);
   const [orderDialog, setOrderDialog] = useState<MedicationOrder | null>(null);
   const [procedureDialog, setProcedureDialog] = useState<ProcedureOrder | null>(null);
+
+  function setTab(next: EncounterTab, replace = false) {
+    setParams((current) => {
+      const nextParams = new URLSearchParams(current);
+      nextParams.set("section", next);
+      if (next === "plan") {
+        if (!planTabs.has((nextParams.get("plan") || "") as PlanTab)) nextParams.set("plan", "medications");
+      } else {
+        nextParams.delete("plan");
+      }
+      return nextParams;
+    }, { replace });
+  }
+
+  function setPlanTab(next: PlanTab, replace = false) {
+    setParams((current) => {
+      const nextParams = new URLSearchParams(current);
+      nextParams.set("section", "plan");
+      nextParams.set("plan", next);
+      return nextParams;
+    }, { replace });
+  }
+
+  useEffect(() => {
+    const section = params.get("section");
+    const plan = params.get("plan");
+    const sectionValid = Boolean(section && encounterTabs.has(section as EncounterTab));
+    const planValid = tab !== "plan" || Boolean(plan && planTabs.has(plan as PlanTab));
+    if (sectionValid && planValid) return;
+    setTab(tab, true);
+  }, [params, tab]);
 
   useEffect(() => {
     api<EncounterRecord>(`/api/doctor-cases/${id}/encounter`, {}, token)
@@ -163,7 +210,6 @@ export function EncounterPage({ token }: { token: string }) {
     if (!form) return false;
     if (ordersInvalid) {
       setShowOrderErrors(true);
-      setTab("plan");
       setPlanTab("medications");
       setError(incompleteOrdersMessage);
       return false;
@@ -364,6 +410,14 @@ export function EncounterPage({ token }: { token: string }) {
             ))}
           </div>
 
+          {locked ? null : (
+            <StepSaveBar
+              label={tabs.find((item) => item.id === tab)?.label ?? "step"}
+              saving={saving}
+              onSave={() => void saveStep()}
+            />
+          )}
+
           {tab === "history" ? (
             <div className="space-y-4">
               <Panel title="This visit">
@@ -559,18 +613,79 @@ export function EncounterPage({ token }: { token: string }) {
           ) : null}
 
           {tab === "diagnosis" ? (
-            <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,1fr)_22rem]">
-              <Panel title="Provisional Diagnoses" required>
-                <p className="mb-3 text-sm text-muted">Add every problem for this visit. The first one is the principal diagnosis sent to insurance.</p>
-                <Icd11Picker
-                  token={token}
-                  locked={locked}
-                  items={form.provisional_diagnoses}
-                  legacy={form.provisional_diagnosis}
-                  onChange={(items) => update({ provisional_diagnoses: items, provisional_diagnosis: items.length > 0 ? "" : form.provisional_diagnosis })}
-                />
+            <div className="space-y-4">
+              <Panel title="Patient Priority" required>
+                <p className="mb-4 text-sm text-muted">Select how critical this case is for nursing and follow-up.</p>
+                <div className="grid gap-3 sm:grid-cols-3" role="radiogroup" aria-label="Patient priority">
+                  {([
+                    {
+                      value: "stable" as const,
+                      label: "Stable",
+                      hint: "Condition is controlled; routine nursing care",
+                      idle: "border-success/30 text-success hover:border-success hover:bg-success-soft/40",
+                      active: "border-success bg-success text-white shadow-[0_8px_20px_-12px_rgba(16,185,129,0.8)]",
+                      iconIdle: "bg-success-soft text-success",
+                      icon: <PriorityStableIcon />,
+                    },
+                    {
+                      value: "urgent" as const,
+                      label: "Urgent",
+                      hint: "Needs prompt attention; monitor closely",
+                      idle: "border-warning/40 text-warning hover:border-warning hover:bg-warning-soft/50",
+                      active: "border-warning bg-warning text-white shadow-[0_8px_20px_-12px_rgba(245,158,11,0.85)]",
+                      iconIdle: "bg-warning-soft text-warning",
+                      icon: <PriorityUrgentIcon />,
+                    },
+                    {
+                      value: "emergency" as const,
+                      label: "Emergency",
+                      hint: "Immediate action required",
+                      idle: "border-danger/30 text-danger hover:border-danger hover:bg-danger-soft/50",
+                      active: "border-danger bg-danger text-white shadow-[0_8px_20px_-12px_rgba(239,68,68,0.85)]",
+                      iconIdle: "bg-danger-soft text-danger",
+                      icon: <PriorityEmergencyIcon />,
+                    },
+                  ]).map((option) => {
+                    const active = form.case_priority === option.value;
+                    return (
+                      <button
+                        key={option.value}
+                        type="button"
+                        role="radio"
+                        aria-checked={active}
+                        disabled={locked}
+                        className={`group flex min-h-[7.5rem] flex-col items-start gap-3 rounded-2xl border-2 px-4 py-4 text-left transition disabled:cursor-not-allowed disabled:opacity-60 ${active ? option.active : `bg-surface ${option.idle}`}`}
+                        onClick={() => update({ case_priority: option.value })}
+                      >
+                        <span className={`grid h-10 w-10 place-items-center rounded-xl ${active ? "bg-white/20 text-white" : option.iconIdle}`}>
+                          {option.icon}
+                        </span>
+                        <span>
+                          <span className="block text-base font-bold">{option.label}</span>
+                          <span className={`mt-1 block text-xs leading-5 ${active ? "text-white/90" : "text-muted-strong"}`}>{option.hint}</span>
+                        </span>
+                        <span className={`mt-auto inline-flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide ${active ? "text-white" : "text-muted"}`}>
+                          <span className={`h-2 w-2 rounded-full ${active ? "bg-white" : "bg-current opacity-40"}`} />
+                          {active ? "Selected" : "Select"}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
               </Panel>
-              <InsuranceDiagnosis visit={visit} items={form.provisional_diagnoses} />
+              <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,1fr)_22rem]">
+                <Panel title="Diagnoses" required>
+                  <p className="mb-3 text-sm text-muted">Add the patient's diagnoses. You can search the ICD-11 catalog or enter a Free Diagnose.</p>
+                  <DiagnosisPicker
+                    token={token}
+                    locked={locked}
+                    items={form.provisional_diagnoses}
+                    legacy={form.provisional_diagnosis}
+                    onChange={(items) => update({ provisional_diagnoses: items, provisional_diagnosis: items.length > 0 ? "" : form.provisional_diagnosis })}
+                  />
+                </Panel>
+                <InsuranceDiagnosis visit={visit} items={form.provisional_diagnoses} priority={form.case_priority} />
+              </div>
             </div>
           ) : null}
 
@@ -707,11 +822,11 @@ export function EncounterPage({ token }: { token: string }) {
           ) : null}
 
           {locked ? null : (
-            <div className="flex justify-end">
-              <button type="button" className={primary} disabled={saving} onClick={() => void saveStep()}>
-                {saving ? "Saving…" : `Save ${tabs.find((item) => item.id === tab)?.label ?? "step"}`}
-              </button>
-            </div>
+            <StepSaveBar
+              label={tabs.find((item) => item.id === tab)?.label ?? "step"}
+              saving={saving}
+              onSave={() => void saveStep()}
+            />
           )}
         </div>
       )}
@@ -811,7 +926,10 @@ function normalize(encounter: ClinicalEncounter): ClinicalEncounter {
       result_file_url: item.result_file_url,
       result_original_name: item.result_original_name,
     })),
-    provisional_diagnoses: encounter.provisional_diagnoses ?? [],
+    provisional_diagnoses: (encounter.provisional_diagnoses ?? []).map((item) => normalizeDiagnosis(item)),
+    case_priority: encounter.case_priority === "stable" || encounter.case_priority === "urgent" || encounter.case_priority === "emergency"
+      ? encounter.case_priority
+      : "",
     medication_orders: (encounter.medication_orders ?? []).map((item) => {
       const parsedDuration = item.duration_value == null ? parseDuration(item.duration ?? "") : null;
       const duration_unit: MedicationOrder["duration_unit"] = parsedDuration?.unit ?? item.duration_unit;
@@ -1296,7 +1414,19 @@ function FinishEncounterDialog({
   );
 }
 
-function Icd11Picker({
+function normalizeDiagnosis(item: { id?: string; code?: string; title?: string; source?: string }): EncounterDiagnosis {
+  const title = typeof item.title === "string" ? item.title.trim() : "";
+  const code = typeof item.code === "string" ? item.code.trim() : "";
+  const source = item.source === "free_text" || (!code && title) ? "free_text" : "icd11";
+  return {
+    id: typeof item.id === "string" && item.id ? item.id : crypto.randomUUID(),
+    code: source === "icd11" ? code.toUpperCase() : "",
+    title,
+    source,
+  };
+}
+
+function DiagnosisPicker({
   token,
   locked,
   items,
@@ -1305,17 +1435,24 @@ function Icd11Picker({
 }: {
   token: string;
   locked: boolean;
-  items: Icd11Code[];
+  items: EncounterDiagnosis[];
   legacy: string;
-  onChange: (items: Icd11Code[]) => void;
+  onChange: (items: EncounterDiagnosis[]) => void;
 }) {
+  const [mode, setMode] = useState<"icd11" | "free_text">("icd11");
   const [query, setQuery] = useState("");
+  const [editingId, setEditingId] = useState<string | null>(null);
   const [results, setResults] = useState<Icd11Code[]>([]);
   const [searching, setSearching] = useState(false);
-  const chosen = new Set(items.map((item) => item.code));
+  const chosenCodes = new Set(items.filter((item) => item.source === "icd11").map((item) => item.code));
   const legacyNote = items.length === 0 && legacy.trim();
 
   useEffect(() => {
+    if (mode !== "icd11") {
+      setResults([]);
+      setSearching(false);
+      return;
+    }
     const needle = query.trim();
     if (needle.length < 2) {
       setResults([]);
@@ -1340,34 +1477,74 @@ function Icd11Picker({
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [query, token]);
+  }, [query, token, mode]);
 
-  function add(item: Icd11Code) {
-    if (chosen.has(item.code)) return;
-    onChange([...items, item]);
+  function addIcd(item: Icd11Code) {
+    if (chosenCodes.has(item.code.toUpperCase())) return;
+    const next = normalizeDiagnosis({ code: item.code, title: item.title, source: "icd11" });
+    if (editingId) {
+      onChange(items.map((row) => row.id === editingId ? next : row));
+      setEditingId(null);
+    } else {
+      onChange([...items, next]);
+    }
     setQuery("");
+    setResults([]);
+  }
+
+  function addFreeText() {
+    const title = query.trim();
+    if (!title) return;
+    const duplicate = items.some((item) => item.source === "free_text" && item.title.toLowerCase() === title.toLowerCase() && item.id !== editingId);
+    if (duplicate) return;
+    const next = normalizeDiagnosis({ id: editingId ?? crypto.randomUUID(), title, source: "free_text" });
+    if (editingId) {
+      onChange(items.map((row) => row.id === editingId ? next : row));
+      setEditingId(null);
+    } else {
+      onChange([...items, next]);
+    }
+    setQuery("");
+  }
+
+  function startEdit(item: EncounterDiagnosis) {
+    setEditingId(item.id);
+    setMode(item.source);
+    setQuery(item.source === "icd11" ? `${item.code} ${item.title}` : item.title);
     setResults([]);
   }
 
   return (
     <div className="space-y-3">
-      {items.length === 0 ? <p className="text-sm text-muted">{locked ? "No ICD-11 codes were recorded." : "No problems added yet."}</p> : (
+      {items.length === 0 ? <p className="text-sm text-muted">{locked ? "No diagnoses were recorded." : "No diagnoses added yet."}</p> : (
         <ul className="space-y-2">
           {items.map((item, index) => (
-            <li key={item.code} className={`rounded-xl border px-4 py-3 ${index === 0 ? "border-blue bg-panel" : "border-line bg-surface"}`}>
+            <li key={item.id} className={`rounded-xl border px-4 py-3 ${index === 0 ? "border-blue bg-panel" : "border-line bg-surface"}`}>
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
-                  <span className={`text-xs font-semibold ${index === 0 ? "text-blue" : "text-muted"}`}>{index === 0 ? "Principal diagnosis" : `Additional problem ${index}`}</span>
-                  <div className="mt-1">
-                    <span className="inline-flex rounded-md bg-blue px-2 py-0.5 font-mono text-xs font-bold text-white">{item.code}</span>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className={`inline-flex rounded-full px-2 py-0.5 text-[11px] font-semibold ${item.source === "icd11" ? "bg-blue text-white" : "bg-surface-2 text-muted-strong"}`}>
+                      {item.source === "icd11" ? "ICD-11" : "Free Diagnose"}
+                    </span>
+                    {index === 0 ? <span className="inline-flex rounded-full bg-success-soft px-2 py-0.5 text-[11px] font-semibold text-success">Primary</span> : null}
                   </div>
-                  <p className="mt-2 text-sm font-semibold leading-5 text-ink">{item.title}</p>
+                  {item.source === "icd11" && item.code ? (
+                    <p className="mt-2 font-mono text-xs font-bold text-blue">{item.code}</p>
+                  ) : null}
+                  <p className="mt-1 text-sm font-semibold leading-5 text-ink">{item.title}</p>
                 </div>
-                {locked ? null : <RemoveButton onClick={() => onChange(items.filter((row) => row.code !== item.code))} />}
+                {locked ? null : (
+                  <div className="flex shrink-0 items-center gap-1">
+                    <button type="button" className="grid h-8 w-8 place-items-center rounded-lg text-muted hover:bg-surface-2 hover:text-ink" aria-label="Edit diagnosis" onClick={() => startEdit(item)}>
+                      <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M4 20h4l10-10-4-4L4 16v4z" /><path d="M13 7l4 4" /></svg>
+                    </button>
+                    <RemoveButton onClick={() => onChange(items.filter((row) => row.id !== item.id))} />
+                  </div>
+                )}
               </div>
               {locked || index === 0 ? null : (
                 <div className="mt-3 flex justify-end">
-                  <button type="button" className={`${secondary} h-7 px-2.5 py-0 text-xs`} onClick={() => onChange([item, ...items.filter((row) => row.code !== item.code)])}>Make principal</button>
+                  <button type="button" className={`${secondary} h-7 px-2.5 py-0 text-xs`} onClick={() => onChange([item, ...items.filter((row) => row.id !== item.id)])}>Set as Primary</button>
                 </div>
               )}
             </li>
@@ -1376,35 +1553,70 @@ function Icd11Picker({
       )}
       {legacyNote ? (
         <p className="rounded-xl border border-warning-line bg-warning-soft px-4 py-3 text-sm text-warning">
-          The saved note is not an ICD-11 code: “{legacyNote}”. Add a code for each problem to replace it.
+          The saved note is not coded: “{legacyNote}”. Add diagnoses below to replace it.
         </p>
       ) : null}
       {locked ? null : (
-        <div className="relative">
-          <input
-            className={field}
-            value={query}
-            placeholder="Search, for example CA07.0 or pharyngitis"
-            onChange={(event) => setQuery(event.target.value)}
-          />
-          {query.trim().length >= 2 ? (
-            <ul className="ui-pop absolute z-20 mt-1 max-h-72 w-full overflow-auto rounded-xl border border-line bg-surface py-1 shadow-[var(--menu-shadow)]">
-              {searching && results.length === 0 ? <li className="px-3 py-2 text-sm text-muted">Searching ICD-11…</li> : null}
-              {!searching && results.length === 0 ? <li className="px-3 py-2 text-sm text-muted">No ICD-11 codes match.</li> : null}
-              {results.map((item) => (
-                <li key={item.code}>
-                  <button
-                    type="button"
-                    className="flex w-full items-start gap-3 px-3 py-2 text-left hover:bg-panel disabled:opacity-50"
-                    disabled={chosen.has(item.code)}
-                    onClick={() => add(item)}
-                  >
-                    <span className="mt-0.5 shrink-0 font-mono text-xs font-bold text-blue">{item.code}</span>
-                    <span className="text-sm text-ink">{item.title}{chosen.has(item.code) ? " · Added" : ""}</span>
-                  </button>
-                </li>
-              ))}
-            </ul>
+        <div className="space-y-2">
+          <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_9rem]">
+            <div className="relative min-w-0">
+              <input
+                className={field}
+                value={query}
+                placeholder={mode === "icd11" ? "Search ICD-11 (e.g. A01.0 Typhoid fever)…" : "Type a Free Diagnose…"}
+                onChange={(event) => setQuery(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key !== "Enter") return;
+                  event.preventDefault();
+                  if (mode === "free_text") addFreeText();
+                }}
+              />
+              {mode === "icd11" && query.trim().length >= 2 ? (
+                <ul className="ui-pop absolute z-20 mt-1 max-h-72 w-full overflow-auto rounded-xl border border-line bg-surface py-1 shadow-[var(--menu-shadow)]">
+                  {searching && results.length === 0 ? <li className="px-3 py-2 text-sm text-muted">Searching ICD-11…</li> : null}
+                  {!searching && results.length === 0 ? <li className="px-3 py-2 text-sm text-muted">No ICD-11 codes match.</li> : null}
+                  {results.map((item) => (
+                    <li key={item.code}>
+                      <button
+                        type="button"
+                        className="flex w-full items-start gap-3 px-3 py-2 text-left hover:bg-panel disabled:opacity-50"
+                        disabled={chosenCodes.has(item.code.toUpperCase())}
+                        onClick={() => addIcd(item)}
+                      >
+                        <span className="mt-0.5 shrink-0 font-mono text-xs font-bold text-blue">{item.code}</span>
+                        <span className="text-sm text-ink">{item.title}{chosenCodes.has(item.code.toUpperCase()) ? " · Added" : ""}</span>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+            </div>
+            <select
+              className={field}
+              value={mode}
+              onChange={(event) => {
+                setMode(event.target.value as "icd11" | "free_text");
+                setResults([]);
+              }}
+            >
+              <option value="icd11">ICD-11</option>
+              <option value="free_text">Free Diagnose</option>
+            </select>
+          </div>
+          <button
+            type="button"
+            className={`${secondary} h-9 px-3 text-sm`}
+            onClick={() => {
+              if (mode === "free_text") addFreeText();
+              else if (results[0]) addIcd(results[0]);
+            }}
+          >
+            {editingId ? "Save diagnosis" : "+ Add Diagnosis"}
+          </button>
+          {editingId ? (
+            <button type="button" className="text-xs font-semibold text-muted hover:text-ink" onClick={() => { setEditingId(null); setQuery(""); }}>
+              Cancel edit
+            </button>
           ) : null}
         </div>
       )}
@@ -1412,7 +1624,15 @@ function Icd11Picker({
   );
 }
 
-function InsuranceDiagnosis({ visit, items }: { visit: EncounterRecord["visit"]; items: Icd11Code[] }) {
+function InsuranceDiagnosis({
+  visit,
+  items,
+  priority,
+}: {
+  visit: EncounterRecord["visit"];
+  items: EncounterDiagnosis[];
+  priority: CasePriority | "";
+}) {
   const when = visit.triage_completed_at ? formatDay(visit.triage_completed_at) : null;
   const patientLine = [
     visit.patient_age_at_visit != null ? `${visit.patient_age_at_visit} years` : null,
@@ -1424,7 +1644,7 @@ function InsuranceDiagnosis({ visit, items }: { visit: EncounterRecord["visit"];
     if (!popup) return;
     const problems = items.map((item, index) => `
       <tr>
-        <td class="code">${escapeHtml(item.code)}</td>
+        <td class="code">${escapeHtml(item.source === "icd11" ? item.code : "Free Diagnose")}</td>
         <td>${index === 0 ? "Principal" : "Additional"}</td>
         <td>${escapeHtml(item.title)}</td>
       </tr>
@@ -1457,7 +1677,8 @@ function InsuranceDiagnosis({ visit, items }: { visit: EncounterRecord["visit"];
               <td><span class="label">Clinic</span>${escapeHtml(visit.clinic_name)}<br />${escapeHtml(visit.hotel_name)}${visit.assigned_doctor_name ? ` / ${escapeHtml(visit.assigned_doctor_name)}` : ""}</td>
             </tr>
             <tr>
-              <td colspan="2"><span class="label">Date of service</span>${when ? escapeHtml(`${when.day}, ${when.time}`) : "-"}</td>
+              <td><span class="label">Date of service</span>${when ? escapeHtml(`${when.day}, ${when.time}`) : "-"}</td>
+              <td><span class="label">Case priority</span>${escapeHtml(casePriorityLabel(priority))}</td>
             </tr>
           </table>
           <table>
@@ -1498,15 +1719,25 @@ function InsuranceDiagnosis({ visit, items }: { visit: EncounterRecord["visit"];
           <dt className="text-[11px] font-semibold uppercase tracking-wide text-muted">Date of service</dt>
           <dd className="font-semibold text-ink">{when ? `${when.day}, ${when.time}` : "—"}</dd>
         </div>
+        <div>
+          <dt className="text-[11px] font-semibold uppercase tracking-wide text-muted">Case priority</dt>
+          <dd>
+            <span className={`mt-1 inline-flex rounded-full border px-2.5 py-1 text-xs font-semibold ${casePriorityClass(priority)}`}>
+              {casePriorityLabel(priority)}
+            </span>
+          </dd>
+        </div>
       </dl>
       {items.length === 0 ? (
         <p className="mt-4 rounded-xl bg-surface-2 px-3 py-4 text-sm text-muted">Add a diagnosis to prepare the insurance statement.</p>
       ) : (
         <ol className="mt-4 space-y-3">
           {items.map((item, index) => (
-            <li key={item.code} className="rounded-xl border border-line bg-surface-2 px-3 py-3">
+            <li key={item.id} className="rounded-xl border border-line bg-surface-2 px-3 py-3">
               <div className="flex items-center justify-between gap-2">
-                <span className="font-mono text-sm font-bold text-blue">{item.code}</span>
+                <span className={`text-sm font-bold ${item.source === "icd11" ? "font-mono text-blue" : "text-muted-strong"}`}>
+                  {item.source === "icd11" ? item.code : "Free Diagnose"}
+                </span>
                 <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${index === 0 ? "bg-blue text-white" : "bg-surface text-muted-strong"}`}>
                   {index === 0 ? "Principal" : "Additional"}
                 </span>
@@ -1828,6 +2059,8 @@ function MedicationOrderDialog({
   const [draft, setDraft] = useState<MedicationOrder>(order);
   const [attempted, setAttempted] = useState(false);
   const titleId = useId();
+  const dosageFormRef = useRef<HTMLSelectElement>(null);
+  const lastStrengthKey = useRef<string>("");
   const services = servicesForOrder(catalog, draft);
   const problems = attempted ? orderProblems(draft, true, services) : {};
   const infusion = draft.route === "IV Infusion / Drip";
@@ -1890,6 +2123,97 @@ function MedicationOrderDialog({
     });
   }
 
+  function applyStrength(medicationName: string, strength: string) {
+    const matches = catalog.filter((item) => item.name === medicationName && item.strength === strength);
+    if (matches.length === 0) {
+      setDraft((current) => ({
+        ...current,
+        medication: medicationName,
+        strength,
+        dosage_form: "",
+        medication_id: null,
+        route: "",
+        ...clearedAdministration,
+      }));
+      return;
+    }
+    const formsForStrength = [...new Set(matches.map((item) => item.dosage_form))];
+    if (formsForStrength.length === 1 && matches[0]) {
+      chooseProduct(matches[0]);
+      return;
+    }
+    setDraft((current) => {
+      const keepForm = formsForStrength.includes(current.dosage_form);
+      const match = keepForm
+        ? matches.find((item) => item.dosage_form === current.dosage_form)
+        : undefined;
+      if (match) {
+        const same = current.medication_id === match.id;
+        const dose = same ? { value: current.dose_value, unit: current.dose_unit } : defaultDose(match.strength, match.dosage_form);
+        const route = same ? current.route : match.routes?.[0]?.route ?? match.route;
+        const next: MedicationOrder = {
+          ...current,
+          medication_id: match.id,
+          medication: match.name,
+          strength: match.strength,
+          dosage_form: match.dosage_form,
+          route,
+          dose_value: dose.value,
+          dose_unit: dose.unit,
+          dose: doseText(dose.value, dose.unit),
+          ...(route === "IV Infusion / Drip" ? {} : clearedAdministration),
+        };
+        return route === "IV Infusion / Drip" ? { ...next, ...syncInfusion(next) } : next;
+      }
+      return {
+        ...current,
+        medication: medicationName,
+        strength,
+        dosage_form: "",
+        medication_id: null,
+        route: "",
+        ...clearedAdministration,
+      };
+    });
+  }
+
+  // When Strength is auto-loaded (single option) or changed, sync Dosage Form.
+  useEffect(() => {
+    if (locked || !draft.medication) return;
+    const availableStrengths = [...new Set(catalog.filter((item) => item.name === draft.medication).map((item) => item.strength))];
+    const strength = availableStrengths.length === 1 ? availableStrengths[0] : draft.strength;
+    if (availableStrengths.length === 1 && draft.strength !== strength) {
+      applyStrength(draft.medication, strength);
+      return;
+    }
+    if (availableStrengths.length > 1 && strength === "" && !availableStrengths.includes("")) return;
+    const key = `${draft.medication}::${strength}`;
+    const matches = catalog.filter((item) => item.name === draft.medication && item.strength === strength);
+    const formsForStrength = [...new Set(matches.map((item) => item.dosage_form))];
+    if (formsForStrength.length === 1 && matches[0] && draft.dosage_form !== formsForStrength[0]) {
+      chooseProduct(matches[0]);
+      lastStrengthKey.current = key;
+      return;
+    }
+    if (draft.dosage_form && !formsForStrength.includes(draft.dosage_form)) {
+      setDraft((current) => ({
+        ...current,
+        dosage_form: "",
+        medication_id: null,
+        route: "",
+        ...clearedAdministration,
+      }));
+      lastStrengthKey.current = key;
+      return;
+    }
+    if (key !== lastStrengthKey.current) {
+      lastStrengthKey.current = key;
+      if (formsForStrength.length > 1 && !draft.dosage_form) {
+        window.requestAnimationFrame(() => dosageFormRef.current?.focus());
+      }
+    }
+  }, [locked, draft.medication, draft.strength, draft.dosage_form, catalog]);
+
   function submit(event: FormEvent) {
     if (locked) return;
     event.preventDefault();
@@ -1941,10 +2265,15 @@ function MedicationOrderDialog({
                       if (match) chooseProduct(match);
                       return;
                     }
+                    if (onlyStrength.length === 1) {
+                      applyStrength(name, onlyStrength[0]);
+                      return;
+                    }
+                    lastStrengthKey.current = "";
                     setDraft((current) => ({
                       ...current,
                       medication: name,
-                      strength: onlyStrength.length === 1 ? onlyStrength[0] : "",
+                      strength: "",
                       dosage_form: "",
                       medication_id: null,
                       route: "",
@@ -1959,25 +2288,18 @@ function MedicationOrderDialog({
                   className={field}
                   disabled={locked || strengths.length <= 1}
                   value={draft.strength}
-                  onChange={(event) => {
-                    const strength = event.target.value;
-                    const matches = named.filter((item) => item.strength === strength);
-                    if (matches.length === 1) chooseProduct(matches[0]);
-                    else {
-                      const formsForStrength = [...new Set(matches.map((item) => item.dosage_form))];
-                      if (formsForStrength.length === 1 && matches[0]) chooseProduct(matches[0]);
-                      else setDraft((current) => ({ ...current, strength, dosage_form: "", medication_id: null, route: "" }));
-                    }
-                  }}
+                  onChange={(event) => applyStrength(draft.medication, event.target.value)}
                 >
                   {strengths.length === 0 ? <option value="">Choose a medication</option> : null}
+                  {strengths.length > 1 ? <option value="">Choose a strength</option> : null}
                   {strengths.map((strength) => <option key={strength || "none"} value={strength}>{strength || "No strength"}</option>)}
                 </select>
               </label>
               <label className={`${label} mt-4`}>Dosage Form <span className="text-danger">*</span>
                 <select
+                  ref={dosageFormRef}
                   className={field}
-                  disabled={locked || uniqueForms.length <= 1}
+                  disabled={locked || uniqueForms.length <= 1 || (strengths.length > 1 && draft.strength === "" && !strengths.includes(""))}
                   value={draft.dosage_form}
                   onChange={(event) => {
                     const dosageForm = event.target.value;
@@ -1985,7 +2307,8 @@ function MedicationOrderDialog({
                     if (match) chooseProduct(match);
                   }}
                 >
-                  {uniqueForms.length === 0 ? <option value="">Choose a strength</option> : null}
+                  {uniqueForms.length === 0 ? <option value="">{strengths.length > 1 && draft.strength === "" ? "Choose a strength" : "No dosage form"}</option> : null}
+                  {uniqueForms.length > 1 ? <option value="">Choose a dosage form</option> : null}
                   {uniqueForms.map((form) => <option key={form} value={form}>{form}</option>)}
                 </select>
               </label>
@@ -2890,6 +3213,24 @@ function AssociatedServicesField({
   );
 }
 
+function StepSaveBar({
+  label,
+  saving,
+  onSave,
+}: {
+  label: string;
+  saving: boolean;
+  onSave: () => void;
+}) {
+  return (
+    <div className="flex justify-end">
+      <button type="button" className={primary} disabled={saving} onClick={onSave}>
+        {saving ? "Saving…" : `Save ${label}`}
+      </button>
+    </div>
+  );
+}
+
 function ChangedMark() {
   return (
     <span className="grid h-4 w-4 place-items-center rounded-full bg-warning text-white" title="Unsaved changes">
@@ -2956,7 +3297,10 @@ function missingForStep(form: ClinicalEncounter, step: EncounterTab) {
     if (form.spo2 == null || Number.isNaN(form.spo2)) return "Enter the oxygen saturation.";
   }
   if (step === "examination" && !form.examination.findings.trim()) return "Enter the examination findings.";
-  if (step === "diagnosis" && form.provisional_diagnoses.length === 0) return "Add at least one ICD-11 diagnosis.";
+  if (step === "diagnosis") {
+    if (!form.case_priority) return "Choose how critical this case is.";
+    if (form.provisional_diagnoses.length === 0) return "Add at least one diagnosis.";
+  }
   return null;
 }
 
@@ -2983,6 +3327,7 @@ function stepSignature(form: ClinicalEncounter, step: EncounterTab) {
   if (step === "investigations") return JSON.stringify(form.investigations);
   if (step === "diagnosis") {
     return JSON.stringify({
+      case_priority: form.case_priority,
       provisional_diagnoses: form.provisional_diagnoses,
       provisional_diagnosis: form.provisional_diagnosis,
     });
@@ -3043,6 +3388,41 @@ function initials(name: string) {
 
 function escapeHtml(value: string) {
   return value.replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[character] ?? character));
+}
+
+function PriorityStableIcon() {
+  return (
+    <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <circle cx="12" cy="12" r="8" />
+      <path d="M8.5 12.5l2.2 2.2 4.8-5.2" />
+    </svg>
+  );
+}
+
+function PriorityUrgentIcon() {
+  return (
+    <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M12 3.5l9 16H3l9-16z" />
+      <path d="M12 10v4" />
+      <path d="M12 17h.01" />
+    </svg>
+  );
+}
+
+function PriorityEmergencyIcon() {
+  return (
+    <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M12 3v4" />
+      <path d="M12 17v4" />
+      <path d="M4.9 6.5l2.8 2.8" />
+      <path d="M16.3 14.7l2.8 2.8" />
+      <path d="M3 12h4" />
+      <path d="M17 12h4" />
+      <path d="M4.9 17.5l2.8-2.8" />
+      <path d="M16.3 9.3l2.8-2.8" />
+      <circle cx="12" cy="12" r="2.5" />
+    </svg>
+  );
 }
 
 function PrintIcon() {

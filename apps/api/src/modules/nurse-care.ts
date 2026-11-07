@@ -127,9 +127,7 @@ export function registerNurseCare(app: FastifyInstance, pool: pg.Pool) {
        LEFT JOIN patient_visit_encounters e ON e.visit_id = v.id
        LEFT JOIN patient_visit_triages t ON t.visit_id = v.id
        WHERE ${clauses.join(" AND ")}
-       ORDER BY
-         CASE v.nursing_plan_status WHEN 'in_progress' THEN 0 WHEN 'ordered' THEN 1 ELSE 2 END,
-         e.finished_at DESC NULLS LAST`,
+       ORDER BY COALESCE(e.finished_at, v.status_changed_at) DESC NULLS LAST`,
       values,
     );
     return {
@@ -169,7 +167,7 @@ export function registerNurseCare(app: FastifyInstance, pool: pg.Pool) {
               c.name AS clinic_name, h.name AS hotel_name,
               p.name AS patient_name, p.mrn AS patient_mrn, p.gender AS patient_gender, p.nationality AS patient_nationality,
               EXTRACT(YEAR FROM age((v.created_at AT TIME ZONE 'UTC')::date, p.birthdate))::int AS patient_age_at_visit,
-              e.medication_orders, e.procedure_orders
+              e.case_priority, e.medication_orders, e.procedure_orders
        FROM patient_visits v
        JOIN clinics c ON c.id = v.clinic_id
        JOIN hotels h ON h.id = c.hotel_id
@@ -178,11 +176,32 @@ export function registerNurseCare(app: FastifyInstance, pool: pg.Pool) {
        WHERE ${clauses.join(" AND ")}
        ORDER BY
          CASE v.monitoring_status WHEN 'in_progress' THEN 0 ELSE 1 END,
+         CASE e.case_priority WHEN 'emergency' THEN 0 WHEN 'urgent' THEN 1 WHEN 'stable' THEN 2 ELSE 3 END,
          v.updated_at DESC`,
       values,
     );
+    const items = result.rows.map((row) => presentMonitoring(row as Record<string, unknown>));
+    const visitIds = items.map((item) => item.visit_id);
+    const observations = visitIds.length === 0
+      ? []
+      : (await pool.query(
+        `SELECT o.id, o.visit_id, o.temperature_c, o.pulse, o.respiratory_rate, o.spo2, o.blood_pressure, o.notes,
+                o.recorded_by, o.recorded_at, o.sent_to_doctor_at, u.name AS recorded_by_name
+         FROM patient_visit_nurse_observations o
+         LEFT JOIN users u ON u.id = o.recorded_by
+         WHERE o.visit_id = ANY($1::uuid[])
+         ORDER BY o.recorded_at DESC`,
+        [visitIds],
+      )).rows;
+    const byVisit = new Map<string, ReturnType<typeof presentObservation>[]>();
+    for (const row of observations) {
+      const visitId = String((row as { visit_id: string }).visit_id);
+      const list = byVisit.get(visitId) ?? [];
+      list.push(presentObservation(row as Record<string, unknown>));
+      byVisit.set(visitId, list);
+    }
     return {
-      items: result.rows.map((row) => presentMonitoring(row as Record<string, unknown>)),
+      items: items.map((item) => ({ ...item, observations: byVisit.get(item.visit_id) ?? [] })),
     };
   });
 
@@ -191,15 +210,14 @@ export function registerNurseCare(app: FastifyInstance, pool: pg.Pool) {
     const visit = await findVisit(pool, patientId, visitId);
     await assertNurseView(pool, request, visit);
     const encounter = await pool.query(
-      `SELECT provisional_diagnoses, medication_orders, procedure_orders, patient_advices, management_plan, finished_at
+      `SELECT provisional_diagnoses, medication_orders, procedure_orders, patient_advices, management_plan, case_priority, finished_at
        FROM patient_visit_encounters WHERE visit_id = $1`,
       [visitId],
     );
-    const triage = await pool.query<{ triage_category: string | null }>(
-      `SELECT triage_category FROM patient_visit_triages WHERE visit_id = $1`,
-      [visitId],
-    );
     const row = encounter.rows[0] as Record<string, unknown> | undefined;
+    const casePriority = row?.case_priority === "stable" || row?.case_priority === "urgent" || row?.case_priority === "emergency"
+      ? row.case_priority
+      : null;
     return {
       visit: {
         id: visit.id,
@@ -214,7 +232,7 @@ export function registerNurseCare(app: FastifyInstance, pool: pg.Pool) {
         visit_type: visit.visit_type,
         nursing_plan_status: visit.nursing_plan_status,
         monitoring_status: visit.monitoring_status,
-        triage_category: triage.rows[0]?.triage_category ?? null,
+        case_priority: casePriority,
       },
       plan: {
         provisional_diagnoses: Array.isArray(row?.provisional_diagnoses) ? row.provisional_diagnoses : [],
@@ -270,6 +288,24 @@ export function registerNurseCare(app: FastifyInstance, pool: pg.Pool) {
     return { ok: true, monitoring_status: "in_progress" };
   });
 
+  app.get("/api/patients/:patientId/visits/:visitId/monitoring/observations", { preHandler: authenticate }, async (request) => {
+    const { patientId, visitId } = request.params as { patientId: string; visitId: string };
+    const visit = await findVisit(pool, patientId, visitId);
+    await assertNurseView(pool, request, visit);
+    const result = await pool.query(
+      `SELECT o.id, o.temperature_c, o.pulse, o.respiratory_rate, o.spo2, o.blood_pressure, o.notes,
+              o.recorded_by, o.recorded_at, o.sent_to_doctor_at, u.name AS recorded_by_name
+       FROM patient_visit_nurse_observations o
+       LEFT JOIN users u ON u.id = o.recorded_by
+       WHERE o.visit_id = $1
+       ORDER BY o.recorded_at DESC`,
+      [visitId],
+    );
+    return {
+      items: result.rows.map((row) => presentObservation(row as Record<string, unknown>)),
+    };
+  });
+
   app.post("/api/patients/:patientId/visits/:visitId/monitoring", { preHandler: authenticate }, async (request) => {
     const { patientId, visitId } = request.params as { patientId: string; visitId: string };
     const visit = await findVisit(pool, patientId, visitId);
@@ -278,46 +314,69 @@ export function registerNurseCare(app: FastifyInstance, pool: pg.Pool) {
     if (visit.monitoring_status === "none") {
       throw new ApplicationError(422, "invalid_status", "Send this patient to monitoring first");
     }
-    const client = await pool.connect();
-    try {
-      await client.query("BEGIN");
-      await client.query(
-        `INSERT INTO patient_visit_nurse_observations (
-           visit_id, temperature_c, pulse, respiratory_rate, spo2, blood_pressure, notes, recorded_by, sent_to_doctor_at
-         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now())`,
-        [
-          visitId,
-          body.temperature_c,
-          body.pulse,
-          body.respiratory_rate,
-          body.spo2,
-          body.blood_pressure || null,
-          body.notes,
-          request.user.sub,
-        ],
-      );
-      await client.query(
-        `UPDATE patient_visits
-         SET monitoring_status = 'completed',
-             nursing_plan_status = CASE WHEN nursing_plan_status IN ('ordered', 'in_progress') THEN 'completed' ELSE nursing_plan_status END,
-             updated_at = now()
-         WHERE id = $1`,
-        [visitId],
-      );
-      await client.query("COMMIT");
-    } catch (error) {
-      await client.query("ROLLBACK");
-      throw error;
-    } finally {
-      client.release();
+    if (visit.monitoring_status === "completed") {
+      throw new ApplicationError(422, "invalid_status", "Monitoring is already completed");
     }
+    const inserted = await pool.query(
+      `INSERT INTO patient_visit_nurse_observations (
+         visit_id, temperature_c, pulse, respiratory_rate, spo2, blood_pressure, notes, recorded_by, sent_to_doctor_at
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now())
+       RETURNING id, temperature_c, pulse, respiratory_rate, spo2, blood_pressure, notes, recorded_by, recorded_at, sent_to_doctor_at`,
+      [
+        visitId,
+        body.temperature_c,
+        body.pulse,
+        body.respiratory_rate,
+        body.spo2,
+        body.blood_pressure || null,
+        body.notes,
+        request.user.sub,
+      ],
+    );
     noteActivity(request, {
       entity: "patient",
       entityId: visit.patient_id,
-      summary: `Recorded monitoring and sent ${visit.patient_name} to the doctor`,
+      summary: `Recorded a monitoring observation for ${visit.patient_name}`,
+    });
+    return {
+      ok: true,
+      monitoring_status: "in_progress" as const,
+      observation: presentObservation({
+        ...(inserted.rows[0] as Record<string, unknown>),
+        recorded_by_name: null,
+      }),
+    };
+  });
+
+  app.post("/api/patients/:patientId/visits/:visitId/monitoring/complete", { preHandler: authenticate }, async (request) => {
+    const { patientId, visitId } = request.params as { patientId: string; visitId: string };
+    const visit = await findVisit(pool, patientId, visitId);
+    await assertNurseUpdate(pool, request, visit);
+    if (visit.monitoring_status !== "in_progress") {
+      throw new ApplicationError(422, "invalid_status", "Only in-progress monitoring can be completed");
+    }
+    const count = await pool.query<{ total: number }>(
+      `SELECT count(*)::int AS total FROM patient_visit_nurse_observations WHERE visit_id = $1`,
+      [visitId],
+    );
+    if ((count.rows[0]?.total ?? 0) < 1) {
+      throw new ApplicationError(422, "no_observations", "Record at least one observation before completing monitoring");
+    }
+    await pool.query(
+      `UPDATE patient_visits
+       SET monitoring_status = 'completed',
+           nursing_plan_status = CASE WHEN nursing_plan_status IN ('ordered', 'in_progress') THEN 'completed' ELSE nursing_plan_status END,
+           updated_at = now()
+       WHERE id = $1`,
+      [visitId],
+    );
+    noteActivity(request, {
+      entity: "patient",
+      entityId: visit.patient_id,
+      summary: `Completed monitoring for ${visit.patient_name}`,
       changes: [changed("Monitoring", "In progress", "Completed")].filter((item) => item !== null),
     });
-    return { ok: true, monitoring_status: "completed" };
+    return { ok: true, monitoring_status: "completed" as const };
   });
 }
 
@@ -361,7 +420,26 @@ function presentMonitoring(row: Record<string, unknown>) {
     patient_gender: typeof row.patient_gender === "string" ? row.patient_gender : null,
     patient_nationality: typeof row.patient_nationality === "string" ? row.patient_nationality : null,
     patient_age_at_visit: row.patient_age_at_visit == null ? null : Number(row.patient_age_at_visit),
+    case_priority: row.case_priority === "stable" || row.case_priority === "urgent" || row.case_priority === "emergency"
+      ? row.case_priority
+      : null,
     ordered_services: extractOrderedServices(row.medication_orders, row.procedure_orders),
+  };
+}
+
+function presentObservation(row: Record<string, unknown>) {
+  return {
+    id: String(row.id),
+    temperature_c: row.temperature_c == null ? null : Number(row.temperature_c),
+    pulse: row.pulse == null ? null : Number(row.pulse),
+    respiratory_rate: row.respiratory_rate == null ? null : Number(row.respiratory_rate),
+    spo2: row.spo2 == null ? null : Number(row.spo2),
+    blood_pressure: typeof row.blood_pressure === "string" ? row.blood_pressure : null,
+    notes: typeof row.notes === "string" ? row.notes : "",
+    recorded_by: typeof row.recorded_by === "string" ? row.recorded_by : null,
+    recorded_by_name: typeof row.recorded_by_name === "string" ? row.recorded_by_name : null,
+    recorded_at: row.recorded_at ? new Date(String(row.recorded_at)).toISOString() : null,
+    sent_to_doctor_at: row.sent_to_doctor_at ? new Date(String(row.sent_to_doctor_at)).toISOString() : null,
   };
 }
 
@@ -501,7 +579,7 @@ async function findVisit(pool: pg.Pool, patientId: string, visitId: string) {
   if (!isUuid(patientId) || !isUuid(visitId)) throw new ApplicationError(404, "not_found", "Visit was not found");
   const result = await pool.query(
     `SELECT v.id, v.patient_id, v.clinic_id, v.hotel_room_no, v.status, v.visit_type, v.assigned_nurse_id,
-            v.nursing_plan_status, v.monitoring_status,
+            v.assigned_doctor_id, v.nursing_plan_status, v.monitoring_status,
             c.name AS clinic_name, h.name AS hotel_name,
             p.name AS patient_name, p.mrn AS patient_mrn, p.gender AS patient_gender, p.nationality AS patient_nationality,
             p.added_by AS patient_added_by,
@@ -521,6 +599,7 @@ async function findVisit(pool: pg.Pool, patientId: string, visitId: string) {
     status: string;
     visit_type: string;
     assigned_nurse_id: string | null;
+    assigned_doctor_id: string | null;
     nursing_plan_status: string;
     monitoring_status: string;
     clinic_name: string;
@@ -539,20 +618,24 @@ async function findVisit(pool: pg.Pool, patientId: string, visitId: string) {
 async function assertNurseView(
   pool: pg.Pool,
   request: { user: { sub: string; type: string; role: string } },
-  visit: { clinic_id: string; patient_added_by: string },
+  visit: { clinic_id: string; patient_added_by: string; assigned_doctor_id?: string | null },
 ) {
   const access = await loadAccess(pool, request.user);
-  const allowed = can(access, request.user.sub, {
-    resource: "triage",
-    action: "view",
-    ownerId: visit.patient_added_by,
-    clinicId: visit.clinic_id,
-  }) || can(access, request.user.sub, {
-    resource: "visit",
-    action: "view",
-    ownerId: visit.patient_added_by,
-    clinicId: visit.clinic_id,
-  });
+  const assignedDoctor = request.user.role === "Doctor" && visit.assigned_doctor_id === request.user.sub;
+  const allowed = assignedDoctor
+    || request.user.type === "super-admin"
+    || request.user.type === "admin"
+    || can(access, request.user.sub, {
+      resource: "triage",
+      action: "view",
+      ownerId: visit.patient_added_by,
+      clinicId: visit.clinic_id,
+    }) || can(access, request.user.sub, {
+      resource: "visit",
+      action: "view",
+      ownerId: visit.patient_added_by,
+      clinicId: visit.clinic_id,
+    });
   if (!allowed) throw new ApplicationError(403, "forbidden", "You cannot view this nursing plan");
 }
 

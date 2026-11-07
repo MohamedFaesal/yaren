@@ -266,6 +266,7 @@ export type DoctorCase = {
   triage_category: TriageCategory | null;
   chief_complaint: string | null;
   triage_completed_at: string | null;
+  monitoring_status?: MonitoringStatus | null;
 };
 
 export type EncounterSystem = "general" | "heent" | "respiratory" | "cardiovascular" | "abdomen" | "cns" | "musculoskeletal" | "skin" | "other";
@@ -290,8 +291,9 @@ export type ClinicalEncounter = {
     findings: string;
     notes: Partial<Record<EncounterSystem, string>>;
   };
-  provisional_diagnoses: { code: string; title: string }[];
+  provisional_diagnoses: EncounterDiagnosis[];
   provisional_diagnosis: string;
+  case_priority: CasePriority | "";
   investigations: EncounterInvestigation[];
   management_plan: string;
   allergies: TriageAllergy[];
@@ -302,6 +304,29 @@ export type ClinicalEncounter = {
 };
 
 export type Icd11Code = { code: string; title: string };
+
+export type CasePriority = "stable" | "urgent" | "emergency";
+
+export type EncounterDiagnosis = {
+  id: string;
+  code: string;
+  title: string;
+  source: "icd11" | "free_text";
+};
+
+export function casePriorityLabel(priority?: CasePriority | "" | null) {
+  if (priority === "stable") return "Stable";
+  if (priority === "urgent") return "Urgent";
+  if (priority === "emergency") return "Emergency";
+  return "—";
+}
+
+export function casePriorityClass(priority?: CasePriority | "" | null) {
+  if (priority === "emergency") return "border-danger bg-danger-soft text-danger";
+  if (priority === "urgent") return "border-warning bg-warning-soft text-warning";
+  if (priority === "stable") return "border-success bg-success-soft text-success";
+  return "border-line bg-surface text-muted-strong";
+}
 
 export type InvestigationStatus = "ordered" | "collected" | "sent" | "result_uploaded" | "completed";
 export type InvestigationPriority = "emergency" | "urgent" | "normal";
@@ -361,6 +386,7 @@ export type SampleCollectionItem = {
   patient_gender: string | null;
   patient_nationality: string | null;
   patient_age_at_visit: number | null;
+  case_priority: CasePriority | null;
   highest_priority: InvestigationPriority;
   open_count: number;
   collectable_count: number;
@@ -368,13 +394,55 @@ export type SampleCollectionItem = {
   ordered_at: string | null;
 };
 
+export type InvestigationVisitOverallStatus = "sent" | "partially_completed" | "completed" | "other";
+
+export type InvestigationVisitItem = {
+  visit_id: string;
+  patient_id: string;
+  clinic_id: string;
+  hotel_room_no: string | null;
+  visit_status: VisitCareStatus;
+  clinic_name: string;
+  hotel_name: string;
+  patient_name: string;
+  patient_mrn: string;
+  patient_gender: string | null;
+  patient_nationality: string | null;
+  patient_age_at_visit: number | null;
+  case_priority: CasePriority | null;
+  test_count: number;
+  overall_status: InvestigationVisitOverallStatus;
+  ordered_at: string | null;
+};
+
+export type InvestigationVisitSummary = {
+  all: number;
+  sent: number;
+  partially_completed: number;
+  completed: number;
+};
+
 export type InvestigationPage = {
-  items: VisitInvestigation[];
+  items: InvestigationVisitItem[];
   total: number;
   page: number;
   page_size: number;
-  summary: Record<InvestigationStatus, number>;
+  summary: InvestigationVisitSummary;
 };
+
+export function investigationVisitStatusLabel(status?: InvestigationVisitOverallStatus | null) {
+  if (status === "sent") return "Sent";
+  if (status === "partially_completed") return "Partially Completed";
+  if (status === "completed") return "Completed";
+  return "In progress";
+}
+
+export function investigationVisitStatusClass(status?: InvestigationVisitOverallStatus | null) {
+  if (status === "sent") return "bg-panel-strong text-blue-strong";
+  if (status === "partially_completed") return "bg-warning-soft text-warning";
+  if (status === "completed") return "bg-success-soft text-success";
+  return "bg-surface-2 text-muted-strong";
+}
 
 export function investigationStatusLabel(status?: InvestigationStatus | null) {
   if (status === "ordered") return "Ordered";
@@ -466,7 +534,23 @@ export type MonitoringItem = {
   patient_gender: string | null;
   patient_nationality: string | null;
   patient_age_at_visit: number | null;
+  case_priority: CasePriority | null;
   ordered_services: MonitoringOrderedService[];
+  observations?: MonitoringObservation[];
+};
+
+export type MonitoringObservation = {
+  id: string;
+  temperature_c: number | null;
+  pulse: number | null;
+  respiratory_rate: number | null;
+  spo2: number | null;
+  blood_pressure: string | null;
+  notes: string;
+  recorded_by: string | null;
+  recorded_by_name: string | null;
+  recorded_at: string | null;
+  sent_to_doctor_at: string | null;
 };
 
 export function nursingPlanStatusLabel(status?: NursingPlanStatus | null) {
@@ -569,10 +653,10 @@ export type NursingPlanDetail = {
     visit_type: VisitType;
     nursing_plan_status: NursingPlanStatus;
     monitoring_status: MonitoringStatus;
-    triage_category: TriageCategory | null;
+    case_priority: CasePriority | null;
   };
   plan: {
-    provisional_diagnoses: { code: string; title: string }[];
+    provisional_diagnoses: EncounterDiagnosis[];
     medication_orders: MedicationOrder[];
     procedure_orders: ProcedureOrder[];
     patient_advices: PatientAdvice[];
@@ -666,12 +750,23 @@ export type DoctorCaseSummary = {
   average_wait_minutes: number;
 };
 
+export type DoctorMonitoringRecord = MonitoringObservation & {
+  visit_id: string;
+  patient_id: string;
+  patient_name: string;
+  patient_mrn: string;
+  hotel_room_no: string | null;
+  monitoring_status: MonitoringStatus;
+  visit_status: VisitCareStatus;
+};
+
 export type DoctorCasePage = {
   items: DoctorCase[];
   total: number;
   page: number;
   page_size: number;
   summary?: DoctorCaseSummary;
+  monitoring?: DoctorMonitoringRecord[];
 };
 
 export type TriageQueueResult = {

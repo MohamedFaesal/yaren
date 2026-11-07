@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState, type MouseEvent, type ReactNode } from "react";
 import { Link } from "react-router";
-import { api, visitStatusLabel, visitTypeLabel, waitMinutes, type DoctorCaseDetail, type DoctorCasePage, type DoctorCaseSummary, type GeneralSettings, type TriageCategory, type User, type VisitCareStatus } from "../api";
+import { api, investigationPriorityClass, investigationPriorityLabel, investigationStatusClass, investigationStatusLabel, monitoringStatusClass, monitoringStatusLabel, visitStatusLabel, visitTypeLabel, waitMinutes, type DoctorCase, type DoctorCaseDetail, type DoctorCasePage, type DoctorCaseSummary, type GeneralSettings, type MonitoringObservation, type TriageCategory, type User, type VisitCareStatus, type VisitInvestigation } from "../api";
 import { canAct } from "../access";
 import { useActiveClinic } from "../ClinicWorkspace";
-import { DataTable, Page, field, messageOf, secondary, th } from "./ui";
+import { Page, field, messageOf, secondary } from "./ui";
 import { encounterStepSaved } from "./EncounterPage";
 
 const pageSize = 10;
@@ -52,14 +52,18 @@ export function DoctorCasesPage({ token, actor }: { token: string; actor: User }
   const [detail, setDetail] = useState<DoctorCaseDetail | null>(null);
   const [detailError, setDetailError] = useState<string | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [observations, setObservations] = useState<MonitoringObservation[]>([]);
+  const [observationsLoading, setObservationsLoading] = useState(false);
+  const [investigations, setInvestigations] = useState<VisitInvestigation[]>([]);
+  const [investigationsLoading, setInvestigationsLoading] = useState(false);
   const requestId = useRef(0);
   const seesAll = actor.type === "super-admin" || actor.type === "admin";
   const canOpenVisit = canAct(actor, "visit", "view");
   const pages = Math.max(1, Math.ceil(result.total / pageSize));
   const start = result.total === 0 ? 0 : (result.page - 1) * pageSize + 1;
   const end = Math.min(result.page * pageSize, result.total);
-  const columns = seesAll ? 6 : 5;
   const summary = result.summary ?? emptySummary;
+  const selected = result.items.find((item) => item.id === selectedId) ?? null;
 
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
@@ -91,11 +95,15 @@ export function DoctorCasesPage({ token, actor }: { token: string; actor: User }
     if (!selectedId) {
       setDetail(null);
       setDetailError(null);
+      setObservations([]);
+      setInvestigations([]);
       return;
     }
     let cancelled = false;
     setDetailLoading(true);
     setDetailError(null);
+    setObservations([]);
+    setInvestigations([]);
     api<DoctorCaseDetail>(`/api/doctor-cases/${selectedId}`, {}, token)
       .then((data) => {
         if (!cancelled) setDetail(data);
@@ -113,6 +121,50 @@ export function DoctorCasesPage({ token, actor }: { token: string; actor: User }
       cancelled = true;
     };
   }, [selectedId, token]);
+
+  useEffect(() => {
+    if (!detail) return;
+    let cancelled = false;
+    setObservationsLoading(true);
+    api<{ items: MonitoringObservation[] }>(
+      `/api/patients/${detail.patient_id}/visits/${detail.id}/monitoring/observations`,
+      {},
+      token,
+    )
+      .then((data) => {
+        if (!cancelled) setObservations(data.items);
+      })
+      .catch(() => {
+        if (!cancelled) setObservations([]);
+      })
+      .finally(() => {
+        if (!cancelled) setObservationsLoading(false);
+      });
+    setInvestigationsLoading(true);
+    api<{ items: VisitInvestigation[] }>(
+      `/api/patients/${detail.patient_id}/visits/${detail.id}/investigations`,
+      {},
+      token,
+    )
+      .then((data) => {
+        if (!cancelled) setInvestigations(data.items);
+      })
+      .catch(() => {
+        if (!cancelled) setInvestigations([]);
+      })
+      .finally(() => {
+        if (!cancelled) setInvestigationsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [detail, token]);
+
+  useEffect(() => {
+    if (result.items.length === 0) return;
+    if (selectedId && result.items.some((item) => item.id === selectedId)) return;
+    setSelectedId(result.items[0].id);
+  }, [result.items, selectedId]);
 
   useEffect(() => {
     const id = ++requestId.current;
@@ -157,131 +209,106 @@ export function DoctorCasesPage({ token, actor }: { token: string; actor: User }
         <StatCard label="To see now" value={summary.to_see_now} hint="Emergency and urgent" tone="rose" active={focus === "now"} onClick={() => chooseFocus("now")} />
         <StatCard label="Average waiting time" value={waitedLabel(averageTarget)} hint={averageHint} tone="amber" />
       </div>
-      <section className="rounded-2xl border border-line bg-surface p-4 shadow-card sm:p-5">
-        <h2 className="text-base font-bold text-ink">Patient queue</h2>
-        <p className="mt-0.5 text-sm text-muted">Waiting to see the doctor, plus diagnosed and waiting-for-investigation visits</p>
-        <div className="mt-4 flex flex-wrap gap-2">
-          <QueueChip label="All" count={summary.waiting + summary.diagnosed + summary.waiting_for_investigation} active={focus === ""} onClick={() => chooseFocus("")} />
-          <QueueChip label="To see now" count={summary.to_see_now} active={focus === "now"} onClick={() => chooseFocus("now")} dot="bg-danger" />
-          <QueueChip label="Emergency" count={summary.emergency} active={focus === "emergency"} onClick={() => chooseFocus("emergency")} dot="bg-danger" />
-          <QueueChip label="Urgent" count={summary.urgent} active={focus === "urgent"} onClick={() => chooseFocus("urgent")} dot="bg-warning" />
-          <QueueChip label="Normal" count={summary.normal} active={focus === "normal"} onClick={() => chooseFocus("normal")} dot="bg-success" />
-          <QueueChip label="Diagnosed" count={summary.diagnosed} active={focus === "diagnosed"} onClick={() => chooseFocus("diagnosed")} dot="bg-success" />
-          <QueueChip label="Waiting for investigation" count={summary.waiting_for_investigation} active={focus === "waiting_for_investigation"} onClick={() => chooseFocus("waiting_for_investigation")} dot="bg-blue" />
+      <section className="rounded-2xl border border-line bg-surface shadow-card">
+        <div className="border-b border-line-soft p-4 sm:p-5">
+          <div className="flex flex-wrap gap-2">
+            <QueueChip label="All" count={summary.waiting + summary.diagnosed + summary.waiting_for_investigation} active={focus === ""} onClick={() => chooseFocus("")} />
+            <QueueChip label="To see now" count={summary.to_see_now} active={focus === "now"} onClick={() => chooseFocus("now")} dot="bg-danger" />
+            <QueueChip label="Emergency" count={summary.emergency} active={focus === "emergency"} onClick={() => chooseFocus("emergency")} dot="bg-danger" />
+            <QueueChip label="Urgent" count={summary.urgent} active={focus === "urgent"} onClick={() => chooseFocus("urgent")} dot="bg-warning" />
+            <QueueChip label="Normal" count={summary.normal} active={focus === "normal"} onClick={() => chooseFocus("normal")} dot="bg-success" />
+            <QueueChip label="Diagnosed" count={summary.diagnosed} active={focus === "diagnosed"} onClick={() => chooseFocus("diagnosed")} dot="bg-success" />
+            <QueueChip label="Waiting for investigation" count={summary.waiting_for_investigation} active={focus === "waiting_for_investigation"} onClick={() => chooseFocus("waiting_for_investigation")} dot="bg-blue" />
+          </div>
+          <label className="relative mt-4 block max-w-xl">
+            <span className="sr-only">Search queue</span>
+            <input className={field} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search by name, MRN, or hotel" />
+          </label>
         </div>
-        <label className="relative mt-4 block max-w-xl">
-          <span className="sr-only">Search queue</span>
-          <input className={field} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search by name, MRN, or hotel" />
-        </label>
-        <div className="mt-4">
-          <DataTable>
-            <thead className="bg-surface-2">
-              <tr>
-                <th className={th}>#</th>
-                <th className={th}>Patient</th>
-                <th className={th}>Triage</th>
-                <th className={th}>Waiting time</th>
-                {seesAll ? <th className={th}>Doctor</th> : null}
-                <th className={`${th} sticky right-0 z-10 border-l border-line bg-surface-2 text-right`}>Action</th>
-              </tr>
-            </thead>
-            <tbody>
-              {result.items.length === 0 ? (
-                <tr>
-                  <td className="px-4 py-10 text-center text-sm text-muted" colSpan={columns}>
-                    {loading ? "Loading queue…" : search || focus ? "No patients match this queue." : seesAll ? "No visits have been sent to a doctor." : "No visits have been assigned to you."}
-                  </td>
-                </tr>
-              ) : result.items.map((row, index) => {
-                const done = closedCase(row.status) && row.triage_completed_at && row.status_changed_at;
-                const elapsed = done
-                  ? Math.max(0, new Date(row.status_changed_at).getTime() - new Date(row.triage_completed_at!).getTime())
-                  : row.triage_completed_at
-                    ? Math.max(0, now - new Date(row.triage_completed_at).getTime())
-                    : null;
-                const over = elapsed != null && elapsed >= waitMinutes(waitSettings, row.clinic_id, "doctor") * 60_000;
-                return (
-                  <tr
-                    key={row.id}
-                    className={`group cursor-pointer border-t border-line-soft hover:bg-surface-2 ${selectedId === row.id ? "bg-panel" : ""}`}
-                    onClick={() => setSelectedId(row.id)}
-                  >
-                    <td className="px-4 py-3 text-sm text-muted">{start + index}</td>
-                    <td className="px-4 py-3">
-                      <span className="flex flex-wrap items-center gap-2">
-                        <span className="font-semibold">{row.patient_name}</span>
-                        <span className="rounded-full bg-surface-2 px-2 py-0.5 text-[11px] font-semibold text-ink">{visitTypeLabel(row.visit_type)}</span>
-                      </span>
-                      <span className="mt-0.5 block text-xs text-muted">
+        <div className="grid lg:grid-cols-[22rem_minmax(0,1fr)] lg:items-start">
+          <div className="border-b border-line-soft lg:max-h-[calc(100vh-14rem)] lg:overflow-y-auto lg:border-b-0 lg:border-r">
+            {result.items.length === 0 ? (
+              <p className="px-4 py-10 text-center text-sm text-muted">
+                {loading ? "Loading queue…" : search || focus ? "No patients match this queue." : seesAll ? "No visits have been sent to a doctor." : "No visits have been assigned to you."}
+              </p>
+            ) : result.items.map((row) => {
+              const timing = waitFor(row, now);
+              const over = timing.elapsed != null && timing.elapsed >= waitMinutes(waitSettings, row.clinic_id, "doctor") * 60_000;
+              const readingCount = (result.monitoring ?? []).filter((item) => item.visit_id === row.id).length;
+              return (
+                <button
+                  key={row.id}
+                  type="button"
+                  onClick={() => setSelectedId(row.id)}
+                  className={`block w-full border-b border-l-4 border-b-line-soft px-4 py-3 text-left last:border-b-0 ${triageEdge(row.triage_category)} ${selectedId === row.id ? triageWash(row.triage_category) : "bg-surface hover:bg-surface-2"}`}
+                >
+                  <span className="flex items-start justify-between gap-3">
+                    <span className="min-w-0">
+                      <span className="block truncate font-semibold text-ink">{row.patient_name}</span>
+                      <span className="mt-0.5 block truncate text-xs text-muted">
                         <span className="font-mono">{row.patient_mrn}</span>
                         {" · "}
                         {row.hotel_room_no ? `Room ${row.hotel_room_no}` : "No room"}
-                        {" · "}
-                        {row.hotel_name}
+                        {seesAll && row.assigned_doctor_name ? ` · ${row.assigned_doctor_name}` : ""}
                       </span>
-                    </td>
-                    <td className="px-4 py-3"><CategoryPill category={row.triage_category} /></td>
-                    <td className="px-4 py-3 text-sm">
-                      {elapsed == null ? "—" : (
-                        <>
-                          <span className={`block font-mono text-sm font-semibold tabular-nums ${over ? "text-danger" : "text-ink"}`}>{clockLabel(elapsed)}</span>
-                          {done ? (
-                            <span className="mt-1 flex flex-wrap items-center gap-1.5">
-                              <span className="text-xs font-semibold text-success">Finished</span>
-                              <QueueStatus status={row.status} />
-                            </span>
-                          ) : over ? <span className="mt-0.5 block text-xs text-danger">Over the target</span> : null}
-                        </>
-                      )}
-                    </td>
-                    {seesAll ? <td className="px-4 py-3 text-sm">{row.assigned_doctor_name || "—"}</td> : null}
-                    <td className={`sticky right-0 z-10 border-l border-line px-4 py-3 ${selectedId === row.id ? "bg-panel" : "bg-surface group-hover:bg-surface-2"}`}>
-                      <div className="flex items-center justify-end gap-2">
-                        <button
-                          type="button"
-                          className="grid h-9 w-9 shrink-0 place-items-center rounded-lg border border-line-strong bg-surface text-ink hover:bg-surface-2"
-                          aria-label="View triage"
-                          title="View triage"
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            setSelectedId(row.id);
-                          }}
-                        >
-                          <EyeIcon />
-                        </button>
-                        <StartEncounterLink to={`/patients/to-doctor/${row.id}/encounter`} label={encounterActionLabel(row.status, row.id)} onClick={(event) => event.stopPropagation()} />
-                      </div>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </DataTable>
-        </div>
-        <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
-          <p className="text-sm text-muted-strong">{loading ? "Loading" : result.total === 0 ? "0 patients" : `Showing ${start}–${end} of ${result.total}`}</p>
-          <div className="flex items-center gap-2">
-            <button type="button" className={`${secondary} px-3 py-2 disabled:opacity-50`} disabled={loading || result.page <= 1} onClick={() => setPage((current) => Math.max(1, current - 1))}>Previous</button>
-            <span className="grid h-9 min-w-9 place-items-center rounded-lg bg-blue px-2 text-sm font-semibold text-white">{result.total === 0 ? 0 : result.page}</span>
-            <button type="button" className={`${secondary} px-3 py-2 disabled:opacity-50`} disabled={loading || result.page >= pages} onClick={() => setPage((current) => current + 1)}>Next</button>
+                    </span>
+                    <span className={`shrink-0 rounded-full px-2 py-0.5 font-mono text-sm font-semibold tabular-nums ${over ? "bg-danger-soft text-danger" : "text-ink"}`}>
+                      {timing.elapsed == null ? "—" : clockLabel(timing.elapsed)}
+                    </span>
+                  </span>
+                  <span className="mt-2 flex flex-wrap items-center gap-1.5">
+                    <CategoryPill category={row.triage_category} />
+                    <QueueStatus status={row.status} />
+                    {row.monitoring_status === "completed" || row.monitoring_status === "in_progress" ? (
+                      <span className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${monitoringStatusClass(row.monitoring_status)}`}>
+                        {readingCount > 0 ? `${readingCount} reading${readingCount === 1 ? "" : "s"}` : monitoringStatusLabel(row.monitoring_status)}
+                      </span>
+                    ) : null}
+                  </span>
+                </button>
+              );
+            })}
+            <div className="flex flex-wrap items-center justify-between gap-2 border-t border-line-soft px-3 py-3">
+              <p className="text-xs text-muted-strong">{loading ? "Loading" : result.total === 0 ? "0 patients" : `${start}–${end} of ${result.total}`}</p>
+              <div className="flex items-center gap-1.5">
+                <button type="button" className={`${secondary} px-2.5 py-1.5 text-xs disabled:opacity-50`} disabled={loading || result.page <= 1} onClick={() => setPage((current) => Math.max(1, current - 1))}>Previous</button>
+                <span className="grid h-8 min-w-8 place-items-center rounded-lg bg-blue px-1.5 text-xs font-semibold text-white">{result.total === 0 ? 0 : result.page}</span>
+                <button type="button" className={`${secondary} px-2.5 py-1.5 text-xs disabled:opacity-50`} disabled={loading || result.page >= pages} onClick={() => setPage((current) => current + 1)}>Next</button>
+              </div>
+            </div>
           </div>
+          <CasePanel
+            row={selected}
+            detail={detail}
+            loading={detailLoading}
+            error={detailError}
+            observations={observationsLoading && observations.length === 0 ? (result.monitoring ?? []).filter((item) => item.visit_id === selectedId) : observations}
+            observationsLoading={observationsLoading}
+            investigations={investigations}
+            investigationsLoading={investigationsLoading}
+            now={now}
+            waitMinutesTarget={selected ? waitMinutes(waitSettings, selected.clinic_id, "doctor") : waitSettings.doctor_wait_minutes}
+            canOpenVisit={canOpenVisit}
+            seesAll={seesAll}
+          />
         </div>
       </section>
-      {selectedId ? (
-        <TriageRecord
-          detail={detail}
-          loading={detailLoading}
-          error={detailError}
-          canOpenVisit={canOpenVisit}
-          onClose={() => setSelectedId(null)}
-        />
-      ) : null}
     </Page>
   );
 }
 
 function closedCase(status: VisitCareStatus) {
   return status === "diagnosed" || status === "waiting_for_investigation";
+}
+
+function waitFor(row: DoctorCase, now: number) {
+  const done = Boolean(closedCase(row.status) && row.triage_completed_at && row.status_changed_at);
+  const elapsed = done
+    ? Math.max(0, new Date(row.status_changed_at).getTime() - new Date(row.triage_completed_at!).getTime())
+    : row.triage_completed_at
+      ? Math.max(0, now - new Date(row.triage_completed_at).getTime())
+      : null;
+  return { done, elapsed };
 }
 
 function encounterActionLabel(status: VisitCareStatus, visitId: string) {
@@ -307,15 +334,6 @@ function StartEncounterLink({ to, label = "Start encounter", onClick }: { to: st
   );
 }
 
-function EyeIcon() {
-  return (
-    <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12Z" />
-      <circle cx="12" cy="12" r="2.5" />
-    </svg>
-  );
-}
-
 function ArrowIcon() {
   return (
     <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -325,133 +343,288 @@ function ArrowIcon() {
   );
 }
 
-function TriageRecord({
+
+function CasePanel({
+  row,
   detail,
   loading,
   error,
+  observations,
+  observationsLoading,
+  investigations,
+  investigationsLoading,
+  now,
+  waitMinutesTarget,
   canOpenVisit,
-  onClose,
+  seesAll,
 }: {
+  row: DoctorCase | null;
   detail: DoctorCaseDetail | null;
   loading: boolean;
   error: string | null;
+  observations: MonitoringObservation[];
+  observationsLoading: boolean;
+  investigations: VisitInvestigation[];
+  investigationsLoading: boolean;
+  now: number;
+  waitMinutesTarget: number;
   canOpenVisit: boolean;
-  onClose: () => void;
+  seesAll: boolean;
 }) {
+  const chart = detail ?? row;
   const history = (detail?.relevant_history ?? []).filter((item) => item !== "other").map((item) => historyLabel[item] ?? item);
   for (const item of detail?.relevant_history_items ?? []) {
     if (item.name?.trim()) history.push(item.name.trim());
   }
   const previousOther = detail?.relevant_history_other?.trim();
   if (previousOther && !history.some((item) => item.toLowerCase() === previousOther.toLowerCase())) history.push(previousOther);
+  const timing = row ? waitFor(row, now) : null;
+  const over = timing?.elapsed != null && timing.elapsed >= waitMinutesTarget * 60_000;
+  const gender = detail?.patient_gender === "male" ? "Male" : detail?.patient_gender === "female" ? "Female" : null;
 
-  useEffect(() => {
-    function onKey(event: KeyboardEvent) {
-      if (event.key === "Escape") onClose();
-    }
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  if (!chart) {
+    return <div className="grid min-h-80 place-items-center px-6 text-sm text-muted">Select a patient to see the chart.</div>;
+  }
 
   return (
-    <div className="triage-dialog-backdrop fixed inset-0 z-50 grid place-items-center bg-shell/45 p-4" role="presentation" onMouseDown={onClose}>
-      <section
-        className="triage-dialog-panel max-h-[calc(100vh-2rem)] w-full max-w-4xl overflow-y-auto rounded-2xl bg-surface p-4 shadow-dialog sm:p-5"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="triage-record-title"
-        onMouseDown={(event) => event.stopPropagation()}
-      >
-        <div className="flex items-start gap-3">
-          <div className="min-w-0 flex-1">
-            <p className="text-xs font-semibold uppercase tracking-wide text-blue">Triage record</p>
-            <h2 id="triage-record-title" className="mt-1 text-lg font-semibold text-ink">{detail?.patient_name ?? "Triage record"}</h2>
-            {detail ? (
+    <div className="min-w-0 lg:max-h-[calc(100vh-14rem)] lg:overflow-y-auto">
+      <div className={`border-b border-line-soft p-4 sm:p-5 ${triageWash(chart.triage_category)}`}>
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+          <div className="flex min-w-0 items-start gap-3">
+            <span className={`grid h-11 w-11 shrink-0 place-items-center rounded-full text-sm font-bold ${triageAvatar(chart.triage_category)}`}>{initials(chart.patient_name)}</span>
+            <div className="min-w-0">
+              <h2 className="truncate text-lg font-semibold text-ink">{chart.patient_name}</h2>
               <p className="mt-0.5 text-sm text-muted">
-                {detail.patient_mrn} · {visitTypeLabel(detail.visit_type)} · {detail.clinic_name}
-                {detail.patient_age_at_visit != null ? ` · ${detail.patient_age_at_visit} yrs` : ""}
+                <span className="font-mono">{chart.patient_mrn}</span>
+                {detail?.patient_age_at_visit != null ? ` · ${detail.patient_age_at_visit} yrs` : ""}
+                {gender ? ` · ${gender}` : ""}
+                {" · "}
+                {chart.hotel_room_no ? `Room ${chart.hotel_room_no}` : "No room"}
+                {" · "}
+                {chart.hotel_name}
+                {" · "}
+                {chart.clinic_name}
               </p>
-            ) : null}
+              <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                <CategoryPill category={chart.triage_category} />
+                <QueueStatus status={chart.status} />
+                <span className="rounded-full bg-surface-2 px-2 py-0.5 text-[11px] font-semibold text-ink">{visitTypeLabel(chart.visit_type)}</span>
+                {row?.monitoring_status === "completed" || row?.monitoring_status === "in_progress" ? (
+                  <span className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${monitoringStatusClass(row.monitoring_status)}`}>
+                    {row.monitoring_status === "completed" ? "Monitoring completed" : "Monitoring in progress"}
+                  </span>
+                ) : null}
+                {timing?.elapsed != null ? (
+                  <span className={`rounded-full px-2 py-0.5 font-mono text-xs font-semibold tabular-nums ${over ? "bg-danger text-white" : "bg-surface text-ink"}`}>
+                    {timing.done ? "Seen in " : "Waiting "}
+                    {clockLabel(timing.elapsed)}
+                  </span>
+                ) : null}
+              </div>
+              {seesAll && chart.assigned_doctor_name ? <p className="mt-1 text-xs text-muted">Assigned to {chart.assigned_doctor_name}</p> : null}
+            </div>
           </div>
-          {detail?.triage_category ? (
-            <span className="rounded-full bg-panel px-3 py-1 text-xs font-semibold text-blue">{categoryLabel[detail.triage_category]}</span>
-          ) : null}
-          <button type="button" className="grid h-9 w-9 shrink-0 place-items-center rounded-lg text-muted hover:bg-surface-2 hover:text-ink" aria-label="Close" onClick={onClose}>
-            <svg viewBox="0 0 20 20" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
-              <path d="M5 5l10 10M15 5L5 15" strokeLinecap="round" />
-            </svg>
-          </button>
+          <div className="flex shrink-0 flex-wrap items-center gap-2">
+            {canOpenVisit ? (
+              <Link className={`${secondary} h-9 px-3 py-0 text-sm`} to={`/patients/${chart.patient_id}/visits/${chart.id}`}>Open visit</Link>
+            ) : null}
+            <StartEncounterLink to={`/patients/to-doctor/${chart.id}/encounter`} label={encounterActionLabel(chart.status, chart.id)} />
+          </div>
         </div>
-        {loading ? <p className="mt-6 text-sm text-muted">Loading triage…</p> : null}
-        {error ? <p className="mt-6 text-sm text-danger">{error}</p> : null}
-        {detail && !loading ? (
-          <div className="mt-4">
-            <dl className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-              <Vital icon={<TempIcon />} label="Temp" value={detail.temperature_c == null ? "—" : `${detail.temperature_c} °C`} alert={abnormalVital("temp", detail.temperature_c)} />
-              <Vital icon={<PulseIcon />} label="Pulse" value={detail.pulse == null ? "—" : `${detail.pulse} /min`} alert={abnormalVital("pulse", detail.pulse)} />
-              <Vital icon={<LungsIcon />} label="RR" value={detail.respiratory_rate == null ? "—" : `${detail.respiratory_rate} /min`} alert={abnormalVital("rr", detail.respiratory_rate)} />
-              <Vital icon={<PulseIcon />} label="BP" value={detail.blood_pressure ? `${detail.blood_pressure} mmHg` : "—"} />
-              <Vital icon={<OxygenIcon />} label="SpO2" value={detail.spo2 == null ? "—" : `${detail.spo2}%`} alert={abnormalVital("spo2", detail.spo2)} />
-            </dl>
-            <div className="mt-2 grid gap-2 sm:grid-cols-2">
-              <Section index={1} title="Chief complaint" icon={<ComplaintIcon />} body={detail.chief_complaint} />
-              <Section index={2} title="Initial assessment" icon={<NotesIcon />} body={detail.initial_assessment} />
-              <Section index={3} title="Allergies" icon={<AllergyIcon />} body={listText(detail.allergies.map((item) => item.reaction ? `${item.name} (${item.reaction})` : item.name))} />
-              <Section index={4} title="Medications" icon={<MedsIcon />} body={listText(detail.medications.map((item) => item.name))} />
-              <Section index={5} title="Relevant history" icon={<HistoryIcon />} body={history.length ? history.join(", ") : null} />
-              <Section index={6} title="Assigned to" icon={<AssignIcon />} body={[
-                detail.assigned_doctor_name,
-                detail.triage_completed_at ? `Sent ${formatWhen(detail.triage_completed_at)}` : null,
+      </div>
+      <div className="grid gap-5 p-4 sm:p-5">
+        {error ? <p className="text-sm text-danger">{error}</p> : null}
+        {loading && !detail ? <p className="text-sm text-muted">Loading chart…</p> : null}
+        {detail ? (
+          <>
+            <section className="rounded-2xl border border-panel-strong bg-panel/50 p-3">
+              <h3 className="text-xs font-semibold uppercase tracking-wide text-blue">Triage vitals</h3>
+              <dl className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-5">
+                <Vital tone="temp" icon={<TempIcon />} label="Temp" value={detail.temperature_c == null ? "—" : `${detail.temperature_c} °C`} alert={abnormalVital("temp", detail.temperature_c)} />
+                <Vital tone="pulse" icon={<PulseIcon />} label="Pulse" value={detail.pulse == null ? "—" : `${detail.pulse} /min`} alert={abnormalVital("pulse", detail.pulse)} />
+                <Vital tone="rr" icon={<LungsIcon />} label="RR" value={detail.respiratory_rate == null ? "—" : `${detail.respiratory_rate} /min`} alert={abnormalVital("rr", detail.respiratory_rate)} />
+                <Vital tone="bp" icon={<PulseIcon />} label="BP" value={detail.blood_pressure ? `${detail.blood_pressure} mmHg` : "—"} alert={abnormalBloodPressure(detail.blood_pressure)} />
+                <Vital tone="spo2" icon={<OxygenIcon />} label="SpO2" value={detail.spo2 == null ? "—" : `${detail.spo2}%`} alert={abnormalVital("spo2", detail.spo2)} />
+              </dl>
+            </section>
+            <div className="grid gap-2 sm:grid-cols-2">
+              <Section tone="complaint" title="Chief complaint" icon={<ComplaintIcon />} body={detail.chief_complaint} />
+              <Section tone="assessment" title="Initial assessment" icon={<NotesIcon />} body={detail.initial_assessment} />
+              <Section tone="allergy" title="Allergies" icon={<AllergyIcon />} body={listText(detail.allergies.map((item) => item.reaction ? `${item.name} (${item.reaction})` : item.name))} />
+              <Section tone="medication" title="Medications" icon={<MedsIcon />} body={listText(detail.medications.map((item) => item.name))} />
+              <Section tone="history" title="Relevant history" icon={<HistoryIcon />} body={history.length ? history.join(", ") : null} />
+              <Section tone="sent" title="Sent from triage" icon={<AssignIcon />} body={[
+                detail.triage_completed_at ? formatWhen(detail.triage_completed_at) : null,
                 detail.completed_by_name ? `by ${detail.completed_by_name}` : null,
               ].filter(Boolean).join(" · ") || null} />
             </div>
-            <div className="mt-4 flex flex-col gap-3 border-t border-line-soft pt-4 sm:flex-row sm:items-center sm:justify-between">
-              {canOpenVisit ? (
-                <Link className={`${secondary} h-9 px-3 py-0 text-sm`} to={`/patients/${detail.patient_id}/visits/${detail.id}`}>Open visit</Link>
-              ) : <span />}
-              <div className="flex items-center justify-end gap-2">
-                <button type="button" className={`${secondary} h-9 px-4 py-0`} onClick={onClose}>Close</button>
-                <StartEncounterLink to={`/patients/to-doctor/${detail.id}/encounter`} label={encounterActionLabel(detail.status, detail.id)} />
-              </div>
-            </div>
-          </div>
+          </>
         ) : null}
-      </section>
+        <NursingObservations items={observations} loading={observationsLoading && observations.length === 0} />
+        <Investigations items={investigations} loading={investigationsLoading && investigations.length === 0} />
+      </div>
     </div>
   );
 }
 
+function initials(name: string) {
+  return name.trim().split(/\s+/).slice(0, 2).map((part) => part[0]?.toUpperCase() ?? "").join("") || "?";
+}
+
+function Investigations({ items, loading }: { items: VisitInvestigation[]; loading: boolean }) {
+  return (
+    <section className="rounded-2xl border border-warning-line bg-warning-soft/50 p-3">
+      <h3 className="text-xs font-semibold uppercase tracking-wide text-warning">Investigations</h3>
+      {loading ? <p className="mt-2 text-sm text-muted">Loading investigations…</p> : null}
+      {!loading && items.length === 0 ? <p className="mt-2 text-sm text-muted">No investigations ordered.</p> : null}
+      {items.length > 0 ? (
+        <ul className="mt-2 grid gap-2">
+          {items.map((item) => (
+            <li key={item.id} className={`flex flex-wrap items-center justify-between gap-2 rounded-xl px-3 py-2 ${investigationPriorityClass(item.priority)}`}>
+              <span className="min-w-0">
+                <span className="block text-sm font-semibold text-ink">{item.name}</span>
+                <span className="mt-1 flex flex-wrap items-center gap-1.5">
+                  <span className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${investigationPriorityClass(item.priority)}`}>{investigationPriorityLabel(item.priority)}</span>
+                  <span className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${investigationStatusClass(item.status)}`}>{investigationStatusLabel(item.status)}</span>
+                </span>
+              </span>
+              {item.result_file_url ? (
+                <a className="text-sm font-semibold text-blue hover:underline" href={item.result_file_url} target="_blank" rel="noreferrer">
+                  {item.result_original_name || "Result"}
+                </a>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </section>
+  );
+}
+
+function NursingObservations({ items, loading }: { items: MonitoringObservation[]; loading: boolean }) {
+  return (
+    <section className="rounded-2xl border border-success/30 bg-success-soft/60 p-3">
+      <h3 className="text-xs font-semibold uppercase tracking-wide text-success">Nursing observations</h3>
+      {loading ? <p className="mt-2 text-sm text-muted">Loading observations…</p> : null}
+      {!loading && items.length === 0 ? <p className="mt-2 text-sm text-muted">No nursing observations recorded.</p> : null}
+      {items.length > 0 ? (
+        <ul className="mt-2 grid gap-2">
+          {items.map((item) => (
+            <li key={item.id} className="rounded-xl bg-surface px-3 py-2">
+              <p className="text-xs font-semibold text-ink">
+                {item.recorded_at ? formatWhen(item.recorded_at) : "—"}
+                <span className="font-medium text-muted"> · {item.recorded_by_name?.trim() || "Nurse"}</span>
+              </p>
+              <dl className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-5">
+                <Vital tone="temp" icon={<TempIcon />} label="Temp" value={reading(item.temperature_c, "°C")} alert={abnormalVital("temp", item.temperature_c)} />
+                <Vital tone="pulse" icon={<PulseIcon />} label="Pulse" value={reading(item.pulse, "/min")} alert={abnormalVital("pulse", item.pulse)} />
+                <Vital tone="bp" icon={<PulseIcon />} label="BP" value={item.blood_pressure?.trim() ? `${item.blood_pressure} mmHg` : "—"} alert={abnormalBloodPressure(item.blood_pressure)} />
+                <Vital tone="rr" icon={<LungsIcon />} label="RR" value={reading(item.respiratory_rate, "/min")} alert={abnormalVital("rr", item.respiratory_rate)} />
+                <Vital tone="spo2" icon={<OxygenIcon />} label="SpO2" value={item.spo2 == null ? "—" : `${item.spo2}%`} alert={abnormalVital("spo2", item.spo2)} />
+              </dl>
+              {item.notes.trim() ? <p className="mt-2 whitespace-pre-wrap text-sm text-muted">{item.notes}</p> : null}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </section>
+  );
+}
+
+function reading(value: number | null, unit: string) {
+  return value == null ? "—" : `${value} ${unit}`;
+}
+
 function Section({
-  index,
+  tone,
   title,
   icon,
   body,
 }: {
-  index: number;
+  tone: "complaint" | "assessment" | "allergy" | "medication" | "history" | "sent";
   title: string;
   icon: ReactNode;
   body?: string | null;
 }) {
-  const delay = `${40 + (index - 1) * 40}ms`;
+  const recorded = Boolean(body?.trim());
+  const palette = sectionPalette(tone, recorded);
   return (
-    <div className="triage-rise min-w-0 rounded-xl bg-surface-2 px-3 py-2" style={{ animationDelay: delay }}>
+    <div className={`min-w-0 rounded-xl border px-3 py-2 ${palette.box}`}>
       <div className="flex items-center gap-2">
-        <span className="triage-badge grid h-6 w-6 shrink-0 place-items-center rounded-full bg-blue text-[11px] font-bold text-white" style={{ animationDelay: delay }}>{index}</span>
-        <span className="grid h-6 w-6 shrink-0 place-items-center rounded-full bg-panel text-blue">{icon}</span>
-        <h3 className="text-xs font-semibold uppercase tracking-wide text-blue">{title}</h3>
+        <span className={`grid h-6 w-6 shrink-0 place-items-center rounded-full ${palette.icon}`}>{icon}</span>
+        <h3 className={`text-xs font-semibold uppercase tracking-wide ${palette.title}`}>{title}</h3>
       </div>
-      <p className="mt-1 whitespace-pre-wrap text-sm leading-snug text-ink">{body?.trim() ? body : "None recorded"}</p>
+      <p className={`mt-1 whitespace-pre-wrap text-sm leading-snug ${recorded ? "font-medium text-ink" : palette.empty}`}>{recorded ? body : "None recorded"}</p>
     </div>
   );
 }
 
-function Vital({ icon, label: name, value, alert }: { icon: ReactNode; label: string; value: string; alert?: boolean }) {
+function sectionPalette(tone: "complaint" | "assessment" | "allergy" | "medication" | "history" | "sent", recorded: boolean) {
+  if (tone === "allergy") {
+    return recorded
+      ? { box: "border-danger-line bg-danger-soft", icon: "bg-white text-danger", title: "text-danger", empty: "text-muted" }
+      : { box: "border-success/20 bg-success-soft", icon: "bg-white text-success", title: "text-success", empty: "text-success" };
+  }
+  if (tone === "medication" && recorded) {
+    return { box: "border-warning-line bg-warning-soft", icon: "bg-white text-warning", title: "text-warning", empty: "text-muted" };
+  }
+  if (tone === "complaint") {
+    return { box: "border-panel-strong bg-panel", icon: "bg-white text-blue", title: "text-blue", empty: "text-muted" };
+  }
+  return { box: "border-line bg-surface", icon: "bg-surface-2 text-muted-strong", title: "text-muted-strong", empty: "text-muted" };
+}
+
+function Vital({
+  tone,
+  icon,
+  label: name,
+  value,
+  alert,
+}: {
+  tone: "temp" | "pulse" | "bp" | "rr" | "spo2";
+  icon: ReactNode;
+  label: string;
+  value: string;
+  alert?: boolean;
+}) {
+  const palette = alert
+    ? { box: "bg-danger-soft ring-1 ring-danger-line", text: "text-danger", icon: "text-danger" }
+    : tone === "temp"
+      ? { box: "bg-warning-soft", text: "text-warning", icon: "text-warning" }
+      : tone === "pulse"
+        ? { box: "bg-panel", text: "text-blue", icon: "text-blue" }
+        : tone === "bp"
+          ? { box: "bg-surface ring-1 ring-gold", text: "text-warning", icon: "text-warning" }
+          : tone === "rr"
+            ? { box: "bg-success-soft", text: "text-success", icon: "text-success" }
+            : { box: "bg-panel-strong", text: "text-blue-strong", icon: "text-blue-strong" };
   return (
-    <div className={`rounded-xl px-2.5 py-1.5 ${alert ? "bg-danger-soft" : "bg-surface-2"}`}>
-      <dt className={`inline-flex items-center gap-1.5 text-xs ${alert ? "text-danger" : "text-muted"}`}><span className={alert ? "text-danger" : "text-blue"}>{icon}</span>{name}</dt>
-      <dd className={`mt-0.5 text-sm font-semibold ${alert ? "text-danger" : "text-ink"}`}>{value}</dd>
+    <div className={`rounded-xl px-2.5 py-1.5 ${palette.box}`}>
+      <dt className={`inline-flex items-center gap-1.5 text-xs font-semibold ${palette.text}`}><span className={palette.icon}>{icon}</span>{name}</dt>
+      <dd className={`mt-0.5 text-sm font-bold ${alert ? "text-danger" : "text-ink"}`}>{value}</dd>
     </div>
   );
+}
+
+function triageWash(category: TriageCategory | null) {
+  if (category === "emergency") return "bg-danger-soft";
+  if (category === "urgent") return "bg-warning-soft";
+  if (category === "normal") return "bg-success-soft";
+  return "bg-surface";
+}
+
+function triageEdge(category: TriageCategory | null) {
+  if (category === "emergency") return "border-l-danger";
+  if (category === "urgent") return "border-l-warning";
+  if (category === "normal") return "border-l-success";
+  return "border-l-line-strong";
+}
+
+function triageAvatar(category: TriageCategory | null) {
+  if (category === "emergency") return "bg-danger text-white";
+  if (category === "urgent") return "bg-warning text-white";
+  if (category === "normal") return "bg-success text-white";
+  return "bg-blue text-white";
 }
 
 function abnormalVital(kind: "temp" | "pulse" | "rr" | "spo2", raw: number | string | null) {
@@ -462,6 +635,15 @@ function abnormalVital(kind: "temp" | "pulse" | "rr" | "spo2", raw: number | str
   if (kind === "pulse") return value >= 100;
   if (kind === "rr") return value >= 22;
   return value < 94;
+}
+
+function abnormalBloodPressure(value: string | null) {
+  if (!value) return false;
+  const match = value.match(/(\d+)\s*\/\s*(\d+)/);
+  if (!match) return false;
+  const systolic = Number(match[1]);
+  const diastolic = Number(match[2]);
+  return systolic >= 140 || diastolic >= 90 || systolic < 90;
 }
 
 function Icon({ children }: { children: ReactNode }) {

@@ -196,6 +196,8 @@ export function registerTriage(app: FastifyInstance, pool: pg.Pool) {
       values.push(query.clinicId);
       clauses.push(`v.clinic_id = $${values.length}`);
     }
+    const monitoringClauses = [...clauses];
+    const monitoringValues = [...values];
     const focus = readCaseFocus(request.query);
     const summaryFrom = `
       FROM patient_visits v
@@ -264,6 +266,7 @@ export function registerTriage(app: FastifyInstance, pool: pg.Pool) {
     const page = Math.min(query.page, pages);
     const result = await pool.query(
       `SELECT v.id, v.patient_id, v.status, v.visit_type, v.status_changed_at, v.assigned_doctor_id,
+              v.monitoring_status,
               d.name AS assigned_doctor_name, v.hotel_room_no, v.clinic_id, c.name AS clinic_name,
               h.name AS hotel_name, p.name AS patient_name, p.mrn AS patient_mrn,
               t.triage_category, t.chief_complaint, t.completed_at AS triage_completed_at
@@ -284,7 +287,30 @@ export function registerTriage(app: FastifyInstance, pool: pg.Pool) {
       waiting_for_investigation: 0,
       average_wait_minutes: 0,
     };
-    return { items: result.rows, total, page, page_size: query.pageSize, summary };
+    const monitoring = await pool.query(
+      `SELECT o.id, o.visit_id, o.temperature_c, o.pulse, o.respiratory_rate, o.spo2, o.blood_pressure, o.notes,
+              o.recorded_by, o.recorded_at, o.sent_to_doctor_at, u.name AS recorded_by_name,
+              v.patient_id, v.monitoring_status, v.status AS visit_status, v.hotel_room_no,
+              p.name AS patient_name, p.mrn AS patient_mrn
+       FROM patient_visit_nurse_observations o
+       JOIN patient_visits v ON v.id = o.visit_id
+       JOIN patients p ON p.id = v.patient_id
+       JOIN clinics c ON c.id = v.clinic_id
+       JOIN hotels h ON h.id = c.hotel_id
+       JOIN patient_visit_triages t ON t.visit_id = v.id
+       LEFT JOIN users u ON u.id = o.recorded_by
+       WHERE ${monitoringClauses.join(" AND ")}
+       ORDER BY o.recorded_at DESC`,
+      monitoringValues,
+    );
+    return {
+      items: result.rows,
+      total,
+      page,
+      page_size: query.pageSize,
+      summary,
+      monitoring: monitoring.rows.map((row) => presentDoctorMonitoring(row as Record<string, unknown>)),
+    };
   });
 
   app.get("/api/doctor-cases/:id", { preHandler: authenticate }, async (request) => {
@@ -538,6 +564,29 @@ export function registerTriage(app: FastifyInstance, pool: pg.Pool) {
 }
 
 const caseFocuses = ["today", "now", "emergency", "urgent", "normal", "diagnosed", "waiting_for_investigation"] as const;
+
+function presentDoctorMonitoring(row: Record<string, unknown>) {
+  return {
+    id: String(row.id),
+    visit_id: String(row.visit_id),
+    patient_id: String(row.patient_id),
+    patient_name: String(row.patient_name),
+    patient_mrn: String(row.patient_mrn),
+    hotel_room_no: typeof row.hotel_room_no === "string" ? row.hotel_room_no : null,
+    monitoring_status: row.monitoring_status === "in_progress" || row.monitoring_status === "completed" ? row.monitoring_status : "none",
+    visit_status: typeof row.visit_status === "string" ? row.visit_status : "to_doctor",
+    temperature_c: row.temperature_c == null ? null : Number(row.temperature_c),
+    pulse: row.pulse == null ? null : Number(row.pulse),
+    respiratory_rate: row.respiratory_rate == null ? null : Number(row.respiratory_rate),
+    spo2: row.spo2 == null ? null : Number(row.spo2),
+    blood_pressure: typeof row.blood_pressure === "string" ? row.blood_pressure : null,
+    notes: typeof row.notes === "string" ? row.notes : "",
+    recorded_by: typeof row.recorded_by === "string" ? row.recorded_by : null,
+    recorded_by_name: typeof row.recorded_by_name === "string" ? row.recorded_by_name : null,
+    recorded_at: row.recorded_at ? new Date(String(row.recorded_at)).toISOString() : null,
+    sent_to_doctor_at: row.sent_to_doctor_at ? new Date(String(row.sent_to_doctor_at)).toISOString() : null,
+  };
+}
 
 function readCaseFocus(query: unknown) {
   const source = query !== null && typeof query === "object" ? query as Record<string, unknown> : {};

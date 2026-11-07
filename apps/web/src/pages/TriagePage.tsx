@@ -130,6 +130,7 @@ export function TriagePage({ token, actor }: { token: string; actor: User }) {
   const [testsModal, setTestsModal] = useState<SampleCollectionItem | null>(null);
   const [planModal, setPlanModal] = useState<NursingCareItem | null>(null);
   const [monitorModal, setMonitorModal] = useState<MonitoringItem | null>(null);
+  const [monitorBusy, setMonitorBusy] = useState<string | null>(null);
   const [sampleTick, setSampleTick] = useState(0);
   const [careTick, setCareTick] = useState(0);
   const requestId = useRef(0);
@@ -468,14 +469,27 @@ export function TriagePage({ token, actor }: { token: string; actor: User }) {
     setTestsModal(item);
   }
 
+  async function completeMonitoring(item: MonitoringItem) {
+    setMonitorBusy(`${item.visit_id}:complete`);
+    try {
+      await api(`/api/patients/${item.patient_id}/visits/${item.visit_id}/monitoring/complete`, { method: "POST" }, token);
+      toast.success("Monitoring completed", `${item.patient_name} is done with observations.`);
+      refreshNursePanels();
+    } catch (caught) {
+      toast.error("Could not complete", messageOf(caught));
+    } finally {
+      setMonitorBusy(null);
+    }
+  }
+
   const testsModalItem = testsModal
     ? sampleItems.find((item) => item.visit_id === testsModal.visit_id) ?? testsModal
     : null;
 
   return (
-    <section className="space-y-4">
+    <section className="space-y-3 sm:space-y-4">
       <header>
-        <h1 className="text-2xl font-bold tracking-tight text-ink">Nurse Dashboard</h1>
+        <h1 className="text-xl font-bold tracking-tight text-ink sm:text-2xl">Nurse Dashboard</h1>
         <p className="mt-1 text-sm text-muted-strong">Triage patients, deliver nursing care, collect samples, and record monitoring.</p>
       </header>
 
@@ -483,24 +497,26 @@ export function TriagePage({ token, actor }: { token: string; actor: User }) {
 
       <NurseSummaryTiles summary={nurseSummary} loading={summaryLoading} />
 
-      <div className="min-w-0 rounded-2xl border border-line bg-surface p-4 shadow-card">
-          <div className="-mx-4 -mt-4 mb-4 flex flex-wrap gap-1 border-b border-line px-2" role="tablist">
-            {nurseTabs.map((tab) => {
-              const selected = statusFilter === tab.status;
-              return (
-                <button
-                  key={tab.status}
-                  type="button"
-                  role="tab"
-                  aria-selected={selected}
-                  className={`inline-flex items-center gap-2 border-b-2 px-3 py-3 text-sm font-semibold ${selected ? tab.tab : "border-transparent text-muted-strong hover:text-ink"}`}
-                  onClick={() => setStatusFilter(tab.status)}
-                >
-                  {tab.label}
-                  <span className={`min-w-6 rounded-full px-2 py-0.5 text-center text-xs font-bold tabular-nums ${tab.count}`}>{queue.summary[tab.status]}</span>
-                </button>
-              );
-            })}
+      <div className="min-w-0 rounded-2xl border border-line bg-surface p-3 shadow-card sm:p-4">
+          <div className="-mx-3 -mt-3 mb-4 overflow-x-auto border-b border-line sm:-mx-4 sm:-mt-4" role="tablist">
+            <div className="flex min-w-max gap-1 px-2">
+              {nurseTabs.map((tab) => {
+                const selected = statusFilter === tab.status;
+                return (
+                  <button
+                    key={tab.status}
+                    type="button"
+                    role="tab"
+                    aria-selected={selected}
+                    className={`inline-flex items-center gap-2 whitespace-nowrap border-b-2 px-3 py-3 text-sm font-semibold ${selected ? tab.tab : "border-transparent text-muted-strong hover:text-ink"}`}
+                    onClick={() => setStatusFilter(tab.status)}
+                  >
+                    {tab.label}
+                    <span className={`min-w-6 rounded-full px-2 py-0.5 text-center text-xs font-bold tabular-nums ${tab.count}`}>{queue.summary[tab.status]}</span>
+                  </button>
+                );
+              })}
+            </div>
           </div>
           <div className="mb-3 flex items-center gap-2">
             <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-panel text-blue"><QueueIcon /></span>
@@ -523,19 +539,13 @@ export function TriagePage({ token, actor }: { token: string; actor: User }) {
             />
           </label>
 
-          <div className="overflow-x-auto">
+          <div>
             {queue.items.length === 0 ? (
               <p className="px-2 py-8 text-center text-sm text-muted">{loading ? "Loading queue…" : "No patients match this queue."}</p>
             ) : (
-              <div className="min-w-[44rem]">
-                <div className="grid grid-cols-[minmax(0,1.4fr)_7rem_6.5rem_11rem_7.5rem] gap-x-3 px-3 pb-2 text-[11px] font-semibold uppercase tracking-wide text-muted">
-                  <span>Patient</span>
-                  <span>Registered</span>
-                  <span>Elapsed</span>
-                  <span>Status</span>
-                  <span>Action</span>
-                </div>
-                <div className="space-y-2">
+              <div className="space-y-2">
+                {/* Mobile cards */}
+                <div className="space-y-2 md:hidden">
                   {queue.items.map((item) => {
                     const active = selectedKey === itemKey(item);
                     const triageDone = item.status !== "waiting_for_triage" && item.triage_completed_at;
@@ -544,35 +554,85 @@ export function TriagePage({ token, actor }: { token: string; actor: User }) {
                       : Math.max(0, now - new Date(item.created_at).getTime());
                     const waiting = item.status === "waiting_for_triage" && !item.triage_id;
                     const actionLabel = triageDone ? "View" : waiting ? "Start triage" : "Continue";
+                    const overdue = elapsed >= waitMinutes(waitSettings, item.clinic_id, "triage") * 60_000;
                     return (
-                      <div
+                      <article
                         key={item.id}
-                        className={`grid w-full grid-cols-[minmax(0,1.4fr)_7rem_6.5rem_11rem_7.5rem] items-center gap-x-3 rounded-xl border px-3 py-2.5 ${active ? "border-blue bg-panel" : "border-line-soft bg-surface"}`}
+                        className={`rounded-xl border p-3 ${active ? "border-blue bg-panel" : "border-line-soft bg-surface"}`}
                       >
-                        <div className="min-w-0">
-                          <p className="truncate font-semibold text-ink">{item.patient_name}</p>
-                          <p className="mt-0.5 truncate text-xs text-muted">
-                            {item.patient_mrn} · {visitTypeLabel(item.visit_type)} · Room {item.hotel_room_no || "—"}
-                            {item.assigned_nurse_name ? ` · ${item.assigned_nurse_name}` : ""}
-                          </p>
-                        </div>
-                        <span className="text-xs font-medium text-muted-strong">{formatRegistered(item.created_at)}</span>
-                        <span className={`font-mono text-sm font-semibold tabular-nums ${elapsed >= waitMinutes(waitSettings, item.clinic_id, "triage") * 60_000 ? "text-danger" : "text-ink"}`}>
-                          {clockLabel(elapsed)}
-                        </span>
-                        <span className="justify-self-start">
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="min-w-0">
+                            <p className="font-semibold text-ink">{item.patient_name}</p>
+                            <p className="mt-0.5 text-xs text-muted">
+                              {item.patient_mrn} · {visitTypeLabel(item.visit_type)} · Room {item.hotel_room_no || "—"}
+                            </p>
+                            {item.assigned_nurse_name ? <p className="mt-0.5 text-xs text-muted">{item.assigned_nurse_name}</p> : null}
+                          </div>
                           <StatusBadge status={item.status} compact />
-                        </span>
+                        </div>
+                        <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-strong">
+                          <span>{formatRegistered(item.created_at)}</span>
+                          <span className={`font-mono font-semibold tabular-nums ${overdue ? "text-danger" : "text-ink"}`}>{clockLabel(elapsed)}</span>
+                        </div>
                         <button
                           type="button"
-                          className={`${waiting ? primary : secondary} h-8 justify-self-start px-3 text-xs`}
+                          className={`${waiting ? primary : secondary} mt-3 h-10 w-full px-3 text-sm`}
                           onClick={() => selectVisit(item)}
                         >
                           {actionLabel}
                         </button>
-                      </div>
+                      </article>
                     );
                   })}
+                </div>
+                {/* Desktop table */}
+                <div className="hidden md:block">
+                  <div className="grid grid-cols-[minmax(0,1.4fr)_7rem_6.5rem_11rem_7.5rem] gap-x-3 px-3 pb-2 text-[11px] font-semibold uppercase tracking-wide text-muted">
+                    <span>Patient</span>
+                    <span>Registered</span>
+                    <span>Elapsed</span>
+                    <span>Status</span>
+                    <span>Action</span>
+                  </div>
+                  <div className="space-y-2">
+                    {queue.items.map((item) => {
+                      const active = selectedKey === itemKey(item);
+                      const triageDone = item.status !== "waiting_for_triage" && item.triage_completed_at;
+                      const elapsed = triageDone
+                        ? Math.max(0, new Date(item.triage_completed_at!).getTime() - new Date(item.created_at).getTime())
+                        : Math.max(0, now - new Date(item.created_at).getTime());
+                      const waiting = item.status === "waiting_for_triage" && !item.triage_id;
+                      const actionLabel = triageDone ? "View" : waiting ? "Start triage" : "Continue";
+                      return (
+                        <div
+                          key={item.id}
+                          className={`grid w-full grid-cols-[minmax(0,1.4fr)_7rem_6.5rem_11rem_7.5rem] items-center gap-x-3 rounded-xl border px-3 py-2.5 ${active ? "border-blue bg-panel" : "border-line-soft bg-surface"}`}
+                        >
+                          <div className="min-w-0">
+                            <p className="truncate font-semibold text-ink">{item.patient_name}</p>
+                            <p className="mt-0.5 truncate text-xs text-muted">
+                              {item.patient_mrn} · {visitTypeLabel(item.visit_type)} · Room {item.hotel_room_no || "—"}
+                              {item.assigned_nurse_name ? ` · ${item.assigned_nurse_name}` : ""}
+                            </p>
+                          </div>
+                          <span className="text-xs font-medium text-muted-strong">{formatRegistered(item.created_at)}</span>
+                          <span className={`font-mono text-sm font-semibold tabular-nums ${elapsed >= waitMinutes(waitSettings, item.clinic_id, "triage") * 60_000 ? "text-danger" : "text-ink"}`}>
+                            {clockLabel(elapsed)}
+                          </span>
+                          <span className="justify-self-start">
+                            <StatusBadge status={item.status} compact />
+                          </span>
+                          <button
+                            type="button"
+                            className={`${waiting ? primary : secondary} h-8 justify-self-start px-3 text-xs`}
+                            onClick={() => selectVisit(item)}
+                          >
+                            {actionLabel}
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
               </div>
             )}
@@ -581,14 +641,14 @@ export function TriagePage({ token, actor }: { token: string; actor: User }) {
           <div className="mt-4 flex items-center justify-between gap-2 text-xs text-muted">
             <p>{queue.total === 0 ? "0 shown" : `${start}–${end} of ${queue.total}`}</p>
             <div className="flex items-center gap-1">
-              <button type="button" className={secondary} disabled={page <= 1 || loading} onClick={() => setPage((current) => Math.max(1, current - 1))}>Prev</button>
+              <button type="button" className={`${secondary} h-9 min-w-16`} disabled={page <= 1 || loading} onClick={() => setPage((current) => Math.max(1, current - 1))}>Prev</button>
               <span className="px-1 font-semibold text-ink">{page}/{pages}</span>
-              <button type="button" className={secondary} disabled={page >= pages || loading} onClick={() => setPage((current) => Math.min(pages, current + 1))}>Next</button>
+              <button type="button" className={`${secondary} h-9 min-w-16`} disabled={page >= pages || loading} onClick={() => setPage((current) => Math.min(pages, current + 1))}>Next</button>
             </div>
           </div>
       </div>
 
-      <div className="grid gap-4 xl:grid-cols-3">
+      <div className="grid gap-3 sm:gap-4 lg:grid-cols-2 xl:grid-cols-3">
         <NursingTasksPanel
           items={careItems}
           loading={careLoading}
@@ -607,7 +667,9 @@ export function TriagePage({ token, actor }: { token: string; actor: User }) {
         <MonitoringPanel
           items={monitorItems}
           loading={monitorLoading}
+          busyId={monitorBusy}
           onRecord={setMonitorModal}
+          onComplete={(item) => void completeMonitoring(item)}
         />
       </div>
 
@@ -637,13 +699,14 @@ export function TriagePage({ token, actor }: { token: string; actor: User }) {
           item={monitorModal}
           onClose={() => setMonitorModal(null)}
           onSaved={refreshNursePanels}
+          onCompleted={refreshNursePanels}
         />
       ) : null}
 
       {selectedKey ? (
-        <div className="triage-dialog-backdrop fixed inset-0 z-50 grid place-items-center bg-shell/45 p-3 sm:p-4" role="presentation" onMouseDown={closeAssessment}>
+        <div className="triage-dialog-backdrop fixed inset-0 z-50 grid place-items-stretch bg-shell/45 p-0 sm:place-items-center sm:p-4" role="presentation" onMouseDown={closeAssessment}>
           <section
-            className="triage-dialog-panel flex max-h-[calc(100vh-1.5rem)] w-full max-w-6xl flex-col overflow-hidden rounded-2xl bg-canvas shadow-dialog"
+            className="triage-dialog-panel flex h-[100dvh] max-h-[100dvh] w-full max-w-6xl flex-col overflow-hidden rounded-none bg-canvas shadow-dialog sm:h-auto sm:max-h-[calc(100dvh-2rem)] sm:rounded-2xl"
             role="dialog"
             aria-modal="true"
             aria-labelledby="triage-assessment-title"
@@ -908,7 +971,7 @@ export function TriagePage({ token, actor }: { token: string; actor: User }) {
                     </aside>
                   </div>
                 </div>
-                <div className="shrink-0 border-t border-line bg-surface px-4 py-3 sm:px-5">
+                <div className="shrink-0 border-t border-line bg-surface px-4 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:px-5 sm:pb-3">
                   <TriageActions
                     readonly={readonly}
                     saving={saving}
@@ -966,16 +1029,16 @@ function TriageActions({
               : <span>Still needed: <span className="font-semibold text-ink">{missing.join(", ")}</span></span>}
         </p>
         <div className="flex shrink-0 flex-col gap-2 sm:flex-row">
-          <button type="button" className={`${secondary} gap-1.5`} onClick={() => window.print()}>
+          <button type="button" className={`${secondary} h-11 w-full gap-1.5 sm:h-auto sm:w-auto`} onClick={() => window.print()}>
             <PrintIcon />Print note
           </button>
           {readonly && doctorChanged ? (
-            <button type="button" className={`${primary} whitespace-nowrap`} disabled={saving} onClick={onChangeDoctor}>
+            <button type="button" className={`${primary} h-11 w-full whitespace-nowrap sm:h-auto sm:w-auto`} disabled={saving} onClick={onChangeDoctor}>
               {saving ? "Saving…" : "Change doctor"}
             </button>
           ) : null}
           {readonly ? null : (
-            <button type="submit" className={`${primary} whitespace-nowrap`} disabled={saving || !ready}>
+            <button type="submit" className={`${primary} h-11 w-full whitespace-nowrap sm:h-auto sm:w-auto`} disabled={saving || !ready}>
               <SendIcon />{saving ? "Sending…" : "Save triage & send to doctor"}
             </button>
           )}
