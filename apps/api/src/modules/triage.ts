@@ -289,9 +289,9 @@ export function registerTriage(app: FastifyInstance, pool: pg.Pool) {
     };
     const monitoring = await pool.query(
       `SELECT o.id, o.visit_id, o.temperature_c, o.pulse, o.respiratory_rate, o.spo2, o.blood_pressure, o.notes,
-              o.recorded_by, o.recorded_at, o.sent_to_doctor_at, u.name AS recorded_by_name,
+              o.case_priority, o.recorded_by, o.recorded_at, o.sent_to_doctor_at, u.name AS recorded_by_name,
               v.patient_id, v.monitoring_status, v.status AS visit_status, v.hotel_room_no,
-              p.name AS patient_name, p.mrn AS patient_mrn
+              h.name AS hotel_name, p.name AS patient_name, p.mrn AS patient_mrn
        FROM patient_visit_nurse_observations o
        JOIN patient_visits v ON v.id = o.visit_id
        JOIN patients p ON p.id = v.patient_id
@@ -573,6 +573,7 @@ function presentDoctorMonitoring(row: Record<string, unknown>) {
     patient_name: String(row.patient_name),
     patient_mrn: String(row.patient_mrn),
     hotel_room_no: typeof row.hotel_room_no === "string" ? row.hotel_room_no : null,
+    hotel_name: typeof row.hotel_name === "string" ? row.hotel_name : null,
     monitoring_status: row.monitoring_status === "in_progress" || row.monitoring_status === "completed" ? row.monitoring_status : "none",
     visit_status: typeof row.visit_status === "string" ? row.visit_status : "to_doctor",
     temperature_c: row.temperature_c == null ? null : Number(row.temperature_c),
@@ -581,6 +582,7 @@ function presentDoctorMonitoring(row: Record<string, unknown>) {
     spo2: row.spo2 == null ? null : Number(row.spo2),
     blood_pressure: typeof row.blood_pressure === "string" ? row.blood_pressure : null,
     notes: typeof row.notes === "string" ? row.notes : "",
+    case_priority: row.case_priority === "stable" || row.case_priority === "urgent" || row.case_priority === "emergency" ? row.case_priority : null,
     recorded_by: typeof row.recorded_by === "string" ? row.recorded_by : null,
     recorded_by_name: typeof row.recorded_by_name === "string" ? row.recorded_by_name : null,
     recorded_at: row.recorded_at ? new Date(String(row.recorded_at)).toISOString() : null,

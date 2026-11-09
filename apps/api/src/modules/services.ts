@@ -66,6 +66,7 @@ type ServiceRow = {
   unit_price_eur: string | null;
   charge_once_per_plan: boolean;
   procedure_form: string | null;
+  used_count?: number | string | null;
 };
 
 export function registerServices(app: FastifyInstance, pool: pg.Pool) {
@@ -95,10 +96,12 @@ export function registerServices(app: FastifyInstance, pool: pg.Pool) {
     const result = await pool.query<ServiceRow>(
       `SELECT s.id, s.name, s.description, s.service_type, s.category, s.unit, s.code,
               s.price AS shared_price, NULL::numeric AS clinic_price, s.unit_price_egp, s.unit_price_eur,
-              s.charge_once_per_plan, s.procedure_form
+              s.charge_once_per_plan, s.procedure_form,
+              COALESCE(usage.used_count, 0)::int AS used_count
        FROM medical_services s
+       LEFT JOIN (${serviceUsageSql}) usage ON usage.id = s.id
        WHERE ${clauses.join(" AND ")}
-       ORDER BY s.position ASC, lower(s.name) ASC`,
+       ORDER BY ${serviceSorts[query.sort]}`,
       values,
     );
     const categories = await pool.query<{ category: string }>(
@@ -258,8 +261,69 @@ function present(row: ServiceRow) {
     unit_price_eur: unitPriceEur,
     charge_once_per_plan: row.charge_once_per_plan,
     procedure_form: row.procedure_form,
+    used_count: Number(row.used_count ?? 0),
   };
 }
+
+const serviceSorts = {
+  position: "s.position ASC, lower(s.name) ASC",
+  name_asc: "lower(s.name) ASC, s.code ASC",
+  name_desc: "lower(s.name) DESC, s.code ASC",
+  code_asc: "lower(s.code) ASC, lower(s.name) ASC",
+  code_desc: "lower(s.code) DESC, lower(s.name) ASC",
+  type_asc: "s.service_type ASC, lower(s.name) ASC",
+  type_desc: "s.service_type DESC, lower(s.name) ASC",
+  category_asc: "s.category ASC, lower(s.name) ASC",
+  category_desc: "s.category DESC, lower(s.name) ASC",
+  unit_asc: "s.unit ASC, lower(s.name) ASC",
+  unit_desc: "s.unit DESC, lower(s.name) ASC",
+  price_egp_asc: "s.unit_price_egp ASC NULLS LAST, lower(s.name) ASC",
+  price_egp_desc: "s.unit_price_egp DESC NULLS LAST, lower(s.name) ASC",
+  price_eur_asc: "s.unit_price_eur ASC NULLS LAST, lower(s.name) ASC",
+  price_eur_desc: "s.unit_price_eur DESC NULLS LAST, lower(s.name) ASC",
+  used_desc: "used_count DESC, lower(s.name) ASC",
+  used_asc: "used_count ASC, lower(s.name) ASC",
+  newest: "s.created_at DESC, lower(s.name) ASC",
+  oldest: "s.created_at ASC, lower(s.name) ASC",
+} as const;
+
+const serviceUsageSql = `
+  SELECT id, count(*)::int AS used_count
+  FROM (
+    SELECT v.professional_service_id AS id
+    FROM patient_visits v
+    WHERE v.deleted_at IS NULL AND v.professional_service_id IS NOT NULL
+    UNION ALL
+    SELECT i.service_id
+    FROM patient_visit_investigations i
+    JOIN patient_visits v ON v.id = i.visit_id AND v.deleted_at IS NULL
+    WHERE i.service_id IS NOT NULL
+    UNION ALL
+    SELECT (item->>'procedure_id')::uuid
+    FROM patient_visit_encounters e
+    JOIN patient_visits v ON v.id = e.visit_id AND v.deleted_at IS NULL
+    CROSS JOIN LATERAL jsonb_array_elements(COALESCE(e.procedure_orders, '[]'::jsonb)) AS item
+    WHERE item->>'procedure_id' ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
+    UNION ALL
+    SELECT (item->>'procedure_id')::uuid
+    FROM patient_visit_management_plans p
+    JOIN patient_visits v ON v.id = p.visit_id AND v.deleted_at IS NULL
+    CROSS JOIN LATERAL jsonb_array_elements(COALESCE(p.procedure_orders, '[]'::jsonb)) AS item
+    WHERE item->>'procedure_id' ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
+    UNION ALL
+    SELECT (item->>'service_id')::uuid
+    FROM patient_visit_encounters e
+    JOIN patient_visits v ON v.id = e.visit_id AND v.deleted_at IS NULL
+    CROSS JOIN LATERAL jsonb_array_elements(COALESCE(e.investigations, '[]'::jsonb)) AS item
+    WHERE item->>'service_id' ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
+      AND NOT EXISTS (
+        SELECT 1 FROM patient_visit_investigations existing
+        WHERE existing.id::text = item->>'id'
+      )
+  ) hits
+  WHERE id IS NOT NULL
+  GROUP BY id
+`;
 
 function readListQuery(query: unknown) {
   const source = query !== null && typeof query === "object" ? query as Record<string, unknown> : {};
@@ -267,6 +331,7 @@ function readListQuery(query: unknown) {
   const q = text("q");
   const clinicId = text("clinic_id");
   const category = text("category");
+  const sort = text("sort");
   const serviceTypesQuery = text("service_type").split(",").map((item) => item.trim()).filter(Boolean);
   if (q.length > 200) throw new ApplicationError(422, "invalid_query", "Search is too long");
   if (category.length > 80) throw new ApplicationError(422, "invalid_query", "Unknown category");
@@ -274,7 +339,14 @@ function readListQuery(query: unknown) {
     throw new ApplicationError(422, "invalid_query", "Unknown service type");
   }
   if (clinicId && !z.string().uuid().safeParse(clinicId).success) throw new ApplicationError(422, "invalid_query", "Unknown clinic");
-  return { q, clinicId: clinicId || null, category: category || null, serviceTypes: serviceTypesQuery };
+  if (sort && !(sort in serviceSorts)) throw new ApplicationError(422, "invalid_query", "Unknown sort");
+  return {
+    q,
+    clinicId: clinicId || null,
+    category: category || null,
+    serviceTypes: serviceTypesQuery,
+    sort: (sort || "position") as keyof typeof serviceSorts,
+  };
 }
 
 function readId(params: unknown) {

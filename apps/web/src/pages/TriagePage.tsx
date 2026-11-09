@@ -130,7 +130,6 @@ export function TriagePage({ token, actor }: { token: string; actor: User }) {
   const [testsModal, setTestsModal] = useState<SampleCollectionItem | null>(null);
   const [planModal, setPlanModal] = useState<NursingCareItem | null>(null);
   const [monitorModal, setMonitorModal] = useState<MonitoringItem | null>(null);
-  const [monitorBusy, setMonitorBusy] = useState<string | null>(null);
   const [sampleTick, setSampleTick] = useState(0);
   const [careTick, setCareTick] = useState(0);
   const requestId = useRef(0);
@@ -469,19 +468,6 @@ export function TriagePage({ token, actor }: { token: string; actor: User }) {
     setTestsModal(item);
   }
 
-  async function completeMonitoring(item: MonitoringItem) {
-    setMonitorBusy(`${item.visit_id}:complete`);
-    try {
-      await api(`/api/patients/${item.patient_id}/visits/${item.visit_id}/monitoring/complete`, { method: "POST" }, token);
-      toast.success("Monitoring completed", `${item.patient_name} is done with observations.`);
-      refreshNursePanels();
-    } catch (caught) {
-      toast.error("Could not complete", messageOf(caught));
-    } finally {
-      setMonitorBusy(null);
-    }
-  }
-
   const testsModalItem = testsModal
     ? sampleItems.find((item) => item.visit_id === testsModal.visit_id) ?? testsModal
     : null;
@@ -667,9 +653,7 @@ export function TriagePage({ token, actor }: { token: string; actor: User }) {
         <MonitoringPanel
           items={monitorItems}
           loading={monitorLoading}
-          busyId={monitorBusy}
           onRecord={setMonitorModal}
-          onComplete={(item) => void completeMonitoring(item)}
         />
       </div>
 
@@ -699,7 +683,6 @@ export function TriagePage({ token, actor }: { token: string; actor: User }) {
           item={monitorModal}
           onClose={() => setMonitorModal(null)}
           onSaved={refreshNursePanels}
-          onCompleted={refreshNursePanels}
         />
       ) : null}
 

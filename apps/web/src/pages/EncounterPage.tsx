@@ -976,7 +976,7 @@ function normalize(encounter: ClinicalEncounter): ClinicalEncounter {
   };
 }
 
-function emptyOrder(): MedicationOrder {
+export function emptyOrder(): MedicationOrder {
   return {
     id: crypto.randomUUID(),
     medication_id: null,
@@ -1004,7 +1004,7 @@ function emptyOrder(): MedicationOrder {
   };
 }
 
-function emptyProcedure(): ProcedureOrder {
+export function emptyProcedure(): ProcedureOrder {
   return {
     id: crypto.randomUUID(),
     procedure_id: null,
@@ -1056,7 +1056,7 @@ function listedServicePrice(catalog: MedicalService[], serviceId: string | null,
   return stored == null ? "—" : formatPrice(stored);
 }
 
-function reconcileProcedures(orders: MedicationOrder[], procedures: ProcedureOrder[], catalog: CatalogMedication[], nationality: string | null | undefined) {
+export function reconcileProcedures(orders: MedicationOrder[], procedures: ProcedureOrder[], catalog: CatalogMedication[], nationality: string | null | undefined) {
   const manual = procedures.filter((item) => !item.linked_medication_order_id && item.billing_scope !== "plan");
   const linked: ProcedureOrder[] = [];
   const planServices = new Map<string, NonNullable<CatalogMedication["routes"]>[number]["services"][number]>();
@@ -1803,7 +1803,7 @@ function administrationCharges(orders: MedicationOrder[], procedures: ProcedureO
     .concat(orders.flatMap((order) => productCharges(order, catalog, nationality)));
 }
 
-function standaloneProcedures(procedures: ProcedureOrder[]) {
+export function standaloneProcedures(procedures: ProcedureOrder[]) {
   return procedures.filter((item) => !item.linked_medication_order_id && item.billing_scope !== "plan");
 }
 
@@ -2037,7 +2037,7 @@ function MedicationOrderRow({
   );
 }
 
-function MedicationOrderDialog({
+export function MedicationOrderDialog({
   order,
   existing,
   locked,
@@ -2736,7 +2736,7 @@ function ProcedureOrderRow({
   );
 }
 
-function ProcedureOrderDialog({
+export function ProcedureOrderDialog({
   order,
   existing,
   locked,

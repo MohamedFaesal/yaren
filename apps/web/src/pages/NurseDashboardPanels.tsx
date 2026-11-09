@@ -17,7 +17,6 @@ import {
   type InvestigationPriority,
   type MonitoringItem,
   type MonitoringObservation,
-  type MonitoringOrderedService,
   type NurseDashboardSummary,
   type NursingCareItem,
   type NursingPlanDetail,
@@ -65,27 +64,28 @@ export function NursingTasksPanel({
   busyId: string | null;
   onViewPlan: (item: NursingCareItem) => void;
 }) {
+  const openItems = items.filter((item) => item.nursing_plan_status === "ordered" || item.nursing_plan_status === "in_progress");
   return (
     <section className="rounded-2xl border border-line bg-surface p-3 shadow-card sm:p-4">
       <div className="mb-3 flex items-center gap-2">
         <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-panel text-blue"><CareIcon /></span>
         <div className="min-w-0">
           <h2 className="text-sm font-semibold text-ink">Nursing Tasks & Ongoing Care</h2>
-          <p className="text-xs text-muted">{loading ? "Loading" : `${items.length} patient${items.length === 1 ? "" : "s"}`}</p>
+          <p className="text-xs text-muted">{loading ? "Loading" : `${openItems.length} plan${openItems.length === 1 ? "" : "s"}`}</p>
         </div>
       </div>
-      {items.length === 0 ? (
-        <p className="px-2 py-8 text-center text-sm text-muted">{loading ? "Loading nursing tasks…" : "No patients under nursing care."}</p>
+      {openItems.length === 0 ? (
+        <p className="px-2 py-8 text-center text-sm text-muted">{loading ? "Loading nursing tasks…" : "No management plans waiting."}</p>
       ) : (
         <div className="space-y-2">
-          {items.map((item) => {
+          {openItems.map((item) => {
             const elapsed = item.order_time ? Math.max(0, now - new Date(item.order_time).getTime()) : 0;
             return (
-              <article key={item.visit_id} className="rounded-xl border border-line-soft bg-surface-2/40 p-3">
+              <article key={`${item.visit_id}:${item.plan_position}`} className="rounded-xl border border-line-soft bg-surface-2/40 p-3">
                 <div className="flex flex-wrap items-start justify-between gap-2">
                   <div className="min-w-0">
                     <p className="font-semibold text-ink">{item.patient_name}</p>
-                    <p className="text-xs text-muted">{item.patient_mrn}</p>
+                    <p className="text-xs text-muted">{item.patient_mrn} · Management plan {item.plan_position}</p>
                   </div>
                   <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${nursingPlanStatusClass(item.nursing_plan_status)}`}>
                     {nursingPlanStatusLabel(item.nursing_plan_status)}
@@ -98,7 +98,7 @@ export function NursingTasksPanel({
                 <button
                   type="button"
                   className={`${secondary} mt-3 h-9 w-full px-3 text-xs sm:w-auto`}
-                  disabled={busyId === item.visit_id}
+                  disabled={busyId === `${item.visit_id}:${item.plan_position}`}
                   onClick={() => onViewPlan(item)}
                 >
                   View management plan
@@ -187,15 +187,11 @@ export function SampleCollectionCard({
 export function MonitoringPanel({
   items,
   loading,
-  busyId,
   onRecord,
-  onComplete,
 }: {
   items: MonitoringItem[];
   loading?: boolean;
-  busyId?: string | null;
   onRecord: (item: MonitoringItem) => void;
-  onComplete: (item: MonitoringItem) => void;
 }) {
   const [viewing, setViewing] = useState<MonitoringItem | null>(null);
   return (
@@ -213,7 +209,6 @@ export function MonitoringPanel({
         <div className="space-y-2">
           {items.map((item) => {
             const serviceCount = item.ordered_services.length;
-            const completing = busyId === `${item.visit_id}:complete`;
             return (
               <article key={item.visit_id} className="rounded-xl border border-line-soft bg-surface-2/40 p-3">
                 <div className="flex items-start justify-between gap-2">
@@ -236,16 +231,8 @@ export function MonitoringPanel({
                     <button type="button" className={`${secondary} h-9 w-full px-3 text-xs`} onClick={() => setViewing(item)}>
                       {recordLabel(item.observations?.length ?? 0)}
                     </button>
-                    <button type="button" className={`${primary} h-9 w-full px-3 text-xs`} disabled={completing} onClick={() => onRecord(item)}>
+                    <button type="button" className={`${primary} h-9 w-full px-3 text-xs`} onClick={() => onRecord(item)}>
                       Record
-                    </button>
-                    <button
-                      type="button"
-                      className={`${secondary} h-9 w-full px-3 text-xs`}
-                      disabled={completing}
-                      onClick={() => onComplete(item)}
-                    >
-                      {completing ? "Completing…" : "Complete"}
                     </button>
                   </div>
                 ) : (
@@ -310,7 +297,8 @@ function ReadingCard({ row, latest = false, compact = false }: { row: Monitoring
     <li className="rounded-2xl border border-line bg-canvas p-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="text-sm font-bold text-ink">{row.recorded_at ? formatWhen(row.recorded_at) : "—"}</p>
-        <span className="flex items-center gap-1.5">
+        <span className="flex flex-wrap items-center justify-end gap-1.5">
+          {row.case_priority ? <span className={`rounded-full border px-2 py-0.5 text-[11px] font-semibold ${casePriorityClass(row.case_priority)}`}>{casePriorityLabel(row.case_priority)}</span> : null}
           {latest ? <span className="rounded-full bg-blue px-2 py-0.5 text-[11px] font-semibold text-white">Latest</span> : null}
           <span className="rounded-full bg-success-soft px-2 py-0.5 text-[11px] font-semibold text-success">{row.recorded_by_name?.trim() || "Nurse"}</span>
         </span>
@@ -456,7 +444,7 @@ export function TestsOrderedModal({
           <table class="facts">
             <tr>
               <td><span class="label">Patient</span>${escapeHtml(item.patient_name)}<br />${escapeHtml(item.patient_mrn)}${patientLine ? ` / ${escapeHtml(patientLine)}` : ""}</td>
-              <td><span class="label">Clinic</span>${escapeHtml(item.clinic_name)}<br />Room ${escapeHtml(item.hotel_room_no || "—")}</td>
+              <td><span class="label">Clinic</span>${escapeHtml(item.clinic_name)}<br /><span class="label">Passport number</span>${escapeHtml(item.passport_number?.trim() || "—")}</td>
             </tr>
             <tr>
               <td><span class="label">Patient priority</span>${escapeHtml(casePriorityLabel(item.case_priority))}</td>
@@ -599,8 +587,11 @@ export function ManagementPlanModal({
   async function startPlan() {
     setPending(true);
     try {
-      await api(`/api/patients/${item.patient_id}/visits/${item.visit_id}/nursing-plan/start`, { method: "POST" }, token);
-      toast.success("Management plan started", `${item.patient_name} is now in progress.`);
+      await api(`/api/patients/${item.patient_id}/visits/${item.visit_id}/nursing-plan/start`, {
+        method: "POST",
+        body: JSON.stringify({ position: item.plan_position }),
+      }, token);
+      toast.success("Management plan started", `Management plan ${item.plan_position} for ${item.patient_name} is now in progress.`);
       onChanged();
       onClose();
     } catch (caught) {
@@ -624,6 +615,7 @@ export function ManagementPlanModal({
     }
   }
 
+  const selectedPlan = detail?.plans.find((entry) => entry.position === item.plan_position) ?? null;
   const casePriority = detail?.visit.case_priority ?? null;
   const priorityTone = casePriority === "emergency"
     ? "bg-danger-soft border-danger-line text-danger"
@@ -633,12 +625,11 @@ export function ManagementPlanModal({
         ? "bg-success-soft border-success/20 text-success"
         : "bg-surface-2 border-line text-muted-strong";
 
-  const canStart = detail?.visit.nursing_plan_status === "ordered" || detail?.visit.nursing_plan_status === "in_progress";
   const canMonitor = detail != null && detail.visit.monitoring_status !== "completed";
 
   return (
     <ModalShell
-      title="Management Plan"
+      title={`Management plan ${item.plan_position}`}
       onClose={onClose}
       wide
       footer={detail ? (
@@ -657,14 +648,14 @@ export function ManagementPlanModal({
           <button
             type="button"
             className={`${primary} w-full sm:w-auto`}
-            disabled={pending || !canStart || detail.visit.nursing_plan_status !== "ordered"}
+            disabled={pending || selectedPlan?.status !== "ordered"}
             onClick={() => void startPlan()}
           >
             {pending
               ? "Saving…"
-              : detail.visit.nursing_plan_status === "in_progress"
+              : selectedPlan?.status === "in_progress"
                 ? "Plan In Progress"
-                : detail.visit.nursing_plan_status === "completed"
+                : selectedPlan?.status === "completed"
                   ? "Plan Completed"
                   : "Start Management Plan"}
           </button>
@@ -709,43 +700,54 @@ export function ManagementPlanModal({
                 {casePriorityLabel(casePriority)}
               </span>
             </PlanSection>
-            <PlanSection title="Medication Orders" tone="bg-warning-soft border-warning-line text-warning">
-              {detail.plan.medication_orders.length === 0 ? (
-                <p className="text-sm text-muted">No medications ordered.</p>
-              ) : (
-                <ul className="space-y-2 text-sm text-ink">
-                  {detail.plan.medication_orders.map((order) => (
-                    <li key={order.id}>
-                      <p className="font-semibold">{order.medication}{order.strength ? ` ${order.strength}` : ""}{order.dosage_form ? ` ${order.dosage_form}` : ""}</p>
-                      <p className="text-xs text-muted-strong">
-                        {[order.dose, order.route, order.frequency, order.duration].filter(Boolean).join(" · ") || "As prescribed"}
-                      </p>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </PlanSection>
-            <PlanSection title="Procedures & Interventions" tone="bg-success-soft border-success/20 text-success">
-              {detail.plan.procedure_orders.length === 0 ? (
-                <p className="text-sm text-muted">No procedures ordered.</p>
-              ) : (
-                <ul className="list-disc space-y-1 pl-5 text-sm text-ink">
-                  {detail.plan.procedure_orders.map((order) => (
-                    <li key={order.id}>{order.name}{order.notes ? ` — ${order.notes}` : ""}</li>
-                  ))}
-                </ul>
-              )}
-            </PlanSection>
-            <PlanSection title="Advices" tone="bg-panel-strong border-panel-strong text-blue-strong">
-              {detail.plan.patient_advices.length === 0 && !detail.plan.management_plan.trim() ? (
-                <p className="text-sm text-muted">No advice recorded.</p>
-              ) : (
-                <ul className="list-disc space-y-1 pl-5 text-sm text-ink">
-                  {detail.plan.patient_advices.map((advice) => <li key={advice.id}>{advice.text}</li>)}
-                  {detail.plan.management_plan.trim() ? <li>{detail.plan.management_plan}</li> : null}
-                </ul>
-              )}
-            </PlanSection>
+            {(selectedPlan ? [selectedPlan] : []).map((entry) => (
+              <div key={`${entry.position}:${entry.id ?? "encounter"}`} className="space-y-3 rounded-2xl border border-line bg-surface p-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <h3 className="text-sm font-semibold text-ink">Management plan {entry.position}</h3>
+                  {entry.assessment_status ? <PlanAssessmentStatus status={entry.assessment_status} /> : null}
+                </div>
+                {entry.clinical_assessment.trim() ? <p className="whitespace-pre-wrap text-sm text-ink">{entry.clinical_assessment}</p> : null}
+                <PlanSection title="Medication Orders" tone="bg-warning-soft border-warning-line text-warning">
+                  {entry.medication_orders.length === 0 ? (
+                    <p className="text-sm text-muted">No medications ordered.</p>
+                  ) : (
+                    <ul className="space-y-2 text-sm text-ink">
+                      {entry.medication_orders.map((order) => (
+                        <li key={order.id}>
+                          <p className="font-semibold">{order.medication}{order.strength ? ` ${order.strength}` : ""}{order.dosage_form ? ` ${order.dosage_form}` : ""}</p>
+                          <p className="text-xs text-muted-strong">
+                            {[order.dose, order.route, order.frequency, order.duration].filter(Boolean).join(" · ") || "As prescribed"}
+                          </p>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </PlanSection>
+                <PlanSection title="Procedures & Interventions" tone="bg-success-soft border-success/20 text-success">
+                  {entry.procedure_orders.length === 0 ? (
+                    <p className="text-sm text-muted">No procedures ordered.</p>
+                  ) : (
+                    <ul className="list-disc space-y-1 pl-5 text-sm text-ink">
+                      {entry.procedure_orders.map((order) => (
+                        <li key={order.id}>{order.name}{order.notes ? ` — ${order.notes}` : ""}</li>
+                      ))}
+                    </ul>
+                  )}
+                </PlanSection>
+                {entry.position === 1 ? (
+                  <PlanSection title="Advices" tone="bg-panel-strong border-panel-strong text-blue-strong">
+                    {entry.patient_advices.length === 0 && !entry.management_plan.trim() ? (
+                      <p className="text-sm text-muted">No advice recorded.</p>
+                    ) : (
+                      <ul className="list-disc space-y-1 pl-5 text-sm text-ink">
+                        {entry.patient_advices.map((advice) => <li key={advice.id}>{advice.text}</li>)}
+                        {entry.management_plan.trim() ? <li>{entry.management_plan}</li> : null}
+                      </ul>
+                    )}
+                  </PlanSection>
+                ) : null}
+              </div>
+            ))}
           </div>
         </>
       ) : null}
@@ -758,13 +760,11 @@ export function RecordMonitoringModal({
   item,
   onClose,
   onSaved,
-  onCompleted,
 }: {
   token: string;
   item: MonitoringItem;
   onClose: () => void;
   onSaved: () => void;
-  onCompleted: () => void;
 }) {
   const toast = useToast();
   const [temperature, setTemperature] = useState("36.8");
@@ -775,7 +775,6 @@ export function RecordMonitoringModal({
   const [spo2, setSpo2] = useState("");
   const [notes, setNotes] = useState("");
   const [pending, setPending] = useState(false);
-  const [completing, setCompleting] = useState(false);
   const [history, setHistory] = useState<MonitoringObservation[]>([]);
   const [historyLoading, setHistoryLoading] = useState(true);
 
@@ -809,6 +808,15 @@ export function RecordMonitoringModal({
     setNotes("");
   }
 
+  const priority = readingPriority({
+    temperature: numberOrNull(temperature),
+    pulse: numberOrNull(pulse),
+    respiratory: numberOrNull(respiratory),
+    spo2: numberOrNull(spo2),
+    systolic: numberOrNull(systolic),
+    diastolic: numberOrNull(diastolic),
+  });
+
   async function submit(event: FormEvent) {
     event.preventDefault();
     setPending(true);
@@ -836,23 +844,6 @@ export function RecordMonitoringModal({
     }
   }
 
-  async function completeMonitoring() {
-    setCompleting(true);
-    try {
-      await api(`/api/patients/${item.patient_id}/visits/${item.visit_id}/monitoring/complete`, { method: "POST" }, token);
-      toast.success("Monitoring completed", `${item.patient_name} is done with observations.`);
-      onCompleted();
-      onClose();
-    } catch (caught) {
-      toast.error("Could not complete", messageOf(caught));
-    } finally {
-      setCompleting(false);
-    }
-  }
-
-  const busy = pending || completing;
-  const canComplete = history.length > 0;
-
   return (
     <ModalShell
       title="Record Monitoring / Observation"
@@ -860,18 +851,10 @@ export function RecordMonitoringModal({
       wide
       footer={
         <>
-          <button type="button" className={`${secondary} w-full sm:w-auto`} disabled={busy} onClick={onClose}>
+          <button type="button" className={`${secondary} w-full sm:w-auto`} disabled={pending} onClick={onClose}>
             Close
           </button>
-          <button
-            type="button"
-            className={`${secondary} w-full sm:w-auto`}
-            disabled={busy || !canComplete}
-            onClick={() => void completeMonitoring()}
-          >
-            {completing ? "Completing…" : "Complete monitoring"}
-          </button>
-          <button type="submit" form="record-monitoring-form" className={`${primary} w-full sm:w-auto`} disabled={busy}>
+          <button type="submit" form="record-monitoring-form" className={`${primary} w-full sm:w-auto`} disabled={pending}>
             {pending ? "Saving…" : "Save Observation"}
           </button>
         </>
@@ -887,11 +870,12 @@ export function RecordMonitoringModal({
           room={item.hotel_room_no}
           clinicName={item.clinic_name}
         />
-        <PatientPriorityBanner priority={item.case_priority} compact />
+        <PatientPriorityBanner priority={priority} compact />
       </div>
       <div className="mt-4 grid gap-4 lg:grid-cols-[minmax(0,1.2fr)_minmax(16rem,0.8fr)] lg:items-start">
         <form id="record-monitoring-form" className="rounded-2xl border border-line bg-canvas p-3 sm:p-4" onSubmit={(event) => void submit(event)}>
           <h3 className="text-sm font-bold text-ink">New reading</h3>
+          <p className="mt-1 text-xs text-muted">Patient priority updates from the vital signs in this reading.</p>
           <div className="mt-3 grid gap-2 sm:grid-cols-2">
             <VitalField tone="temp" label="Temperature" unit="°C" hint="36.0 – 37.5" value={temperature} onChange={setTemperature} placeholder="36.8" />
             <VitalField tone="pulse" label="Heart rate" unit="bpm" hint="60 – 100" value={pulse} onChange={setPulse} placeholder="72" />
@@ -923,12 +907,6 @@ export function RecordMonitoringModal({
           </label>
         </form>
         <div className="grid gap-3">
-          <section className="rounded-2xl border border-panel-strong bg-panel/60 p-3">
-            <h3 className="text-xs font-bold uppercase tracking-wide text-blue">Ordered services</h3>
-            <div className="mt-2">
-              <OrderedServicesList services={item.ordered_services} empty="No management plan services ordered for monitoring." />
-            </div>
-          </section>
           <section className="rounded-2xl border border-success/30 bg-success-soft/70 p-3">
             <h3 className="text-xs font-bold uppercase tracking-wide text-success">Previous readings{history.length > 0 ? ` · ${history.length}` : ""}</h3>
             {historyLoading ? <p className="mt-2 text-sm text-muted">Loading history…</p> : null}
@@ -1045,6 +1023,36 @@ function PatientHero({
   );
 }
 
+function numberOrNull(value: string) {
+  const parsed = Number(value.trim());
+  return value.trim() && Number.isFinite(parsed) ? parsed : null;
+}
+
+function readingPriority(reading: {
+  temperature: number | null;
+  pulse: number | null;
+  respiratory: number | null;
+  spo2: number | null;
+  systolic: number | null;
+  diastolic: number | null;
+}): CasePriority {
+  const emergency = (reading.temperature != null && (reading.temperature >= 39 || reading.temperature < 35))
+    || (reading.pulse != null && (reading.pulse >= 130 || reading.pulse < 50))
+    || (reading.respiratory != null && (reading.respiratory >= 30 || reading.respiratory < 10))
+    || (reading.spo2 != null && reading.spo2 < 90)
+    || (reading.systolic != null && (reading.systolic >= 180 || reading.systolic < 90))
+    || (reading.diastolic != null && reading.diastolic >= 110);
+  if (emergency) return "emergency";
+  const urgent = (reading.temperature != null && reading.temperature >= 38)
+    || (reading.pulse != null && reading.pulse >= 100)
+    || (reading.respiratory != null && reading.respiratory >= 22)
+    || (reading.spo2 != null && reading.spo2 < 94)
+    || (reading.systolic != null && reading.systolic >= 140)
+    || (reading.diastolic != null && reading.diastolic >= 90);
+  if (urgent) return "urgent";
+  return "stable";
+}
+
 function PatientPriorityBanner({ priority, compact = false }: { priority?: CasePriority | null; compact?: boolean }) {
   const tone = priority === "emergency"
     ? { card: "border-danger bg-danger-soft text-danger", chip: "bg-danger text-white" }
@@ -1134,53 +1142,22 @@ function PriorityMissingIcon({ className = "h-4 w-4" }: { className?: string }) 
   );
 }
 
+function PlanAssessmentStatus({ status }: { status: "stable" | "needs_review" | "deteriorating" }) {
+  const label = status === "needs_review" ? "Needs Review" : status === "deteriorating" ? "Deteriorating" : "Stable";
+  const tone = status === "needs_review"
+    ? "border-warning bg-warning-soft text-warning"
+    : status === "deteriorating"
+      ? "border-danger bg-danger-soft text-danger"
+      : "border-success bg-success-soft text-success";
+  return <span className={`rounded-full border px-2.5 py-0.5 text-xs font-semibold ${tone}`}>{label}</span>;
+}
+
 function PlanSection({ title, tone, children }: { title: string; tone: string; children: ReactNode }) {
   return (
     <section className={`rounded-xl border px-4 py-3 ${tone}`}>
       <h3 className="text-sm font-bold">{title}</h3>
       <div className="mt-2">{children}</div>
     </section>
-  );
-}
-
-function OrderedServicesList({
-  services,
-  empty = "No services ordered in the management plan.",
-  detailed = false,
-}: {
-  services: MonitoringOrderedService[];
-  empty?: string;
-  detailed?: boolean;
-}) {
-  if (!services.length) {
-    return <p className="text-xs text-muted">{empty}</p>;
-  }
-  return (
-    <ul className={detailed ? "space-y-3" : "space-y-2"}>
-      {services.map((service, index) => (
-        <li
-          key={service.id}
-          className={detailed ? "rounded-lg border border-panel-strong/60 bg-surface px-3 py-2.5" : "min-w-0"}
-        >
-          <div className="flex items-start gap-2">
-            {detailed ? <span className="mt-0.5 text-xs font-semibold tabular-nums text-muted">{index + 1}.</span> : null}
-            <div className="min-w-0 flex-1">
-              <p className="break-words font-semibold text-ink">{service.name}</p>
-              {service.code ? <p className="text-[11px] font-mono text-blue">{service.code}</p> : null}
-              {service.detail ? <p className="mt-0.5 text-xs text-muted-strong">{service.detail}</p> : null}
-              {detailed && (service.quantity != null || service.unit || service.kind !== "procedure") ? (
-                <p className="mt-1 text-[11px] text-muted">
-                  {[
-                    service.quantity != null ? `Qty ${service.quantity}${service.unit ? ` ${service.unit}` : ""}` : null,
-                    service.kind === "associated" ? "Associated service" : service.kind === "medication_monitoring" ? "From medication order" : null,
-                  ].filter(Boolean).join(" · ")}
-                </p>
-              ) : null}
-            </div>
-          </div>
-        </li>
-      ))}
-    </ul>
   );
 }
 

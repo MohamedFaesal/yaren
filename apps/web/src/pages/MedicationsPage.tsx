@@ -39,6 +39,22 @@ const dosageForms = [
   "Mouthwash",
 ];
 const routes = ["IV Infusion / Drip", "IV Injection", "IM injection", "Oral", "SC injection", "Inhalation / Nebulization", "Topical"];
+const sorts = [
+  { value: "name_asc", label: "Name A–Z" },
+  { value: "name_desc", label: "Name Z–A" },
+  { value: "strength_asc", label: "Strength A–Z" },
+  { value: "strength_desc", label: "Strength Z–A" },
+  { value: "form_asc", label: "Dosage form A–Z" },
+  { value: "form_desc", label: "Dosage form Z–A" },
+  { value: "price_egp_asc", label: "Price (EGP) low–high" },
+  { value: "price_egp_desc", label: "Price (EGP) high–low" },
+  { value: "price_eur_asc", label: "Price (EUR) low–high" },
+  { value: "price_eur_desc", label: "Price (EUR) high–low" },
+  { value: "used_desc", label: "Most used" },
+  { value: "used_asc", label: "Least used" },
+  { value: "newest", label: "Newest added" },
+  { value: "oldest", label: "Oldest added" },
+];
 
 export function MedicationsPage({ token, actor }: { token: string; actor: User }) {
   const toast = useToast();
@@ -47,9 +63,11 @@ export function MedicationsPage({ token, actor }: { token: string; actor: User }
   const [query, setQuery] = useState("");
   const [search, setSearch] = useState("");
   const [dosageForm, setDosageForm] = useState("");
+  const [sort, setSort] = useState("name_asc");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [editor, setEditor] = useState<CatalogMedication | null | undefined>(undefined);
+  const [viewing, setViewing] = useState<CatalogMedication | null>(null);
   const [pendingDelete, setPendingDelete] = useState<CatalogMedication | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
@@ -67,6 +85,7 @@ export function MedicationsPage({ token, actor }: { token: string; actor: User }
     const params = new URLSearchParams();
     if (search) params.set("q", search);
     if (dosageForm) params.set("dosage_form", dosageForm);
+    if (sort && sort !== "name_asc") params.set("sort", sort);
     setLoading(true);
     setError(null);
     api<{ items: CatalogMedication[] }>(`/api/medications?${params}`, {}, token)
@@ -79,7 +98,7 @@ export function MedicationsPage({ token, actor }: { token: string; actor: User }
       .finally(() => {
         if (id === requestId.current) setLoading(false);
       });
-  }, [token, search, dosageForm, reloadKey]);
+  }, [token, search, dosageForm, sort, reloadKey]);
 
   async function remove(medication: CatalogMedication) {
     setDeleting(true);
@@ -116,6 +135,14 @@ export function MedicationsPage({ token, actor }: { token: string; actor: User }
             onChange={setDosageForm}
           />
         </label>
+        <label className="block text-[13px] font-medium text-muted-strong">Sort
+          <SearchSelect
+            value={sort}
+            placeholder="Name A–Z"
+            options={sorts}
+            onChange={setSort}
+          />
+        </label>
       </Filters>
       <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-muted">{loading ? "Loading" : `${items.length} shown`}</p>
       <DataTable>
@@ -124,29 +151,22 @@ export function MedicationsPage({ token, actor }: { token: string; actor: User }
             <th className={th}>Active ingredient</th>
             <th className={th}>Strength</th>
             <th className={th}>Dosage form</th>
-            <th className={th}>Routes</th>
-            <th className={th}>Unit price (EGP)</th>
-            <th className={th}>Unit price (EUR)</th>
-            <th className={th}>Procedure services</th>
-            {canManage ? <th className={th}>Actions</th> : null}
+            <th className={th}>Actions</th>
           </tr>
         </thead>
         <tbody>
           {items.length === 0 ? (
-            <tr><td className="px-4 py-10 text-center text-sm text-muted" colSpan={canManage ? 8 : 7}>{loading ? "Loading medications…" : search || dosageForm ? "No medications match this search." : "No medications yet."}</td></tr>
+            <tr><td className="px-4 py-10 text-center text-sm text-muted" colSpan={4}>{loading ? "Loading medications…" : search || dosageForm ? "No medications match this search." : "No medications yet."}</td></tr>
           ) : items.map((row) => (
-            <tr key={row.id} className="border-t border-line-soft">
+            <tr key={row.id} className="cursor-pointer border-t border-line-soft hover:bg-surface-2" onClick={() => setViewing(row)}>
               <td className="px-4 py-3 font-semibold">{row.name}</td>
               <td className="px-4 py-3">{row.strength || "—"}</td>
               <td className="px-4 py-3 text-sm text-muted-strong">{row.dosage_form}</td>
-              <td className="px-4 py-3 text-sm text-muted-strong">{(row.routes?.map((item) => item.route) ?? [row.route]).join(", ")}</td>
-              <td className="px-4 py-3 tabular-nums">{row.unit_price_egp == null ? "—" : formatPrice(row.unit_price_egp)}</td>
-              <td className="px-4 py-3 tabular-nums">{row.unit_price_eur == null ? "—" : formatPrice(row.unit_price_eur)}</td>
-              <td className="px-4 py-3 text-sm text-muted-strong"><ProcedureServices medication={row} /></td>
-              {canManage ? (
-                <td className="px-4 py-3">
-                  <div className="flex gap-2">
-                    <IconAction kind="edit" onClick={() => setEditor(row)} />
+              <td className="px-4 py-3" onClick={(event) => event.stopPropagation()}>
+                <div className="flex gap-2">
+                  <IconAction kind="view" onClick={() => setViewing(row)} />
+                  {canManage ? <IconAction kind="edit" onClick={() => setEditor(row)} /> : null}
+                  {canManage ? (
                     <button
                       type="button"
                       className="inline-grid h-9 w-9 place-items-center rounded-lg border border-danger bg-surface text-danger hover:bg-danger-soft"
@@ -156,13 +176,21 @@ export function MedicationsPage({ token, actor }: { token: string; actor: User }
                     >
                       <TrashIcon />
                     </button>
-                  </div>
-                </td>
-              ) : null}
+                  ) : null}
+                </div>
+              </td>
             </tr>
           ))}
         </tbody>
       </DataTable>
+      {viewing ? (
+        <MedicationView
+          medication={viewing}
+          canManage={canManage}
+          onClose={() => setViewing(null)}
+          onEdit={() => { setEditor(viewing); setViewing(null); }}
+        />
+      ) : null}
       {editor !== undefined ? (
         <MedicationDialog
           token={token}
@@ -409,23 +437,75 @@ function MedicationDialog({
   );
 }
 
-function ProcedureServices({ medication }: { medication: CatalogMedication }) {
-  const assigned = (medication.routes ?? []).filter((item) => item.services.length > 0);
-  if (assigned.length === 0) return <span className="text-muted">—</span>;
+function MedicationView({
+  medication,
+  canManage,
+  onClose,
+  onEdit,
+}: {
+  medication: CatalogMedication;
+  canManage: boolean;
+  onClose: () => void;
+  onEdit: () => void;
+}) {
+  const routesForRow = medication.routes?.length ? medication.routes : [{ route: medication.route, services: [] }];
   return (
-    <div className="grid gap-2">
-      {assigned.map((item) => (
-        <div key={item.route}>
-          <p className="text-xs font-semibold uppercase tracking-wide text-muted">{item.route}</p>
-          <ul className="mt-0.5">
-            {item.services.map((service) => (
-              <li key={service.id}>{service.name} <span className="font-mono text-xs text-muted">{service.code}</span></li>
+    <div className="triage-dialog-backdrop fixed inset-0 z-50 grid place-items-center bg-shell/45 p-4" role="presentation" onMouseDown={onClose}>
+      <section
+        className="flex max-h-[90vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl bg-surface shadow-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="medication-view-title"
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <div className="min-h-0 flex-1 overflow-y-auto p-5">
+          <p className="text-xs font-semibold uppercase tracking-wide text-blue">Medication</p>
+          <h2 id="medication-view-title" className="mt-1 text-lg font-semibold text-ink">{medication.name}</h2>
+          <UsedCount count={medication.used_count ?? 0} large />
+          <dl className="mt-4 grid gap-3 sm:grid-cols-2">
+            <ViewField label="Strength" value={medication.strength || "—"} />
+            <ViewField label="Dosage form" value={medication.dosage_form} />
+            <ViewField label="Unit price (EGP)" value={medication.unit_price_egp == null ? "—" : formatPrice(medication.unit_price_egp)} />
+            <ViewField label="Unit price (EUR)" value={medication.unit_price_eur == null ? "—" : formatPrice(medication.unit_price_eur)} />
+            <ViewField label="Diluent" value={medication.is_diluent ? "Yes" : "No"} />
+          </dl>
+          <div className="mt-4 grid gap-2">
+            <p className="text-[11px] font-semibold uppercase tracking-wide text-muted">Routes</p>
+            {routesForRow.map((item) => (
+              <div key={item.route} className="rounded-xl border border-line-soft bg-canvas px-3 py-2.5">
+                <p className="text-sm font-semibold text-ink">{item.route}</p>
+                {item.services.length === 0 ? <p className="mt-1 text-xs text-muted">No procedure services</p> : (
+                  <ul className="mt-1 space-y-1">
+                    {item.services.map((service) => (
+                      <li key={service.id} className="text-sm text-muted-strong">{service.name} <span className="font-mono text-xs">{service.code}</span></li>
+                    ))}
+                  </ul>
+                )}
+              </div>
             ))}
-          </ul>
+          </div>
         </div>
-      ))}
+        <div className="flex shrink-0 justify-end gap-2 border-t border-line-soft px-5 py-4">
+          <button type="button" className={secondary} onClick={onClose}>Close</button>
+          {canManage ? <button type="button" className={primary} onClick={onEdit}>Edit</button> : null}
+        </div>
+      </section>
     </div>
   );
+}
+
+function ViewField({ label: title, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-xl bg-surface-2 px-3 py-2">
+      <dt className="text-[11px] font-semibold uppercase tracking-wide text-muted">{title}</dt>
+      <dd className="mt-0.5 text-sm font-semibold text-ink">{value}</dd>
+    </div>
+  );
+}
+
+function UsedCount({ count, large = false }: { count: number; large?: boolean }) {
+  const label = count === 1 ? "1 time used" : `${count} times used`;
+  return <span className={`inline-flex rounded-full bg-panel px-2.5 py-1 font-semibold text-blue ${large ? "mt-3 text-sm" : "text-xs"}`}>{label}</span>;
 }
 
 function priceInput(value: number | null | undefined) {

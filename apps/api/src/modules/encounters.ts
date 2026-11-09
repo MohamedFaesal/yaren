@@ -238,6 +238,12 @@ export function registerEncounters(app: FastifyInstance, pool: pg.Pool) {
         || body.patient_advices.length > 0
         || Boolean(body.management_plan?.trim());
       await client.query(
+        `UPDATE patient_visit_encounters
+         SET nursing_status = CASE WHEN $2::boolean THEN 'ordered' ELSE nursing_status END
+         WHERE visit_id = $1`,
+        [id, hasNursingPlan],
+      );
+      await client.query(
         `UPDATE patient_visits
          SET status = $2,
              assigned_nurse_id = $3,

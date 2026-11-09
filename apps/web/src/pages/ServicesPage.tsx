@@ -10,6 +10,26 @@ const serviceTypes = [
   "Procedures & Interventions Services",
   "Investigations [Laboratory & Imaging] Services",
 ];
+const sorts = [
+  { value: "name_asc", label: "Name A–Z" },
+  { value: "name_desc", label: "Name Z–A" },
+  { value: "code_asc", label: "Code A–Z" },
+  { value: "code_desc", label: "Code Z–A" },
+  { value: "type_asc", label: "Type A–Z" },
+  { value: "type_desc", label: "Type Z–A" },
+  { value: "category_asc", label: "Category A–Z" },
+  { value: "category_desc", label: "Category Z–A" },
+  { value: "unit_asc", label: "Unit A–Z" },
+  { value: "unit_desc", label: "Unit Z–A" },
+  { value: "price_egp_asc", label: "Price (EGP) low–high" },
+  { value: "price_egp_desc", label: "Price (EGP) high–low" },
+  { value: "price_eur_asc", label: "Price (EUR) low–high" },
+  { value: "price_eur_desc", label: "Price (EUR) high–low" },
+  { value: "used_desc", label: "Most used" },
+  { value: "used_asc", label: "Least used" },
+  { value: "newest", label: "Newest added" },
+  { value: "oldest", label: "Oldest added" },
+];
 
 export function ServicesPage({ token, actor }: { token: string; actor: User }) {
   const toast = useToast();
@@ -19,11 +39,13 @@ export function ServicesPage({ token, actor }: { token: string; actor: User }) {
   const [units, setUnits] = useState<string[]>([]);
   const [serviceType, setServiceType] = useState("");
   const [category, setCategory] = useState("");
+  const [sort, setSort] = useState("name_asc");
   const [query, setQuery] = useState("");
   const [search, setSearch] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [editor, setEditor] = useState<{ service: MedicalService | null } | null>(null);
+  const [viewing, setViewing] = useState<MedicalService | null>(null);
   const [pendingDelete, setPendingDelete] = useState<MedicalService | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
@@ -42,6 +64,7 @@ export function ServicesPage({ token, actor }: { token: string; actor: User }) {
     if (search) params.set("q", search);
     if (serviceType) params.set("service_type", serviceType);
     if (category) params.set("category", category);
+    if (sort) params.set("sort", sort);
     setLoading(true);
     setError(null);
     api<{ items: MedicalService[]; categories: string[]; units: string[] }>(`/api/services?${params}`, {}, token)
@@ -58,9 +81,9 @@ export function ServicesPage({ token, actor }: { token: string; actor: User }) {
       .finally(() => {
         if (id === requestId.current) setLoading(false);
       });
-  }, [token, search, serviceType, category, reloadKey]);
+  }, [token, search, serviceType, category, sort, reloadKey]);
 
-  const columns = 7 + (canManage ? 1 : 0);
+  const columns = 6;
 
   async function remove(service: MedicalService) {
     setDeleting(true);
@@ -103,6 +126,14 @@ export function ServicesPage({ token, actor }: { token: string; actor: User }) {
             {categories.map((item) => <option key={item} value={item}>{item}</option>)}
           </select>
         </label>
+        <label className="block text-[13px] font-medium text-muted-strong">Sort
+          <SearchSelect
+            value={sort}
+            placeholder="Name A–Z"
+            options={sorts}
+            onChange={setSort}
+          />
+        </label>
       </Filters>
       <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-muted">{loading ? "Loading" : `${items.length} shown`}</p>
       <DataTable>
@@ -113,38 +144,40 @@ export function ServicesPage({ token, actor }: { token: string; actor: User }) {
             <th className={th}>Category</th>
             <th className={th}>Service</th>
             <th className={th}>Unit</th>
-            <th className={th}>Unit price (EGP)</th>
-            <th className={th}>Unit price (EUR)</th>
-            {canManage ? <th className={th}>Actions</th> : null}
+            <th className={th}>Actions</th>
           </tr>
         </thead>
         <tbody>
           {items.length === 0 ? (
             <tr><td className="px-4 py-10 text-center text-sm text-muted" colSpan={columns}>{loading ? "Loading clinic services…" : search || serviceType || category ? "No services match this search." : "No services yet."}</td></tr>
           ) : items.map((row) => (
-            <tr key={row.id} className="border-t border-line-soft">
+            <tr key={row.id} className="cursor-pointer border-t border-line-soft hover:bg-surface-2" onClick={() => setViewing(row)}>
               <td className="px-4 py-3 font-mono text-xs font-semibold">{row.code}</td>
               <td className="px-4 py-3 text-sm text-muted-strong">{row.service_type}</td>
               <td className="px-4 py-3 font-medium">{row.category}</td>
               <td className="px-4 py-3">
                 <span className="block font-semibold">{row.name}</span>
-                {row.description ? <span className="mt-0.5 block text-sm text-muted">{row.description}</span> : null}
               </td>
               <td className="px-4 py-3 text-sm text-muted-strong">{row.unit}</td>
-              <td className="px-4 py-3 tabular-nums">{row.unit_price_egp == null ? "—" : formatPrice(row.unit_price_egp)}</td>
-              <td className="px-4 py-3 tabular-nums">{row.unit_price_eur == null ? "—" : formatPrice(row.unit_price_eur)}</td>
-              {canManage ? (
-                <td className="px-4 py-3">
-                  <div className="flex gap-2">
-                    <IconAction kind="edit" onClick={() => setEditor({ service: row })} />
-                    <IconAction kind="delete" onClick={() => { setDeleteError(null); setPendingDelete(row); }} />
-                  </div>
-                </td>
-              ) : null}
+              <td className="px-4 py-3" onClick={(event) => event.stopPropagation()}>
+                <div className="flex gap-2">
+                  <IconAction kind="view" onClick={() => setViewing(row)} />
+                  {canManage ? <IconAction kind="edit" onClick={() => setEditor({ service: row })} /> : null}
+                  {canManage ? <IconAction kind="delete" onClick={() => { setDeleteError(null); setPendingDelete(row); }} /> : null}
+                </div>
+              </td>
             </tr>
           ))}
         </tbody>
       </DataTable>
+      {viewing ? (
+        <ServiceView
+          service={viewing}
+          canManage={canManage}
+          onClose={() => setViewing(null)}
+          onEdit={() => { setEditor({ service: viewing }); setViewing(null); }}
+        />
+      ) : null}
       {editor ? (
         <ServiceDialog
           token={token}
@@ -182,6 +215,59 @@ function readPrice(value: string) {
 function selectOptions(values: string[], current: string) {
   const options = current && !values.includes(current) ? [current, ...values] : values;
   return options.map((item) => ({ value: item, label: item }));
+}
+
+function ServiceView({
+  service,
+  canManage,
+  onClose,
+  onEdit,
+}: {
+  service: MedicalService;
+  canManage: boolean;
+  onClose: () => void;
+  onEdit: () => void;
+}) {
+  return (
+    <div className="triage-dialog-backdrop fixed inset-0 z-50 grid place-items-center bg-shell/45 p-4" role="presentation" onMouseDown={onClose}>
+      <section
+        className="flex max-h-[90vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl bg-surface shadow-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="service-view-title"
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <div className="min-h-0 flex-1 overflow-y-auto p-5">
+          <p className="text-xs font-semibold uppercase tracking-wide text-blue">Clinic service</p>
+          <h2 id="service-view-title" className="mt-1 text-lg font-semibold text-ink">{service.name}</h2>
+          <span className="mt-3 inline-flex rounded-full bg-panel px-2.5 py-1 text-sm font-semibold text-blue">{service.used_count === 1 ? "1 time used" : `${service.used_count ?? 0} times used`}</span>
+          <dl className="mt-4 grid gap-3 sm:grid-cols-2">
+            <ServiceField label="Code" value={service.code} />
+            <ServiceField label="Type" value={service.service_type} />
+            <ServiceField label="Category" value={service.category} />
+            <ServiceField label="Unit" value={service.unit} />
+            <ServiceField label="Unit price (EGP)" value={service.unit_price_egp == null ? "—" : formatPrice(service.unit_price_egp)} />
+            <ServiceField label="Unit price (EUR)" value={service.unit_price_eur == null ? "—" : formatPrice(service.unit_price_eur)} />
+            <ServiceField label="Charge once per plan" value={service.charge_once_per_plan ? "Yes" : "No"} />
+          </dl>
+          {service.description ? <p className="mt-4 whitespace-pre-wrap rounded-xl bg-surface-2 px-3 py-2 text-sm text-ink">{service.description}</p> : null}
+        </div>
+        <div className="flex shrink-0 justify-end gap-2 border-t border-line-soft px-5 py-4">
+          <button type="button" className={secondary} onClick={onClose}>Close</button>
+          {canManage ? <button type="button" className={primary} onClick={onEdit}>Edit</button> : null}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function ServiceField({ label: title, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-xl bg-surface-2 px-3 py-2">
+      <dt className="text-[11px] font-semibold uppercase tracking-wide text-muted">{title}</dt>
+      <dd className="mt-0.5 text-sm font-semibold text-ink">{value}</dd>
+    </div>
+  );
 }
 
 function ServiceDialog({

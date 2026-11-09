@@ -171,7 +171,7 @@ export function registerInvestigations(app: FastifyInstance, pool: pg.Pool) {
     }
     const where = `WHERE ${clauses.join(" AND ")}`;
     const result = await pool.query(
-      `SELECT v.id AS visit_id, v.patient_id, v.clinic_id, v.hotel_room_no, v.status, v.assigned_nurse_id, v.status_changed_at,
+      `SELECT v.id AS visit_id, v.patient_id, v.clinic_id, v.hotel_room_no, v.passport_number, v.status, v.assigned_nurse_id, v.status_changed_at,
               c.name AS clinic_name, h.name AS hotel_name,
               p.name AS patient_name, p.mrn AS patient_mrn, p.gender AS patient_gender, p.nationality AS patient_nationality,
               EXTRACT(YEAR FROM age((v.created_at AT TIME ZONE 'UTC')::date, p.birthdate))::int AS patient_age_at_visit,

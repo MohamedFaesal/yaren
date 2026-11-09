@@ -95,6 +95,7 @@ type MedicationRow = {
   unit_price_egp: string | null;
   unit_price_eur: string | null;
   is_diluent: boolean;
+  used_count?: number | string | null;
 };
 
 type MedicationRoute = {
@@ -125,10 +126,13 @@ export function registerMedications(app: FastifyInstance, pool: pg.Pool) {
       )`);
     }
     const result = await pool.query<MedicationRow>(
-      `SELECT id, name, strength, dosage_form, route, unit_price_egp, unit_price_eur, is_diluent
+      `SELECT medications.id, medications.name, medications.strength, medications.dosage_form, medications.route,
+              medications.unit_price_egp, medications.unit_price_eur, medications.is_diluent,
+              COALESCE(usage.used_count, 0)::int AS used_count
        FROM medications
+       LEFT JOIN (${medicationUsageSql}) usage ON usage.id = medications.id
        WHERE ${clauses.join(" AND ")}
-       ORDER BY lower(name) ASC, lower(strength) ASC, dosage_form ASC`,
+       ORDER BY ${medicationSorts[query.sort]}`,
       values,
     );
     const routesByMedication = await loadRoutes(pool, result.rows.map((row) => row.id));
@@ -250,6 +254,7 @@ function present(row: MedicationRow, assigned: MedicationRoute[]) {
     unit_price_eur: money(row.unit_price_eur),
     route: row.route,
     routes: routesForRow,
+    used_count: Number(row.used_count ?? 0),
   };
 }
 
@@ -363,16 +368,65 @@ function formatMoney(value: number | null | undefined) {
   return value.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
+const medicationSorts = {
+  name_asc: "lower(name) ASC, lower(strength) ASC, dosage_form ASC",
+  name_desc: "lower(name) DESC, lower(strength) ASC, dosage_form ASC",
+  strength_asc: "lower(strength) ASC, lower(name) ASC",
+  strength_desc: "lower(strength) DESC, lower(name) ASC",
+  form_asc: "dosage_form ASC, lower(name) ASC",
+  form_desc: "dosage_form DESC, lower(name) ASC",
+  price_egp_asc: "unit_price_egp ASC NULLS LAST, lower(name) ASC",
+  price_egp_desc: "unit_price_egp DESC NULLS LAST, lower(name) ASC",
+  price_eur_asc: "unit_price_eur ASC NULLS LAST, lower(name) ASC",
+  price_eur_desc: "unit_price_eur DESC NULLS LAST, lower(name) ASC",
+  used_desc: "used_count DESC, lower(name) ASC",
+  used_asc: "used_count ASC, lower(name) ASC",
+  newest: "created_at DESC, lower(name) ASC",
+  oldest: "created_at ASC, lower(name) ASC",
+} as const;
+
+const medicationUsageSql = `
+  SELECT id, count(*)::int AS used_count
+  FROM (
+    SELECT (item->>'medication_id')::uuid AS id
+    FROM patient_visit_encounters e
+    JOIN patient_visits v ON v.id = e.visit_id AND v.deleted_at IS NULL
+    CROSS JOIN LATERAL jsonb_array_elements(COALESCE(e.medication_orders, '[]'::jsonb)) AS item
+    WHERE item->>'medication_id' ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
+    UNION ALL
+    SELECT (item->>'diluent_medication_id')::uuid
+    FROM patient_visit_encounters e
+    JOIN patient_visits v ON v.id = e.visit_id AND v.deleted_at IS NULL
+    CROSS JOIN LATERAL jsonb_array_elements(COALESCE(e.medication_orders, '[]'::jsonb)) AS item
+    WHERE item->>'diluent_medication_id' ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
+    UNION ALL
+    SELECT (item->>'medication_id')::uuid
+    FROM patient_visit_management_plans p
+    JOIN patient_visits v ON v.id = p.visit_id AND v.deleted_at IS NULL
+    CROSS JOIN LATERAL jsonb_array_elements(COALESCE(p.medication_orders, '[]'::jsonb)) AS item
+    WHERE item->>'medication_id' ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
+    UNION ALL
+    SELECT (item->>'diluent_medication_id')::uuid
+    FROM patient_visit_management_plans p
+    JOIN patient_visits v ON v.id = p.visit_id AND v.deleted_at IS NULL
+    CROSS JOIN LATERAL jsonb_array_elements(COALESCE(p.medication_orders, '[]'::jsonb)) AS item
+    WHERE item->>'diluent_medication_id' ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
+  ) hits
+  GROUP BY id
+`;
+
 function readListQuery(query: unknown) {
   const source = query !== null && typeof query === "object" ? query as Record<string, unknown> : {};
   const text = (key: string) => (typeof source[key] === "string" ? source[key].trim() : "");
   const q = text("q");
   const dosageForm = text("dosage_form");
+  const sort = text("sort");
   if (q.length > 200) throw new ApplicationError(422, "invalid_query", "Search is too long");
   if (dosageForm && !dosageForms.includes(dosageForm as (typeof dosageForms)[number])) {
     throw new ApplicationError(422, "invalid_query", "Unknown dosage form");
   }
-  return { q, dosageForm };
+  if (sort && !(sort in medicationSorts)) throw new ApplicationError(422, "invalid_query", "Unknown sort");
+  return { q, dosageForm, sort: (sort || "name_asc") as keyof typeof medicationSorts };
 }
 
 function readId(params: unknown) {

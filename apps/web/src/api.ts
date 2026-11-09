@@ -375,6 +375,7 @@ export type SampleCollectionItem = {
   patient_id: string;
   clinic_id: string;
   hotel_room_no: string | null;
+  passport_number: string | null;
   status: VisitCareStatus;
   assigned_nurse_id: string | null;
   assigned_nurse_name: string | null;
@@ -504,6 +505,8 @@ export type NursingCareItem = {
   patient_nationality: string | null;
   patient_age_at_visit: number | null;
   order_time: string | null;
+  plan_id: string | null;
+  plan_position: number;
   triage_category: TriageCategory | null;
   medication_count: number;
   procedure_count: number;
@@ -547,6 +550,7 @@ export type MonitoringObservation = {
   spo2: number | null;
   blood_pressure: string | null;
   notes: string;
+  case_priority?: CasePriority | null;
   recorded_by: string | null;
   recorded_by_name: string | null;
   recorded_at: string | null;
@@ -592,6 +596,7 @@ export type CatalogMedication = {
     route: string;
     services: { id: string; name: string; code: string; unit: string; price: number | null; unit_price_egp?: number | null; unit_price_eur?: number | null; charge_once_per_plan?: boolean }[];
   }[];
+  used_count?: number;
 };
 
 export type MedicationOrder = {
@@ -639,6 +644,19 @@ export type PatientAdvice = {
   text: string;
 };
 
+export type ManagementPlanRecord = {
+  id: string | null;
+  position: number;
+  status: NursingPlanStatus;
+  medication_orders: MedicationOrder[];
+  procedure_orders: ProcedureOrder[];
+  patient_advices: PatientAdvice[];
+  management_plan: string;
+  clinical_assessment: string;
+  assessment_status: "stable" | "needs_review" | "deteriorating" | null;
+  created_at: string | null;
+};
+
 export type NursingPlanDetail = {
   visit: {
     id: string;
@@ -649,6 +667,8 @@ export type NursingPlanDetail = {
     patient_nationality: string | null;
     patient_age_at_visit: number | null;
     hotel_room_no: string | null;
+    hotel_name: string;
+    clinic_id: string;
     clinic_name: string;
     visit_type: VisitType;
     nursing_plan_status: NursingPlanStatus;
@@ -663,6 +683,7 @@ export type NursingPlanDetail = {
     management_plan: string;
     finished_at: string | null;
   };
+  plans: ManagementPlanRecord[];
 };
 
 export type EncounterFile = {
@@ -720,6 +741,7 @@ export type MedicalService = {
   unit_price_eur: number | null;
   charge_once_per_plan: boolean;
   procedure_form: string | null;
+  used_count?: number;
 };
 
 export function formatPrice(value: number) {
@@ -756,6 +778,7 @@ export type DoctorMonitoringRecord = MonitoringObservation & {
   patient_name: string;
   patient_mrn: string;
   hotel_room_no: string | null;
+  hotel_name?: string | null;
   monitoring_status: MonitoringStatus;
   visit_status: VisitCareStatus;
 };

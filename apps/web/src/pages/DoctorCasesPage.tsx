@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState, type MouseEvent, type ReactNode } from "react";
 import { Link } from "react-router";
-import { api, investigationPriorityClass, investigationPriorityLabel, investigationStatusClass, investigationStatusLabel, monitoringStatusClass, monitoringStatusLabel, visitStatusLabel, visitTypeLabel, waitMinutes, type DoctorCase, type DoctorCaseDetail, type DoctorCasePage, type DoctorCaseSummary, type GeneralSettings, type MonitoringObservation, type TriageCategory, type User, type VisitCareStatus, type VisitInvestigation } from "../api";
+import { api, casePriorityClass, casePriorityLabel, investigationPriorityClass, investigationPriorityLabel, investigationStatusClass, investigationStatusLabel, monitoringStatusClass, monitoringStatusLabel, visitStatusLabel, visitTypeLabel, waitMinutes, type CasePriority, type CatalogMedication, type DoctorCase, type DoctorCaseDetail, type DoctorCasePage, type DoctorCaseSummary, type DoctorMonitoringRecord, type GeneralSettings, type ManagementPlanRecord, type MedicalService, type MedicationOrder, type MonitoringObservation, type MonitoringStatus, type NursingPlanDetail, type ProcedureOrder, type TriageCategory, type User, type VisitCareStatus, type VisitInvestigation } from "../api";
 import { canAct } from "../access";
 import { useActiveClinic } from "../ClinicWorkspace";
-import { Page, field, messageOf, secondary } from "./ui";
-import { encounterStepSaved } from "./EncounterPage";
+import { useToast } from "../toast";
+import { IconAction, Page, field, messageOf, primary, secondary, th } from "./ui";
+import { emptyOrder, emptyProcedure, encounterStepSaved, MedicationOrderDialog, ProcedureOrderDialog, reconcileProcedures, standaloneProcedures } from "./EncounterPage";
 
 const pageSize = 10;
 const emptySummary: DoctorCaseSummary = {
@@ -52,10 +53,9 @@ export function DoctorCasesPage({ token, actor }: { token: string; actor: User }
   const [detail, setDetail] = useState<DoctorCaseDetail | null>(null);
   const [detailError, setDetailError] = useState<string | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
-  const [observations, setObservations] = useState<MonitoringObservation[]>([]);
-  const [observationsLoading, setObservationsLoading] = useState(false);
   const [investigations, setInvestigations] = useState<VisitInvestigation[]>([]);
   const [investigationsLoading, setInvestigationsLoading] = useState(false);
+  const [refreshKey, setRefreshKey] = useState(0);
   const requestId = useRef(0);
   const seesAll = actor.type === "super-admin" || actor.type === "admin";
   const canOpenVisit = canAct(actor, "visit", "view");
@@ -95,14 +95,12 @@ export function DoctorCasesPage({ token, actor }: { token: string; actor: User }
     if (!selectedId) {
       setDetail(null);
       setDetailError(null);
-      setObservations([]);
       setInvestigations([]);
       return;
     }
     let cancelled = false;
     setDetailLoading(true);
     setDetailError(null);
-    setObservations([]);
     setInvestigations([]);
     api<DoctorCaseDetail>(`/api/doctor-cases/${selectedId}`, {}, token)
       .then((data) => {
@@ -125,21 +123,6 @@ export function DoctorCasesPage({ token, actor }: { token: string; actor: User }
   useEffect(() => {
     if (!detail) return;
     let cancelled = false;
-    setObservationsLoading(true);
-    api<{ items: MonitoringObservation[] }>(
-      `/api/patients/${detail.patient_id}/visits/${detail.id}/monitoring/observations`,
-      {},
-      token,
-    )
-      .then((data) => {
-        if (!cancelled) setObservations(data.items);
-      })
-      .catch(() => {
-        if (!cancelled) setObservations([]);
-      })
-      .finally(() => {
-        if (!cancelled) setObservationsLoading(false);
-      });
     setInvestigationsLoading(true);
     api<{ items: VisitInvestigation[] }>(
       `/api/patients/${detail.patient_id}/visits/${detail.id}/investigations`,
@@ -161,10 +144,13 @@ export function DoctorCasesPage({ token, actor }: { token: string; actor: User }
   }, [detail, token]);
 
   useEffect(() => {
-    if (result.items.length === 0) return;
-    if (selectedId && result.items.some((item) => item.id === selectedId)) return;
-    setSelectedId(result.items[0].id);
-  }, [result.items, selectedId]);
+    if (!selectedId) return;
+    function onKey(event: KeyboardEvent) {
+      if (event.key === "Escape") setSelectedId(null);
+    }
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [selectedId]);
 
   useEffect(() => {
     const id = ++requestId.current;
@@ -186,11 +172,13 @@ export function DoctorCasesPage({ token, actor }: { token: string; actor: User }
       .finally(() => {
         if (id === requestId.current) setLoading(false);
       });
-  }, [token, page, search, focus, clinicId]);
+  }, [token, page, search, focus, clinicId, refreshKey]);
 
   const averageTarget = clinicId ? waitMinutes(waitSettings, clinicId, "doctor") : waitSettings.doctor_wait_minutes;
   const clinicHasOwnTarget = Boolean(clinicId && waitSettings.clinics.some((item) => item.clinic_id === clinicId));
   const averageHint = clinicHasOwnTarget ? "Set for this clinic" : "Set for all clinics";
+  const nursePatients = groupNurseRecords(result.monitoring ?? []);
+  const underObservation = nursePatients.filter((item) => item.monitoringStatus === "in_progress").length;
 
   function chooseFocus(next: CaseFocus) {
     setFocus((current) => (current === next ? "" : next));
@@ -204,14 +192,18 @@ export function DoctorCasesPage({ token, actor }: { token: string; actor: User }
       crumbs={[{ label: "Care" }, { label: "Doctor Dashboard" }]}
     >
       {error ? <p className="mb-4 text-sm text-danger">{error}</p> : null}
-      <div className="mb-5 grid gap-3 sm:grid-cols-3">
+      <div className="mb-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <StatCard label="Patients today" value={summary.today} hint="Sent from triage today" tone="blue" active={focus === "today"} onClick={() => chooseFocus("today")} />
         <StatCard label="To see now" value={summary.to_see_now} hint="Emergency and urgent" tone="rose" active={focus === "now"} onClick={() => chooseFocus("now")} />
+        <StatCard label="Under observation" value={underObservation} hint="Monitored by nursing team" tone="green" />
         <StatCard label="Average waiting time" value={waitedLabel(averageTarget)} hint={averageHint} tone="amber" />
       </div>
+      <div className="grid items-start gap-4 xl:grid-cols-[minmax(0,1.7fr)_minmax(0,1fr)]">
       <section className="rounded-2xl border border-line bg-surface shadow-card">
         <div className="border-b border-line-soft p-4 sm:p-5">
-          <div className="flex flex-wrap gap-2">
+          <h2 className="text-base font-semibold text-ink">Patient queue</h2>
+          <p className="mt-0.5 text-sm text-muted">Waiting to see the doctor, plus diagnosed and waiting-for-investigation visits.</p>
+          <div className="mt-4 flex flex-wrap gap-2">
             <QueueChip label="All" count={summary.waiting + summary.diagnosed + summary.waiting_for_investigation} active={focus === ""} onClick={() => chooseFocus("")} />
             <QueueChip label="To see now" count={summary.to_see_now} active={focus === "now"} onClick={() => chooseFocus("now")} dot="bg-danger" />
             <QueueChip label="Emergency" count={summary.emergency} active={focus === "emergency"} onClick={() => chooseFocus("emergency")} dot="bg-danger" />
@@ -225,49 +217,57 @@ export function DoctorCasesPage({ token, actor }: { token: string; actor: User }
             <input className={field} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search by name, MRN, or hotel" />
           </label>
         </div>
-        <div className="grid lg:grid-cols-[22rem_minmax(0,1fr)] lg:items-start">
-          <div className="border-b border-line-soft lg:max-h-[calc(100vh-14rem)] lg:overflow-y-auto lg:border-b-0 lg:border-r">
+        <div className="max-h-[calc(100vh-16rem)] overflow-auto">
             {result.items.length === 0 ? (
               <p className="px-4 py-10 text-center text-sm text-muted">
                 {loading ? "Loading queue…" : search || focus ? "No patients match this queue." : seesAll ? "No visits have been sent to a doctor." : "No visits have been assigned to you."}
               </p>
-            ) : result.items.map((row) => {
-              const timing = waitFor(row, now);
-              const over = timing.elapsed != null && timing.elapsed >= waitMinutes(waitSettings, row.clinic_id, "doctor") * 60_000;
-              const readingCount = (result.monitoring ?? []).filter((item) => item.visit_id === row.id).length;
-              return (
-                <button
-                  key={row.id}
-                  type="button"
-                  onClick={() => setSelectedId(row.id)}
-                  className={`block w-full border-b border-l-4 border-b-line-soft px-4 py-3 text-left last:border-b-0 ${triageEdge(row.triage_category)} ${selectedId === row.id ? triageWash(row.triage_category) : "bg-surface hover:bg-surface-2"}`}
-                >
-                  <span className="flex items-start justify-between gap-3">
-                    <span className="min-w-0">
-                      <span className="block truncate font-semibold text-ink">{row.patient_name}</span>
-                      <span className="mt-0.5 block truncate text-xs text-muted">
-                        <span className="font-mono">{row.patient_mrn}</span>
-                        {" · "}
-                        {row.hotel_room_no ? `Room ${row.hotel_room_no}` : "No room"}
-                        {seesAll && row.assigned_doctor_name ? ` · ${row.assigned_doctor_name}` : ""}
-                      </span>
-                    </span>
-                    <span className={`shrink-0 rounded-full px-2 py-0.5 font-mono text-sm font-semibold tabular-nums ${over ? "bg-danger-soft text-danger" : "text-ink"}`}>
-                      {timing.elapsed == null ? "—" : clockLabel(timing.elapsed)}
-                    </span>
-                  </span>
-                  <span className="mt-2 flex flex-wrap items-center gap-1.5">
-                    <CategoryPill category={row.triage_category} />
-                    <QueueStatus status={row.status} />
-                    {row.monitoring_status === "completed" || row.monitoring_status === "in_progress" ? (
-                      <span className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${monitoringStatusClass(row.monitoring_status)}`}>
-                        {readingCount > 0 ? `${readingCount} reading${readingCount === 1 ? "" : "s"}` : monitoringStatusLabel(row.monitoring_status)}
-                      </span>
-                    ) : null}
-                  </span>
-                </button>
-              );
-            })}
+            ) : (
+              <table className="w-full min-w-[40rem] text-sm">
+                <thead className="sticky top-0 z-10 bg-surface-2">
+                  <tr>
+                    <th className={`${th} sticky top-0 bg-surface-2`}>#</th>
+                    <th className={`${th} sticky top-0 bg-surface-2`}>Patient</th>
+                    <th className={`${th} sticky top-0 bg-surface-2`}>Triage</th>
+                    <th className={`${th} sticky top-0 bg-surface-2`}>Waiting time</th>
+                    <th className={`${th} sticky top-0 bg-surface-2`}>Visit type</th>
+                    <th className={`${th} sticky top-0 bg-surface-2`}>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {result.items.map((row, index) => {
+                    const timing = waitFor(row, now);
+                    const target = waitMinutes(waitSettings, row.clinic_id, "doctor") * 60_000;
+                    return (
+                      <tr key={row.id} className={`border-t border-line-soft ${selectedId === row.id ? triageWash(row.triage_category) : "hover:bg-surface-2"}`}>
+                        <td className="px-4 py-3 text-xs font-semibold text-muted">{start + index}</td>
+                        <td className="px-4 py-3">
+                          <button type="button" className="block max-w-64 text-left" onClick={() => setSelectedId(row.id)}>
+                            <span className="block truncate font-semibold text-ink">{row.patient_name}</span>
+                            <span className="mt-0.5 block truncate text-xs text-muted">
+                              <span className="font-mono">{row.patient_mrn}</span>
+                              {" · "}
+                              {row.hotel_room_no ? `Room ${row.hotel_room_no}` : "No room"}
+                              {row.hotel_name ? ` · ${row.hotel_name}` : ""}
+                            </span>
+                            <span className="mt-1.5 block"><QueueStatus status={row.status} /></span>
+                          </button>
+                        </td>
+                        <td className="px-4 py-3"><CategoryPill category={row.triage_category} /></td>
+                        <td className={`px-4 py-3 font-semibold tabular-nums ${waitTone(timing.elapsed, target)}`}>{waitMinutesLabel(timing.elapsed)}</td>
+                        <td className="px-4 py-3"><VisitTypeBox type={row.visit_type} /></td>
+                        <td className="px-4 py-3">
+                          <div className="flex items-center gap-2">
+                            <IconAction kind="view" onClick={() => setSelectedId(row.id)} />
+                            <StartEncounterLink to={`/patients/to-doctor/${row.id}/encounter`} label={encounterActionLabel(row.status, row.id)} />
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            )}
             <div className="flex flex-wrap items-center justify-between gap-2 border-t border-line-soft px-3 py-3">
               <p className="text-xs text-muted-strong">{loading ? "Loading" : result.total === 0 ? "0 patients" : `${start}–${end} of ${result.total}`}</p>
               <div className="flex items-center gap-1.5">
@@ -276,23 +276,35 @@ export function DoctorCasesPage({ token, actor }: { token: string; actor: User }
                 <button type="button" className={`${secondary} px-2.5 py-1.5 text-xs disabled:opacity-50`} disabled={loading || result.page >= pages} onClick={() => setPage((current) => current + 1)}>Next</button>
               </div>
             </div>
-          </div>
-          <CasePanel
-            row={selected}
-            detail={detail}
-            loading={detailLoading}
-            error={detailError}
-            observations={observationsLoading && observations.length === 0 ? (result.monitoring ?? []).filter((item) => item.visit_id === selectedId) : observations}
-            observationsLoading={observationsLoading}
-            investigations={investigations}
-            investigationsLoading={investigationsLoading}
-            now={now}
-            waitMinutesTarget={selected ? waitMinutes(waitSettings, selected.clinic_id, "doctor") : waitSettings.doctor_wait_minutes}
-            canOpenVisit={canOpenVisit}
-            seesAll={seesAll}
-          />
         </div>
       </section>
+      <NurseRecordsPanel patients={nursePatients} now={now} token={token} onChanged={() => setRefreshKey((value) => value + 1)} />
+      </div>
+      {selected ? (
+        <div className="triage-dialog-backdrop fixed inset-0 z-50 grid place-items-center bg-shell/45 p-4" role="presentation" onMouseDown={() => setSelectedId(null)}>
+          <section
+            className="max-h-[90vh] w-full max-w-5xl overflow-y-auto rounded-2xl bg-surface shadow-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-label={`${selected.patient_name} chart`}
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <CasePanel
+              row={selected}
+              detail={detail}
+              loading={detailLoading}
+              error={detailError}
+              investigations={investigations}
+              investigationsLoading={investigationsLoading}
+              now={now}
+              waitMinutesTarget={waitMinutes(waitSettings, selected.clinic_id, "doctor")}
+              canOpenVisit={canOpenVisit}
+              seesAll={seesAll}
+              onClose={() => setSelectedId(null)}
+            />
+          </section>
+        </div>
+      ) : null}
     </Page>
   );
 }
@@ -316,9 +328,30 @@ function encounterActionLabel(status: VisitCareStatus, visitId: string) {
   return encounterStepSaved(visitId) ? "Resume Encounter" : "Start encounter";
 }
 
+function VisitTypeBox({ type }: { type?: DoctorCase["visit_type"] }) {
+  const tone = type === "follow-up"
+    ? "bg-warning-soft text-warning"
+    : type === "new"
+      ? "bg-panel text-blue"
+      : "bg-surface-2 text-muted";
+  return <span className={`inline-flex whitespace-nowrap rounded-lg px-2.5 py-1 text-xs font-semibold ${tone}`}>{visitTypeLabel(type)}</span>;
+}
+
 function QueueStatus({ status }: { status: VisitCareStatus }) {
-  const tone = status === "diagnosed" ? "bg-success-soft text-success" : "bg-panel text-blue";
-  return <span className={`inline-flex whitespace-nowrap rounded-full px-2.5 py-1 text-xs font-semibold ${tone}`}>{visitStatusLabel(status)}</span>;
+  const tone = status === "diagnosed"
+    ? "bg-success-soft text-success"
+    : status === "seen"
+      ? "bg-panel-strong text-blue-strong"
+      : status === "waiting_for_investigation"
+        ? "bg-warning-soft text-warning"
+        : status === "pending_payment"
+          ? "bg-danger-soft text-danger"
+          : status === "waiting_for_triage"
+            ? "bg-surface-3 text-muted-strong"
+            : status === "to_doctor"
+              ? "bg-panel text-blue"
+              : "bg-surface-2 text-muted";
+  return <span className={`inline-flex whitespace-nowrap rounded-lg px-2.5 py-1 text-xs font-semibold ${tone}`}>{visitStatusLabel(status)}</span>;
 }
 
 function StartEncounterLink({ to, label = "Start encounter", onClick }: { to: string; label?: string; onClick?: (event: MouseEvent<HTMLAnchorElement>) => void }) {
@@ -349,27 +382,25 @@ function CasePanel({
   detail,
   loading,
   error,
-  observations,
-  observationsLoading,
   investigations,
   investigationsLoading,
   now,
   waitMinutesTarget,
   canOpenVisit,
   seesAll,
+  onClose,
 }: {
   row: DoctorCase | null;
   detail: DoctorCaseDetail | null;
   loading: boolean;
   error: string | null;
-  observations: MonitoringObservation[];
-  observationsLoading: boolean;
   investigations: VisitInvestigation[];
   investigationsLoading: boolean;
   now: number;
   waitMinutesTarget: number;
   canOpenVisit: boolean;
   seesAll: boolean;
+  onClose?: () => void;
 }) {
   const chart = detail ?? row;
   const history = (detail?.relevant_history ?? []).filter((item) => item !== "other").map((item) => historyLabel[item] ?? item);
@@ -408,7 +439,7 @@ function CasePanel({
               <div className="mt-2 flex flex-wrap items-center gap-1.5">
                 <CategoryPill category={chart.triage_category} />
                 <QueueStatus status={chart.status} />
-                <span className="rounded-full bg-surface-2 px-2 py-0.5 text-[11px] font-semibold text-ink">{visitTypeLabel(chart.visit_type)}</span>
+                <VisitTypeBox type={chart.visit_type} />
                 {row?.monitoring_status === "completed" || row?.monitoring_status === "in_progress" ? (
                   <span className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${monitoringStatusClass(row.monitoring_status)}`}>
                     {row.monitoring_status === "completed" ? "Monitoring completed" : "Monitoring in progress"}
@@ -429,6 +460,9 @@ function CasePanel({
               <Link className={`${secondary} h-9 px-3 py-0 text-sm`} to={`/patients/${chart.patient_id}/visits/${chart.id}`}>Open visit</Link>
             ) : null}
             <StartEncounterLink to={`/patients/to-doctor/${chart.id}/encounter`} label={encounterActionLabel(chart.status, chart.id)} />
+            {onClose ? (
+              <button type="button" className="grid h-9 w-9 place-items-center rounded-lg text-xl leading-none text-muted hover:bg-surface hover:text-ink" aria-label="Close" onClick={onClose}>×</button>
+            ) : null}
           </div>
         </div>
       </div>
@@ -460,11 +494,668 @@ function CasePanel({
             </div>
           </>
         ) : null}
-        <NursingObservations items={observations} loading={observationsLoading && observations.length === 0} />
         <Investigations items={investigations} loading={investigationsLoading && investigations.length === 0} />
       </div>
     </div>
   );
+}
+
+type NursePatientRecord = {
+  visitId: string;
+  patientId: string;
+  patientName: string;
+  patientMrn: string;
+  hotelRoomNo: string | null;
+  hotelName: string | null;
+  monitoringStatus: MonitoringStatus;
+  latest: DoctorMonitoringRecord;
+  records: DoctorMonitoringRecord[];
+};
+
+function groupNurseRecords(records: DoctorMonitoringRecord[]): NursePatientRecord[] {
+  const grouped = new Map<string, DoctorMonitoringRecord[]>();
+  for (const record of records) {
+    const list = grouped.get(record.visit_id) ?? [];
+    list.push(record);
+    grouped.set(record.visit_id, list);
+  }
+  return [...grouped.values()].map((list) => {
+    const sorted = [...list].sort((left, right) => new Date(right.recorded_at ?? 0).getTime() - new Date(left.recorded_at ?? 0).getTime());
+    const latest = sorted[0];
+    return {
+      visitId: latest.visit_id,
+      patientId: latest.patient_id,
+      patientName: latest.patient_name,
+      patientMrn: latest.patient_mrn,
+      hotelRoomNo: latest.hotel_room_no,
+      hotelName: latest.hotel_name ?? null,
+      monitoringStatus: latest.monitoring_status,
+      latest,
+      records: sorted,
+    };
+  }).sort((left, right) => new Date(right.latest.recorded_at ?? 0).getTime() - new Date(left.latest.recorded_at ?? 0).getTime());
+}
+
+function NurseRecordsPanel({ patients, now, token, onChanged }: { patients: NursePatientRecord[]; now: number; token: string; onChanged: () => void }) {
+  const [query, setQuery] = useState("");
+  const [focus, setFocus] = useState<"" | CasePriority>("");
+  const [viewing, setViewing] = useState<NursePatientRecord | null>(null);
+  const needle = query.trim().toLowerCase();
+  const visible = patients.filter((item) => {
+    if (focus && item.latest.case_priority !== focus) return false;
+    if (!needle) return true;
+    const place = [item.patientName, item.patientMrn, item.hotelRoomNo, item.hotelName].filter(Boolean).join(" ").toLowerCase();
+    return place.includes(needle);
+  });
+  const counts = {
+    all: patients.length,
+    stable: patients.filter((item) => item.latest.case_priority === "stable").length,
+    urgent: patients.filter((item) => item.latest.case_priority === "urgent").length,
+    emergency: patients.filter((item) => item.latest.case_priority === "emergency").length,
+  };
+
+  return (
+    <section className="rounded-2xl border border-panel-strong bg-surface shadow-card">
+      <div className="border-b border-line-soft p-4 sm:p-5">
+        <h2 className="text-base font-semibold text-ink">Nurse Patient Records</h2>
+        <p className="mt-0.5 text-sm text-muted">Readings recorded while a patient is under nursing observation.</p>
+        <div className="mt-4 flex flex-wrap gap-2">
+          <QueueChip label="All" count={counts.all} active={focus === ""} onClick={() => setFocus("")} />
+          <QueueChip label="Stable" count={counts.stable} active={focus === "stable"} onClick={() => setFocus("stable")} dot="bg-success" />
+          <QueueChip label="Urgent" count={counts.urgent} active={focus === "urgent"} onClick={() => setFocus("urgent")} dot="bg-warning" />
+          <QueueChip label="Emergency" count={counts.emergency} active={focus === "emergency"} onClick={() => setFocus("emergency")} dot="bg-danger" />
+        </div>
+        <label className="relative mt-4 block">
+          <span className="sr-only">Search nurse records</span>
+          <input className={field} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search by name, MRN, or hotel" />
+        </label>
+      </div>
+      <div className="max-h-[calc(100vh-16rem)] overflow-auto">
+        {visible.length === 0 ? (
+          <p className="px-4 py-10 text-center text-sm text-muted">{patients.length === 0 ? "No nursing records yet." : "No records match this search."}</p>
+        ) : (
+          <table className="w-full text-sm">
+            <thead className="sticky top-0 z-10 bg-surface-2">
+              <tr>
+                <th className={`${th} sticky top-0 bg-surface-2`}>Patient</th>
+                <th className={`${th} sticky top-0 bg-surface-2`}>Status</th>
+                <th className={`${th} sticky top-0 bg-surface-2`}>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {visible.map((item) => (
+                <tr key={item.visitId} className="border-t border-line-soft">
+                  <td className="px-4 py-3">
+                    <p className="truncate font-semibold text-ink">{item.patientName}</p>
+                    <p className="mt-0.5 truncate text-xs text-muted">
+                      <span className="font-mono">{item.patientMrn}</span>
+                      {" · "}
+                      {item.hotelRoomNo ? `Room ${item.hotelRoomNo}` : "No room"}
+                      {item.hotelName ? ` · ${item.hotelName}` : ""}
+                    </p>
+                    <p className="mt-0.5 text-xs text-muted">{agoLabel(item.latest.recorded_at, now)} · {item.records.length} reading{item.records.length === 1 ? "" : "s"}</p>
+                  </td>
+                  <td className="px-4 py-3">
+                    {item.latest.case_priority ? <span className={`inline-flex whitespace-nowrap rounded-lg border px-2.5 py-1 text-xs font-semibold ${casePriorityClass(item.latest.case_priority)}`}>{casePriorityLabel(item.latest.case_priority)}</span> : <span className="text-muted">—</span>}
+                  </td>
+                  <td className="px-4 py-3">
+                    <button type="button" className={`${secondary} h-8 px-3 py-0 text-xs`} onClick={() => setViewing(item)}>View</button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+      {viewing ? <MonitoringAssessmentDialog token={token} patient={viewing} now={now} onClose={() => setViewing(null)} onChanged={onChanged} /> : null}
+    </section>
+  );
+}
+
+type DoctorAssessmentStatus = "stable" | "needs_review" | "deteriorating";
+
+type OrderEditor =
+  | { kind: "medication"; order: MedicationOrder; existing: boolean; locked: boolean; planOrders: MedicationOrder[] }
+  | { kind: "procedure"; order: ProcedureOrder; existing: boolean; locked: boolean; medications: MedicationOrder[]; procedures: ProcedureOrder[] };
+
+function MonitoringAssessmentDialog({
+  token,
+  patient,
+  now,
+  onClose,
+  onChanged,
+}: {
+  token: string;
+  patient: NursePatientRecord;
+  now: number;
+  onClose: () => void;
+  onChanged: () => void;
+}) {
+  const toast = useToast();
+  const latest = patient.records[0];
+  const [plan, setPlan] = useState<NursingPlanDetail | null>(null);
+  const [savedPlans, setSavedPlans] = useState<ManagementPlanRecord[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [catalog, setCatalog] = useState<CatalogMedication[]>([]);
+  const [services, setServices] = useState<MedicalService[]>([]);
+  const [servicesReady, setServicesReady] = useState(false);
+  const [medications, setMedications] = useState<MedicationOrder[]>([]);
+  const [procedures, setProcedures] = useState<ProcedureOrder[]>([]);
+  const [status, setStatus] = useState<DoctorAssessmentStatus | "">("");
+  const [clinical, setClinical] = useState("");
+  const [showRecords, setShowRecords] = useState(false);
+  const [editor, setEditor] = useState<OrderEditor | null>(null);
+  const [pending, setPending] = useState<"send" | "complete" | null>(null);
+  const [formError, setFormError] = useState<string | null>(null);
+  const nationality = plan?.visit.patient_nationality;
+  const monitoringStatus = plan?.visit.monitoring_status ?? patient.monitoringStatus;
+  const listedProcedures = standaloneProcedures(procedures);
+  const nextPlanPosition = savedPlans.reduce((max, item) => Math.max(max, item.position), 0) + 1;
+  const canSend = medications.length + listedProcedures.length > 0;
+  const canComplete = monitoringStatus === "in_progress" && patient.records.length > 0;
+  const assessment = automaticAssessment(latest);
+
+  useEffect(() => {
+    if (editor) return;
+    function onKey(event: KeyboardEvent) {
+      if (event.key === "Escape") onClose();
+    }
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [editor, onClose]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setLoadError(null);
+    api<NursingPlanDetail>(`/api/patients/${patient.patientId}/visits/${patient.visitId}/nursing-plan`, {}, token)
+      .then((detail) => {
+        if (cancelled) return;
+        setPlan(detail);
+        setSavedPlans(detail.plans ?? []);
+        setMedications([]);
+        setProcedures([]);
+        const params = new URLSearchParams({
+          clinic_id: detail.visit.clinic_id,
+          service_type: "Procedures & Interventions Services",
+        });
+        api<{ items: MedicalService[] }>(`/api/services?${params}`, {}, token)
+          .then((data) => {
+            if (!cancelled) setServices(data.items);
+          })
+          .catch(() => {
+            if (!cancelled) setServices([]);
+          })
+          .finally(() => {
+            if (!cancelled) setServicesReady(true);
+          });
+      })
+      .catch((caught) => {
+        if (!cancelled) setLoadError(messageOf(caught));
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    api<{ items: CatalogMedication[] }>("/api/medications", {}, token)
+      .then((data) => {
+        if (!cancelled) setCatalog(data.items);
+      })
+      .catch(() => {
+        if (!cancelled) setCatalog([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [patient.patientId, patient.visitId, token]);
+
+  function saveMedication(order: MedicationOrder) {
+    setMedications((current) => {
+      const exists = current.some((item) => item.id === order.id);
+      const next = exists ? current.map((item) => item.id === order.id ? order : item) : [...current, order];
+      setProcedures((rows) => reconcileProcedures(next, rows, catalog, nationality));
+      return next;
+    });
+    setEditor(null);
+    setFormError(null);
+  }
+
+  function removeMedication(id: string) {
+    setMedications((current) => {
+      const next = current.filter((item) => item.id !== id);
+      setProcedures((rows) => reconcileProcedures(next, rows, catalog, nationality));
+      return next;
+    });
+  }
+
+  function saveProcedure(order: ProcedureOrder) {
+    setProcedures((current) => current.some((item) => item.id === order.id)
+      ? current.map((item) => item.id === order.id ? order : item)
+      : [...current, order]);
+    setEditor(null);
+    setFormError(null);
+  }
+
+  async function sendAssessment() {
+    if (!canSend || pending || !latest) return;
+    if (status !== "stable" && status !== "needs_review" && status !== "deteriorating") {
+      setFormError("Choose Stable, Needs Review, or Deteriorating.");
+      return;
+    }
+    setPending("send");
+    setFormError(null);
+    try {
+      await api(`/api/patients/${patient.patientId}/visits/${patient.visitId}/monitoring/assessment`, {
+        method: "POST",
+        body: JSON.stringify({
+          observation_id: latest.id,
+          status,
+          clinical_assessment: clinical.trim(),
+          medication_orders: medications,
+          procedure_orders: procedures,
+        }),
+      }, token);
+      toast.success("Management plan sent", `Management plan ${nextPlanPosition} is with the nurse.`);
+      onChanged();
+      onClose();
+    } catch (caught) {
+      setFormError(messageOf(caught));
+    } finally {
+      setPending(null);
+    }
+  }
+
+  async function completeMonitoring() {
+    if (!canComplete || pending) return;
+    setPending("complete");
+    setFormError(null);
+    try {
+      await api(`/api/patients/${patient.patientId}/visits/${patient.visitId}/monitoring/complete`, { method: "POST" }, token);
+      toast.success("Monitoring completed", `${patient.patientName} is no longer under observation.`);
+      onChanged();
+      onClose();
+    } catch (caught) {
+      setFormError(messageOf(caught));
+    } finally {
+      setPending(null);
+    }
+  }
+
+  const name = plan?.visit.patient_name ?? patient.patientName;
+  const mrn = plan?.visit.patient_mrn ?? patient.patientMrn;
+  const room = plan?.visit.hotel_room_no ?? patient.hotelRoomNo;
+  const hotel = plan?.visit.hotel_name ?? patient.hotelName;
+  const age = plan?.visit.patient_age_at_visit;
+  const gender = genderLabel(plan?.visit.patient_gender ?? null);
+
+  return (
+    <>
+      <div className="triage-dialog-backdrop fixed inset-0 z-50 grid place-items-center bg-shell/45 p-4" role="presentation" onMouseDown={onClose}>
+        <section
+          className="flex max-h-[92vh] w-full max-w-5xl flex-col overflow-hidden rounded-2xl bg-surface shadow-dialog"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="monitoring-assessment-title"
+          onMouseDown={(event) => event.stopPropagation()}
+        >
+          <div className="flex items-start justify-between gap-3 border-b border-line-soft px-5 py-4">
+            <div className="flex min-w-0 items-start gap-3">
+              <span className="grid h-12 w-12 shrink-0 place-items-center rounded-full bg-blue text-sm font-bold text-white">{initials(name)}</span>
+              <div className="min-w-0">
+                <p className="text-xs font-semibold uppercase tracking-wide text-blue">Monitoring / Observation Details</p>
+                <h2 id="monitoring-assessment-title" className="mt-0.5 truncate text-lg font-semibold text-ink">{name}</h2>
+                <p className="mt-0.5 text-sm text-muted">
+                  <span className="font-mono">{mrn}</span>
+                  {age == null ? "" : ` · ${age} yrs`}
+                  {plan ? ` · ${gender}` : ""}
+                  {room ? ` · Room ${room}` : ""}
+                  {hotel ? ` · ${hotel}` : ""}
+                </p>
+              </div>
+            </div>
+            <div className="flex shrink-0 items-center gap-2">
+              <button type="button" className={`${secondary} h-9 px-3 py-0`} onClick={() => setShowRecords((value) => !value)}>
+                {showRecords ? "Hide records" : "View all records"}
+              </button>
+              <button type="button" className="grid h-9 w-9 place-items-center rounded-lg text-xl leading-none text-muted hover:bg-surface-2 hover:text-ink" aria-label="Close" onClick={onClose}>×</button>
+            </div>
+          </div>
+          <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
+            {loadError ? <p className="mb-4 text-sm text-danger">{loadError}</p> : null}
+            {loading ? <p className="mb-4 text-sm text-muted">Loading the nursing plan…</p> : null}
+            <section>
+              <div className="flex flex-wrap items-baseline justify-between gap-2">
+                <h3 className="text-sm font-semibold text-ink">Latest vital signs</h3>
+                <p className="text-xs text-muted">Recorded {agoLabel(latest?.recorded_at ?? null, now)} by {latest?.recorded_by_name?.trim() || "Nurse"}</p>
+              </div>
+              <dl className="mt-3 grid gap-2 sm:grid-cols-5">
+                <RangeVital label="Temp" unit="°C" range="36.0–37.5" value={latest?.temperature_c == null ? "—" : String(latest.temperature_c)} alert={abnormalVital("temp", latest?.temperature_c ?? null)} high={abnormalVital("temp", latest?.temperature_c ?? null)} />
+                <RangeVital label="Heart rate" unit="bpm" range="60–100" value={latest?.pulse == null ? "—" : String(latest.pulse)} alert={abnormalVital("pulse", latest?.pulse ?? null)} high />
+                <RangeVital label="Blood pressure" unit="mmHg" range="90/60–120/80" value={latest?.blood_pressure?.trim() || "—"} alert={abnormalBloodPressure(latest?.blood_pressure ?? null)} high={!lowSystolic(latest?.blood_pressure ?? null)} />
+                <RangeVital label="Respiratory rate" unit="/min" range="12–20" value={latest?.respiratory_rate == null ? "—" : String(latest.respiratory_rate)} alert={abnormalVital("rr", latest?.respiratory_rate ?? null)} high />
+                <RangeVital label="SpO2" unit="%" range="≥95" value={latest?.spo2 == null ? "—" : String(latest.spo2)} alert={abnormalVital("spo2", latest?.spo2 ?? null)} high={false} />
+              </dl>
+            </section>
+            <section className={`mt-4 rounded-xl border px-4 py-3 ${assessment.review ? "border-warning-line bg-warning-soft" : "border-success/30 bg-success-soft"}`}>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <h3 className="text-sm font-semibold text-ink">Automatic monitoring assessment</h3>
+                <span className={`rounded-full border px-2.5 py-0.5 text-xs font-semibold ${assessment.review ? "border-warning bg-surface text-warning" : "border-success bg-surface text-success"}`}>{assessment.review ? "Needs Review" : "Within range"}</span>
+              </div>
+              <p className="mt-1 text-sm text-ink">{assessment.text}</p>
+              <p className="mt-1 text-xs text-muted">System-generated</p>
+            </section>
+            <section className="mt-4 rounded-xl border border-line bg-surface-2 px-4 py-3">
+              <div className="flex flex-wrap items-baseline justify-between gap-2">
+                <h3 className="text-sm font-semibold text-ink">Nursing notes</h3>
+                <p className="text-xs text-muted">{latest?.recorded_by_name?.trim() || "Nurse"} · {latest?.recorded_at ? formatWhen(latest.recorded_at) : "—"}</p>
+              </div>
+              <p className="mt-1 whitespace-pre-wrap text-sm text-ink">{latest?.notes.trim() ? latest.notes : "No notes recorded."}</p>
+            </section>
+            {showRecords ? (
+              <div className="mt-4">
+                <NursingObservations items={patient.records} loading={false} />
+              </div>
+            ) : null}
+            <section className="mt-5">
+              <h3 className="text-sm font-semibold text-ink">Doctor assessment</h3>
+              <div className="mt-2 grid gap-2 sm:grid-cols-3" role="radiogroup" aria-label="Doctor assessment">
+                {([
+                  ["stable", "Stable", "border-success bg-success-soft text-success"],
+                  ["needs_review", "Needs Review", "border-warning bg-warning-soft text-warning"],
+                  ["deteriorating", "Deteriorating", "border-danger bg-danger-soft text-danger"],
+                ] as const).map(([value, label, active]) => (
+                  <button
+                    key={value}
+                    type="button"
+                    role="radio"
+                    aria-checked={status === value}
+                    className={`rounded-xl border px-3 py-2 text-sm font-semibold ${status === value ? active : "border-line bg-surface text-ink hover:bg-surface-2"}`}
+                    onClick={() => {
+                      setStatus(value);
+                      setFormError(null);
+                    }}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+              <label className="mt-3 block text-sm font-medium text-ink">
+                Clinical assessment
+                <textarea
+                  className={`${field} min-h-28 resize-y`}
+                  maxLength={1000}
+                  value={clinical}
+                  onChange={(event) => setClinical(event.target.value)}
+                  placeholder="Clinical impression for the nurse"
+                />
+              </label>
+              <p className="mt-1 text-right text-xs text-muted">{clinical.length}/1000</p>
+            </section>
+            {savedPlans.filter(planHasOrders).map((entry) => (
+              <section key={entry.position} className="mt-5 rounded-xl border border-line bg-surface-2 px-4 py-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <h3 className="text-sm font-semibold text-ink">Management plan {entry.position}</h3>
+                  {entry.assessment_status ? <AssessmentStatus status={entry.assessment_status} /> : null}
+                </div>
+                {entry.clinical_assessment.trim() ? <p className="mt-2 whitespace-pre-wrap text-sm text-ink">{entry.clinical_assessment}</p> : null}
+                <h4 className="mt-3 text-xs font-semibold uppercase tracking-wide text-muted">Medication orders</h4>
+                <OrderTable
+                  empty="No medication orders."
+                  headers={["#", "Medication", "Dose", "Route", "Frequency", "Duration", "Notes"]}
+                  rows={entry.medication_orders.map((item, index) => ({
+                    id: item.id,
+                    cells: [String(index + 1), item.medication || "—", doseLabel(item), item.route || "—", item.frequency || "—", item.duration || "—", item.instructions.trim() || "—"],
+                    onOpen: () => setEditor({ kind: "medication", order: item, existing: true, locked: true, planOrders: entry.medication_orders }),
+                  }))}
+                />
+                <h4 className="mt-3 text-xs font-semibold uppercase tracking-wide text-muted">Procedures & interventions</h4>
+                <OrderTable
+                  empty="No procedures."
+                  headers={["#", "Procedure", "Notes"]}
+                  rows={standaloneProcedures(entry.procedure_orders).map((item, index) => ({
+                    id: item.id,
+                    cells: [String(index + 1), item.name || "—", item.notes.trim() || "—"],
+                    onOpen: () => setEditor({
+                      kind: "procedure",
+                      order: item,
+                      existing: true,
+                      locked: true,
+                      medications: entry.medication_orders,
+                      procedures: entry.procedure_orders,
+                    }),
+                  }))}
+                />
+              </section>
+            ))}
+            <section className="mt-5 rounded-xl border border-panel-strong bg-panel/40 px-4 py-3">
+              <h3 className="text-sm font-semibold text-ink">Management plan {nextPlanPosition}</h3>
+              <p className="mt-1 text-xs text-muted">Orders added here are sent as a new management plan. Earlier plans stay unchanged.</p>
+              <div className="mt-3 flex items-center justify-between gap-3">
+                <h4 className="text-xs font-semibold uppercase tracking-wide text-muted">Medication orders</h4>
+                <button
+                  type="button"
+                  className={`${secondary} h-9 px-3 py-0`}
+                  disabled={!plan || catalog.length === 0}
+                  onClick={() => setEditor({ kind: "medication", order: emptyOrder(), existing: false, locked: false, planOrders: medications })}
+                >
+                  Add Medication
+                </button>
+              </div>
+              <OrderTable
+                empty="No medication orders yet."
+                headers={["#", "Medication", "Dose", "Route", "Frequency", "Duration", "Notes", ""]}
+                rows={medications.map((item, index) => ({
+                  id: item.id,
+                  cells: [String(index + 1), item.medication || "—", doseLabel(item), item.route || "—", item.frequency || "—", item.duration || "—", item.instructions.trim() || "—"],
+                  removable: true,
+                  onOpen: () => setEditor({ kind: "medication", order: item, existing: true, locked: false, planOrders: medications }),
+                  onRemove: () => removeMedication(item.id),
+                }))}
+              />
+              <div className="mt-4 flex items-center justify-between gap-3">
+                <h4 className="text-xs font-semibold uppercase tracking-wide text-muted">Procedures & interventions</h4>
+                <button
+                  type="button"
+                  className={`${secondary} h-9 px-3 py-0`}
+                  disabled={!plan || !servicesReady}
+                  onClick={() => setEditor({ kind: "procedure", order: emptyProcedure(), existing: false, locked: false, medications, procedures })}
+                >
+                  Add Procedure
+                </button>
+              </div>
+              <OrderTable
+                empty="No procedures yet."
+                headers={["#", "Procedure", "Notes", ""]}
+                rows={listedProcedures.map((item, index) => ({
+                  id: item.id,
+                  cells: [String(index + 1), item.name || "—", item.notes.trim() || "—"],
+                  removable: true,
+                  onOpen: () => setEditor({ kind: "procedure", order: item, existing: true, locked: false, medications, procedures }),
+                  onRemove: () => setProcedures((current) => current.filter((row) => row.id !== item.id)),
+                }))}
+              />
+            </section>
+          </div>
+          {formError ? <p className="px-5 text-sm text-danger">{formError}</p> : null}
+          <div className="flex flex-wrap items-center justify-end gap-2 border-t border-line-soft px-5 py-4">
+            <button type="button" className={secondary} onClick={onClose}>Close</button>
+            <button
+              type="button"
+              className={secondary}
+              disabled={!canComplete || pending !== null}
+              title={canComplete ? undefined : "Monitoring can be completed while it is in progress and a reading exists"}
+              onClick={() => void completeMonitoring()}
+            >
+              {pending === "complete" ? "Completing…" : "Complete monitoring"}
+            </button>
+            <button
+              type="button"
+              className={primary}
+              disabled={!canSend || pending !== null}
+              title={canSend ? undefined : "Add a medication or procedure to this management plan"}
+              onClick={() => void sendAssessment()}
+            >
+              {pending === "send" ? "Sending…" : "Save Assessment and Send to Nurse"}
+            </button>
+          </div>
+        </section>
+      </div>
+      {editor?.kind === "medication" ? (
+        <MedicationOrderDialog
+          order={editor.order}
+          existing={editor.existing}
+          locked={editor.locked}
+          catalog={catalog}
+          nationality={nationality}
+          planOrders={editor.planOrders}
+          onClose={() => setEditor(null)}
+          onSave={saveMedication}
+        />
+      ) : null}
+      {editor?.kind === "procedure" ? (
+        <ProcedureOrderDialog
+          order={editor.order}
+          existing={editor.existing}
+          locked={editor.locked}
+          services={services}
+          takenIds={editor.procedures.filter((item) => !item.linked_medication_order_id && item.id !== editor.order.id).map((item) => item.procedure_id).filter((id): id is string => Boolean(id))}
+          source={editor.medications.find((item) => item.id === editor.order.linked_medication_order_id)?.medication ?? ""}
+          nationality={nationality}
+          token={token}
+          onClose={() => setEditor(null)}
+          onSave={saveProcedure}
+        />
+      ) : null}
+    </>
+  );
+}
+
+function planHasOrders(plan: ManagementPlanRecord) {
+  return plan.medication_orders.length > 0
+    || standaloneProcedures(plan.procedure_orders).length > 0
+    || plan.patient_advices.length > 0
+    || plan.management_plan.trim().length > 0
+    || plan.clinical_assessment.trim().length > 0;
+}
+
+function AssessmentStatus({ status }: { status: NonNullable<ManagementPlanRecord["assessment_status"]> }) {
+  const label = status === "needs_review" ? "Needs Review" : status === "deteriorating" ? "Deteriorating" : "Stable";
+  const tone = status === "needs_review"
+    ? "border-warning bg-warning-soft text-warning"
+    : status === "deteriorating"
+      ? "border-danger bg-danger-soft text-danger"
+      : "border-success bg-success-soft text-success";
+  return <span className={`rounded-full border px-2.5 py-0.5 text-xs font-semibold ${tone}`}>{label}</span>;
+}
+
+function OrderTable({
+  headers,
+  rows,
+  empty,
+}: {
+  headers: string[];
+  rows: { id: string; cells: string[]; removable?: boolean; onOpen: () => void; onRemove?: () => void }[];
+  empty: string;
+}) {
+  if (rows.length === 0) return <p className="mt-3 text-sm text-muted">{empty}</p>;
+  return (
+    <div className="mt-3 overflow-x-auto rounded-xl border border-line">
+      <table className="w-full text-sm">
+        <thead className="bg-surface-2">
+          <tr>
+            {headers.map((header) => <th key={header || "actions"} className={th}>{header}</th>)}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => (
+            <tr key={row.id} className="border-t border-line-soft">
+              {row.cells.map((cell, index) => (
+                <td key={`${row.id}-${index}`} className="px-3 py-2">
+                  <button type="button" className="text-left text-ink" onClick={row.onOpen}>{cell}</button>
+                </td>
+              ))}
+              {row.removable != null ? (
+                <td className="px-3 py-2 text-right">
+                  {row.removable ? <button type="button" className="text-xs font-semibold text-danger" onClick={row.onRemove}>Remove</button> : null}
+                </td>
+              ) : null}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function RangeVital({
+  label: name,
+  unit,
+  range,
+  value,
+  alert,
+  high,
+}: {
+  label: string;
+  unit: string;
+  range: string;
+  value: string;
+  alert: boolean;
+  high?: boolean;
+}) {
+  return (
+    <div className={`rounded-xl px-3 py-2 ${alert ? "bg-danger-soft ring-1 ring-danger-line" : "bg-surface-2"}`}>
+      <dt className="text-xs font-semibold text-muted">{name}</dt>
+      <dd className={`mt-0.5 text-sm font-bold ${alert ? "text-danger" : "text-ink"}`}>
+        {value} <span className="text-xs font-medium">{unit}</span>
+        {alert && value !== "—" ? <span className="ml-1">{high === false ? "↓" : "↑"}</span> : null}
+      </dd>
+      <p className="mt-0.5 text-[11px] text-muted">{range}</p>
+    </div>
+  );
+}
+
+function doseLabel(order: MedicationOrder) {
+  if (order.dose.trim()) return order.dose;
+  if (order.dose_value != null && order.dose_unit) return `${order.dose_value} ${order.dose_unit}`;
+  return "—";
+}
+
+function genderLabel(value: string | null) {
+  if (value === "male") return "Male";
+  if (value === "female") return "Female";
+  return "—";
+}
+
+function automaticAssessment(record: MonitoringObservation | undefined) {
+  if (!record) return { review: false, text: "No vital signs recorded yet." };
+  const signs: string[] = [];
+  if (abnormalVital("temp", record.temperature_c)) signs.push("temperature");
+  if (abnormalVital("pulse", record.pulse)) signs.push("heart rate");
+  if (abnormalBloodPressure(record.blood_pressure)) signs.push("blood pressure");
+  if (abnormalVital("rr", record.respiratory_rate)) signs.push("respiratory rate");
+  if (abnormalVital("spo2", record.spo2)) signs.push("oxygen saturation");
+  if (signs.length === 0) return { review: false, text: "Vital signs are within range." };
+  const named = signs.length === 1 ? signs[0] : `${signs.slice(0, -1).join(", ")} and ${signs[signs.length - 1]}`;
+  const verb = signs.length === 1 ? "is" : "are";
+  return { review: true, text: `${named[0]?.toUpperCase() ?? ""}${named.slice(1)} ${verb} outside the reference range.` };
+}
+
+function lowSystolic(value: string | null) {
+  if (!value) return false;
+  const match = value.match(/(\d+)\s*\/\s*(\d+)/);
+  if (!match) return false;
+  return Number(match[1]) < 90;
+}
+
+function agoLabel(value: string | null, now: number) {
+  if (!value) return "—";
+  const minutes = Math.floor(Math.max(0, now - new Date(value).getTime()) / 60_000);
+  if (minutes < 1) return "Just now";
+  if (minutes < 60) return `${minutes} min ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} hr ago`;
+  const days = Math.floor(hours / 24);
+  return `${days} day${days === 1 ? "" : "s"} ago`;
 }
 
 function initials(name: string) {
@@ -511,9 +1202,10 @@ function NursingObservations({ items, loading }: { items: MonitoringObservation[
         <ul className="mt-2 grid gap-2">
           {items.map((item) => (
             <li key={item.id} className="rounded-xl bg-surface px-3 py-2">
-              <p className="text-xs font-semibold text-ink">
-                {item.recorded_at ? formatWhen(item.recorded_at) : "—"}
-                <span className="font-medium text-muted"> · {item.recorded_by_name?.trim() || "Nurse"}</span>
+              <p className="flex flex-wrap items-center gap-1.5 text-xs font-semibold text-ink">
+                <span>{item.recorded_at ? formatWhen(item.recorded_at) : "—"}</span>
+                <span className="font-medium text-muted">· {item.recorded_by_name?.trim() || "Nurse"}</span>
+                {item.case_priority ? <span className={`rounded-full border px-2 py-0.5 text-[11px] font-semibold ${casePriorityClass(item.case_priority)}`}>{casePriorityLabel(item.case_priority)}</span> : null}
               </p>
               <dl className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-5">
                 <Vital tone="temp" icon={<TempIcon />} label="Temp" value={reading(item.temperature_c, "°C")} alert={abnormalVital("temp", item.temperature_c)} />
@@ -613,13 +1305,6 @@ function triageWash(category: TriageCategory | null) {
   return "bg-surface";
 }
 
-function triageEdge(category: TriageCategory | null) {
-  if (category === "emergency") return "border-l-danger";
-  if (category === "urgent") return "border-l-warning";
-  if (category === "normal") return "border-l-success";
-  return "border-l-line-strong";
-}
-
 function triageAvatar(category: TriageCategory | null) {
   if (category === "emergency") return "bg-danger text-white";
   if (category === "urgent") return "bg-warning text-white";
@@ -711,12 +1396,12 @@ function StatCard({
   label: string;
   value: number | string;
   hint: string;
-  tone: "blue" | "rose" | "amber";
+  tone: "blue" | "rose" | "amber" | "green";
   active?: boolean;
   alert?: boolean;
   onClick?: () => void;
 }) {
-  const toneClass = tone === "rose" ? "bg-danger-soft text-danger" : tone === "amber" ? "bg-warning-soft text-warning" : "bg-panel text-blue";
+  const toneClass = tone === "rose" ? "bg-danger-soft text-danger" : tone === "amber" ? "bg-warning-soft text-warning" : tone === "green" ? "bg-success-soft text-success" : "bg-panel text-blue";
   const body = (
     <>
       <span className={`grid h-10 w-10 place-items-center rounded-full ${toneClass}`} aria-hidden="true">
@@ -771,6 +1456,23 @@ function CategoryPill({ category }: { category: TriageCategory | null }) {
     return <span className="inline-flex rounded-full bg-success-soft px-2.5 py-1 text-xs font-semibold text-success">{categoryLabel.normal}</span>;
   }
   return <span className="text-muted">—</span>;
+}
+
+function waitMinutesLabel(ms: number | null) {
+  if (ms == null) return "—";
+  const minutes = Math.floor(ms / 60_000);
+  if (minutes < 1) return "< 1 min";
+  if (minutes < 60) return `${minutes} min`;
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  return rest === 0 ? `${hours}h` : `${hours}h ${rest}m`;
+}
+
+function waitTone(elapsed: number | null, targetMs: number) {
+  if (elapsed == null) return "text-muted";
+  if (elapsed >= targetMs) return "text-danger";
+  if (elapsed >= targetMs * 0.6) return "text-warning";
+  return "text-success";
 }
 
 function clockLabel(ms: number) {
