@@ -38,13 +38,7 @@ export function LoginPage({ onSuccess }: { onSuccess: (session: Session) => void
         />
         <div className="absolute inset-0 bg-gradient-to-t from-[#07111c]/85 via-[#0b1c2e]/45 to-[#0b1c2e]/25" />
         <div className="relative flex h-full flex-col justify-between px-10 py-10 text-white xl:px-14">
-          <div className="flex items-center gap-3">
-            <img src="/yaren-logo.png" alt="Yaren Healthcare" className="h-11 w-auto rounded-lg bg-white px-2 py-1.5" />
-            <div>
-              <p className="text-sm font-bold tracking-[0.18em] text-white">YAREN</p>
-              <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-white/80">Healthcare</p>
-            </div>
-          </div>
+          <img src="/yaren-logo-white.png" alt="Yaren Healthcare" className="h-16 w-auto" />
 
           <div className="ui-rise max-w-xl">
             <h1 className="text-4xl font-bold leading-tight tracking-tight xl:text-5xl">
@@ -66,7 +60,7 @@ export function LoginPage({ onSuccess }: { onSuccess: (session: Session) => void
 
       <div className="relative flex min-h-screen flex-col bg-surface px-5 py-6 sm:px-8">
         <div className="mb-6 flex items-center justify-between lg:mb-0 lg:justify-end">
-          <img src="/yaren-logo.png" alt="Yaren Healthcare" className="h-10 w-auto lg:hidden" />
+          <img src="/yaren-logo-black.png" alt="Yaren Healthcare" className="h-12 w-auto lg:hidden" />
           <div className="inline-flex items-center gap-2 rounded-full border border-line bg-surface-2 px-3 py-1.5 text-sm font-medium text-muted-strong">
             <GlobeIcon />
             English
@@ -104,7 +98,7 @@ export function LoginPage({ onSuccess }: { onSuccess: (session: Session) => void
             }}
           >
             <div className="mb-8 hidden text-center lg:block">
-              <img src="/yaren-logo.png" alt="Yaren Healthcare" className="mx-auto h-14 w-auto" />
+              <img src="/yaren-logo-black.png" alt="Yaren Healthcare" className="mx-auto h-16 w-auto" />
             </div>
 
             <div className="text-center">

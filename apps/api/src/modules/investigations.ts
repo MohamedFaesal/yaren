@@ -45,6 +45,7 @@ export function registerInvestigations(app: FastifyInstance, pool: pg.Pool) {
       WITH visit_stats AS (
         SELECT
           v.id AS visit_id,
+          v.visit_number,
           v.patient_id,
           v.clinic_id,
           v.hotel_room_no,
@@ -210,15 +211,9 @@ export function registerInvestigations(app: FastifyInstance, pool: pg.Pool) {
        LEFT JOIN users nurse ON nurse.id = v.assigned_nurse_id
        LEFT JOIN patient_visit_encounters e ON e.visit_id = v.id
        ${where}
-       ORDER BY
-         CASE e.case_priority WHEN 'emergency' THEN 0 WHEN 'urgent' THEN 1 WHEN 'stable' THEN 2 ELSE 3 END,
-         CASE (
-           SELECT i.priority FROM patient_visit_investigations i
-           WHERE i.visit_id = v.id
-           ORDER BY CASE i.priority WHEN 'emergency' THEN 0 WHEN 'urgent' THEN 1 ELSE 2 END
-           LIMIT 1
-         ) WHEN 'emergency' THEN 0 WHEN 'urgent' THEN 1 ELSE 2 END,
-         ordered_at ASC`,
+       ORDER BY (
+         SELECT MAX(i.created_at) FROM patient_visit_investigations i WHERE i.visit_id = v.id
+       ) DESC NULLS LAST`,
       values,
     );
     return {
@@ -379,7 +374,7 @@ export function registerInvestigations(app: FastifyInstance, pool: pg.Pool) {
          WHERE id = $1`,
         [id, saved.path, saved.originalName, saved.mimeType, request.user.sub],
       );
-      const completedVisit = await maybeCompleteVisitInvestigations(client, row.visit_id, request.user.sub);
+      const resultsReady = await maybeCompleteVisitInvestigations(client, row.visit_id, request.user.sub);
       await client.query("COMMIT");
       noteActivity(request, {
         entity: "patient",
@@ -387,7 +382,7 @@ export function registerInvestigations(app: FastifyInstance, pool: pg.Pool) {
         summary: `${replacing ? "Re-uploaded" : "Uploaded"} result for ${row.name} (${row.patient_name})`,
         changes: [
           changed("Investigation status", statusLabel(row.status), "Completed"),
-          completedVisit ? changed("Status", "Waiting for investigation", "Diagnosed") : null,
+          resultsReady ? changed("Investigation phase", "Sent to Lab", "Results Ready") : null,
         ].filter((item) => item !== null),
       });
     } catch (error) {
@@ -571,6 +566,7 @@ function presentInvestigationVisit(row: Record<string, unknown>) {
     : "other";
   return {
     visit_id: String(row.visit_id),
+    visit_number: typeof row.visit_number === "string" ? row.visit_number : "",
     patient_id: String(row.patient_id),
     clinic_id: String(row.clinic_id),
     hotel_room_no: typeof row.hotel_room_no === "string" ? row.hotel_room_no : null,

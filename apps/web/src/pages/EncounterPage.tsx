@@ -3,6 +3,7 @@ import { Link, useNavigate, useParams, useSearchParams } from "react-router";
 import { procedureDetailErrors, procedureFieldActive, procedureFields, procedureFormById, procedureServiceCharges, quantityForAssociatedService, quantityForProcedureForm, readServices, readStaff, readText, type ProcedureDetails, type ProcedureField, type ProcedureFormDefinition, type ProcedureServiceValue } from "@yaren/shared-kernel";
 import {
   api,
+  isUuid,
   casePriorityClass,
   casePriorityLabel,
   formatPrice,
@@ -16,6 +17,7 @@ import {
   type Icd11Code,
   type MedicalService,
   type MedicationOrder,
+  type PatientVisit,
   type ProcedureOrder,
 } from "../api";
 import { useToast } from "../toast";
@@ -23,6 +25,7 @@ import { Page, RemoveButton, SearchSelect, field, fieldInvalid, label, messageOf
 
 type EncounterTab = "history" | "vitals" | "examination" | "investigations" | "diagnosis" | "plan";
 type PlanTab = "medications" | "procedures" | "advice";
+type FinishOutcome = "complete" | "refer" | "send";
 
 const tabs: { id: EncounterTab; label: string }[] = [
   { id: "history", label: "History" },
@@ -66,8 +69,10 @@ function readPlanTab(value: string | null): PlanTab {
 }
 
 export function EncounterPage({ token }: { token: string }) {
-  const { id } = useParams();
+  const { id: routeKey } = useParams();
   const navigate = useNavigate();
+  const [caseId, setCaseId] = useState<string | null>(routeKey && isUuid(routeKey) ? routeKey : null);
+  const id = caseId ?? undefined;
   const [params, setParams] = useSearchParams();
   const toast = useToast();
   const [record, setRecord] = useState<EncounterRecord | null>(null);
@@ -75,6 +80,7 @@ export function EncounterPage({ token }: { token: string }) {
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [confirmFinish, setConfirmFinish] = useState(false);
+  const [finishChoice, setFinishChoice] = useState<FinishOutcome | null>(null);
   const [finishNurseId, setFinishNurseId] = useState("");
   const [finishNurseError, setFinishNurseError] = useState<string | null>(null);
   const [nurses, setNurses] = useState<{ id: string; name: string }[]>([]);
@@ -116,6 +122,25 @@ export function EncounterPage({ token }: { token: string }) {
   }
 
   useEffect(() => {
+    if (!routeKey) return;
+    if (isUuid(routeKey)) {
+      setCaseId(routeKey);
+      return;
+    }
+    let cancelled = false;
+    api<PatientVisit>(`/api/visits/by-number/${encodeURIComponent(routeKey)}`, {}, token)
+      .then((visit) => {
+        if (!cancelled) setCaseId(visit.id);
+      })
+      .catch((caught) => {
+        if (!cancelled) setError(messageOf(caught));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [routeKey, token]);
+
+  useEffect(() => {
     const section = params.get("section");
     const plan = params.get("plan");
     const sectionValid = Boolean(section && encounterTabs.has(section as EncounterTab));
@@ -125,6 +150,7 @@ export function EncounterPage({ token }: { token: string }) {
   }, [params, tab]);
 
   useEffect(() => {
+    if (!id) return;
     api<EncounterRecord>(`/api/doctor-cases/${id}/encounter`, {}, token)
       .then((data) => {
         const normalized = normalize(data.encounter);
@@ -142,6 +168,13 @@ export function EncounterPage({ token }: { token: string }) {
       })
       .catch((caught) => setError(messageOf(caught)));
   }, [id, token]);
+
+  useEffect(() => {
+    const number = record?.visit.visit_number;
+    if (!number || !routeKey || routeKey === number) return;
+    const search = params.toString();
+    navigate(`/patients/to-doctor/${number}/encounter${search ? `?${search}` : ""}`, { replace: true });
+  }, [record, routeKey, navigate, params]);
 
   const visit = record?.visit;
   const locked = Boolean(record?.finished);
@@ -244,11 +277,12 @@ export function EncounterPage({ token }: { token: string }) {
     setError(null);
     setFinishNurseError(null);
     setFinishNurseId("");
+    setFinishChoice(null);
     setConfirmFinish(true);
   }
 
   useEffect(() => {
-    if (!confirmFinish || !visit?.clinic_id) return;
+    if (finishChoice !== "send" || !visit?.clinic_id) return;
     let cancelled = false;
     setNursesLoading(true);
     api<{ items: { id: string; name: string }[] }>(`/api/clinics/${visit.clinic_id}/nurses`, {}, token)
@@ -267,7 +301,7 @@ export function EncounterPage({ token }: { token: string }) {
     return () => {
       cancelled = true;
     };
-  }, [confirmFinish, visit?.clinic_id, token]);
+  }, [finishChoice, visit?.clinic_id, token]);
 
   async function saveStep() {
     if (!form || locked || !id) return;
@@ -308,7 +342,7 @@ export function EncounterPage({ token }: { token: string }) {
     }
   }
 
-  async function finish() {
+  async function finish(outcome: FinishOutcome) {
     if (!form || locked || !readyToSave()) {
       setConfirmFinish(false);
       return;
@@ -320,7 +354,7 @@ export function EncounterPage({ token }: { token: string }) {
       setConfirmFinish(false);
       return;
     }
-    if (!finishNurseId) {
+    if (outcome === "send" && !finishNurseId) {
       setFinishNurseError("Choose the nurse who will handle this patient.");
       return;
     }
@@ -328,13 +362,20 @@ export function EncounterPage({ token }: { token: string }) {
     setError(null);
     setFinishNurseError(null);
     const nurseName = nurses.find((item) => item.id === finishNurseId)?.name;
+    const patientName = visit?.patient_name ?? "The patient";
     try {
       await api<EncounterRecord>(`/api/doctor-cases/${id}/encounter/finish`, {
         method: "POST",
-        body: JSON.stringify({ ...withoutIncompleteRows(form), assigned_nurse_id: finishNurseId }),
+        body: JSON.stringify({
+          ...withoutIncompleteRows(form),
+          outcome,
+          ...(outcome === "send" ? { assigned_nurse_id: finishNurseId } : {}),
+        }),
       }, token);
       if (id) localStorage.removeItem(savedStepsKey(id));
-      toast.success("Encounter finished", `${visit?.patient_name ?? "The patient"} was sent to ${nurseName ?? "the nurse"}.`);
+      if (outcome === "complete") toast.success("Encounter Complete", `${patientName}'s encounter is complete.`);
+      else if (outcome === "refer") toast.success("Referred", `${patientName} was referred.`);
+      else toast.success("Sent to nurse", `${patientName} was sent to ${nurseName ?? "the nurse"}.`);
       navigate("/patients/to-doctor");
     } catch (caught) {
       setFinishNurseError(messageOf(caught));
@@ -352,9 +393,9 @@ export function EncounterPage({ token }: { token: string }) {
       crumbs={[{ label: "Care" }, { label: "Doctor Dashboard", to: "/patients/to-doctor" }, { label: "Clinical Encounter" }]}
       action={form ? (
         <>
-          {visit ? <Link className={secondary} to={`/patients/${visit.patient_id}`}>View Full Profile</Link> : null}
+          {visit?.patient_mrn ? <Link className={secondary} to={`/patients/${visit.patient_mrn}`}>View Full Profile</Link> : null}
           {locked ? null : (
-            <button type="button" className={primary} disabled={saving} onClick={requestFinish}>Finish Encounter & Send to Nurse</button>
+            <button type="button" className={primary} disabled={saving} onClick={requestFinish}>Finish encounter</button>
           )}
         </>
       ) : null}
@@ -494,7 +535,21 @@ export function EncounterPage({ token }: { token: string }) {
                 <VitalField label="Respiratory rate" unit="/min" value={form.respiratory_rate} alert={abnormal("rr", form.respiratory_rate)} disabled={locked} onChange={(respiratory_rate) => update({ respiratory_rate })} />
                 <label className="text-sm font-medium text-muted-strong">Blood pressure<span className="text-danger"> *</span>
                   <span className="mt-1 flex items-center gap-2">
-                    <input className={field} value={form.blood_pressure} disabled={locked} placeholder="120/80" onChange={(event) => update({ blood_pressure: event.target.value })} />
+                    <input
+                      className={field}
+                      value={form.blood_pressure}
+                      disabled={locked}
+                      inputMode="numeric"
+                      placeholder="120/80"
+                      onChange={(event) => {
+                        const input = event.currentTarget;
+                        const raw = input.value;
+                        const next = formatBloodPressure(raw, form.blood_pressure);
+                        const atEnd = (input.selectionStart ?? raw.length) >= raw.length;
+                        update({ blood_pressure: next });
+                        if (next !== raw && atEnd) requestAnimationFrame(() => input.setSelectionRange(next.length, next.length));
+                      }}
+                    />
                     <span className="shrink-0 text-xs text-muted">mmHg</span>
                   </span>
                 </label>
@@ -830,14 +885,21 @@ export function EncounterPage({ token }: { token: string }) {
           )}
         </div>
       )}
-      {confirmFinish ? (
+      {confirmFinish && form ? (
         <FinishEncounterDialog
           patientName={visit?.patient_name ?? "this patient"}
+          handoff={form.investigations.length > 0 || form.procedure_orders.some(orderIncludesMonitoring)}
+          choice={finishChoice}
           nurses={nurses}
           nursesLoading={nursesLoading}
           nurseId={finishNurseId}
           error={finishNurseError}
           pending={saving}
+          onChoose={(outcome) => {
+            setFinishChoice(outcome);
+            setFinishNurseError(null);
+          }}
+          onNurseError={setFinishNurseError}
           onNurseChange={(value) => {
             setFinishNurseId(value);
             setFinishNurseError(null);
@@ -845,10 +907,13 @@ export function EncounterPage({ token }: { token: string }) {
           onCancel={() => {
             if (saving) return;
             setConfirmFinish(false);
+            setFinishChoice(null);
             setFinishNurseId("");
             setFinishNurseError(null);
           }}
-          onConfirm={() => void finish()}
+          onConfirm={() => {
+            if (finishChoice) void finish(finishChoice);
+          }}
         />
       ) : null}
       {orderDialog && form && visit ? (
@@ -1121,6 +1186,10 @@ function isMonitoringService(service: { code: string; name: string }) {
   return service.code === "YRN-MP-006" || /monitor/i.test(service.name);
 }
 
+function orderIncludesMonitoring(order: { code: string; name: string; details?: ProcedureDetails }) {
+  return isMonitoringService(order) || procedureServiceCharges(order.details).some((service) => isMonitoringService(service));
+}
+
 function isPerProcedure(service: { unit: string }) {
   return /per procedure/i.test(service.unit);
 }
@@ -1326,25 +1395,34 @@ function associatedChargeLabel(service: ProcedureServiceValue, quantity: number,
 }
 function FinishEncounterDialog({
   patientName,
+  handoff,
+  choice,
   nurses,
   nursesLoading,
   nurseId,
   error,
   pending,
+  onChoose,
   onNurseChange,
+  onNurseError,
   onCancel,
   onConfirm,
 }: {
   patientName: string;
+  handoff: boolean;
+  choice: FinishOutcome | null;
   nurses: { id: string; name: string }[];
   nursesLoading: boolean;
   nurseId: string;
   error: string | null;
   pending?: boolean;
+  onChoose: (outcome: FinishOutcome) => void;
   onNurseChange: (value: string) => void;
+  onNurseError: (message: string) => void;
   onCancel: () => void;
   onConfirm: () => void;
 }) {
+  const [reviewing, setReviewing] = useState(false);
   useEffect(() => {
     function onKey(event: KeyboardEvent) {
       if (event.key === "Escape" && !pending) onCancel();
@@ -1354,6 +1432,34 @@ function FinishEncounterDialog({
   }, [onCancel, pending]);
 
   const nurseInvalid = Boolean(error) && !nurseId;
+  const outcomes: { id: FinishOutcome; title: string; detail: string; disabled: boolean }[] = [
+    {
+      id: "complete",
+      title: "Complete Encounter",
+      detail: handoff ? "An investigation or monitoring service is ordered." : "No investigations or monitoring. Status becomes Encounter Complete.",
+      disabled: handoff,
+    },
+    {
+      id: "refer",
+      title: "Refer",
+      detail: handoff ? "An investigation or monitoring service is ordered." : "No investigations or monitoring. Status becomes Referred.",
+      disabled: handoff,
+    },
+    {
+      id: "send",
+      title: "Send to Nurse",
+      detail: handoff ? "Hand investigations or monitoring to a nurse." : "Order an investigation or a monitoring service first.",
+      disabled: !handoff,
+    },
+  ];
+  const nurseName = nurses.find((nurse) => nurse.id === nurseId)?.name ?? "the nurse";
+  const confirmLabel = choice === "refer" ? "Refer" : choice === "send" ? "Send to Nurse" : "Complete Encounter";
+  const confirmPendingLabel = choice === "refer" ? "Referring…" : choice === "send" ? "Sending…" : "Completing…";
+  const confirmDetail = choice === "refer"
+    ? `${patientName}'s visit will be marked Referred. The note can no longer be edited.`
+    : choice === "send"
+      ? `${patientName} will be sent to ${nurseName}. The note can no longer be edited.`
+      : `${patientName}'s visit will be marked Encounter Complete. The note can no longer be edited.`;
 
   return (
     <div
@@ -1364,51 +1470,95 @@ function FinishEncounterDialog({
       }}
     >
       <div
-        className="triage-dialog-panel w-full max-w-md rounded-2xl bg-surface p-6 shadow-dialog"
+        className="triage-dialog-panel w-full max-w-lg rounded-2xl bg-surface p-6 shadow-dialog"
         role="dialog"
         aria-modal="true"
         aria-labelledby="finish-encounter-title"
         onMouseDown={(event) => event.stopPropagation()}
       >
-        <h2 id="finish-encounter-title" className="text-xl font-bold text-ink">Finish this encounter?</h2>
+        <h2 id="finish-encounter-title" className="text-xl font-bold text-ink">{reviewing ? "Finish this encounter?" : "Choose the outcome"}</h2>
         <p className="mt-2 text-sm leading-6 text-muted-strong">
-          {patientName} leaves the doctor queue and the note can no longer be edited. Choose the nurse who will handle the next steps.
+          {reviewing ? confirmDetail : "Choose how this visit continues. The note can no longer be edited."}
         </p>
-        <div className="mt-4">
-          <label className={label} htmlFor="finish-nurse">
-            Nurse <span className="text-danger">*</span>
-          </label>
-          <select
-            id="finish-nurse"
-            className={`${field} mt-1.5 ${nurseInvalid || (error && !nursesLoading) ? fieldInvalid : ""}`}
-            value={nurseId}
-            disabled={pending || nursesLoading || nurses.length === 0}
-            required
-            onChange={(event) => onNurseChange(event.target.value)}
-          >
-            <option value="">{nursesLoading ? "Loading nurses…" : nurses.length === 0 ? "No nurses available" : "Select a nurse"}</option>
-            {nurses.map((nurse) => (
-              <option key={nurse.id} value={nurse.id}>{nurse.name}</option>
-            ))}
-          </select>
-          {nurses.length === 0 && !nursesLoading ? (
-            <p className="mt-2 text-xs text-muted">No nurses found for this clinic. Assign clinic access to a Nurse user.</p>
-          ) : (
-            <p className="mt-2 text-xs text-muted">Required. This nurse receives the patient after the encounter.</p>
-          )}
-        </div>
-        {error ? <p className="mt-3 text-sm text-danger">{error}</p> : null}
-        <div className="mt-6 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
-          <button type="button" className={`${secondary} w-full sm:w-auto`} onClick={onCancel} disabled={pending}>Cancel</button>
-          <button
-            type="button"
-            className={`${primary} w-full sm:w-auto`}
-            onClick={onConfirm}
-            disabled={pending || nursesLoading || nurses.length === 0}
-          >
-            {pending ? "Sending…" : "Finish Encounter & Send to Nurse"}
-          </button>
-        </div>
+        {reviewing ? (
+          <>
+            {error ? <p className="mt-3 text-sm text-danger">{error}</p> : null}
+            <div className="mt-6 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+              <button type="button" className={`${secondary} w-full sm:w-auto`} onClick={() => setReviewing(false)} disabled={pending}>Back</button>
+              <button type="button" className={`${primary} w-full sm:w-auto`} onClick={onConfirm} disabled={pending}>
+                {pending ? confirmPendingLabel : confirmLabel}
+              </button>
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="mt-4 space-y-2">
+              {outcomes.map((item) => {
+                const selected = choice === item.id;
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    disabled={pending || item.disabled}
+                    className={`w-full rounded-xl border px-4 py-3 text-left ${item.disabled ? "cursor-not-allowed border-line-soft bg-surface-2 text-muted" : selected ? "border-blue bg-panel" : "border-line bg-surface hover:border-blue"}`}
+                    onClick={() => {
+                      onChoose(item.id);
+                      if (item.id !== "send") setReviewing(true);
+                    }}
+                  >
+                    <span className="block text-sm font-semibold text-ink">{item.title}</span>
+                    <span className="mt-0.5 block text-xs leading-5 text-muted">{item.detail}</span>
+                  </button>
+                );
+              })}
+            </div>
+            {choice === "send" ? (
+              <div className="mt-4">
+                <label className={label} htmlFor="finish-nurse">
+                  Nurse <span className="text-danger">*</span>
+                </label>
+                <select
+                  id="finish-nurse"
+                  className={`${field} mt-1.5 ${nurseInvalid || (error && !nursesLoading) ? fieldInvalid : ""}`}
+                  value={nurseId}
+                  disabled={pending || nursesLoading || nurses.length === 0}
+                  required
+                  onChange={(event) => onNurseChange(event.target.value)}
+                >
+                  <option value="">{nursesLoading ? "Loading nurses…" : nurses.length === 0 ? "No nurses available" : "Select a nurse"}</option>
+                  {nurses.map((nurse) => (
+                    <option key={nurse.id} value={nurse.id}>{nurse.name}</option>
+                  ))}
+                </select>
+                {nurses.length === 0 && !nursesLoading ? (
+                  <p className="mt-2 text-xs text-muted">No nurses found for this clinic. Assign clinic access to a Nurse user.</p>
+                ) : (
+                  <p className="mt-2 text-xs text-muted">Required. This nurse receives the patient after the encounter.</p>
+                )}
+              </div>
+            ) : null}
+            {error ? <p className="mt-3 text-sm text-danger">{error}</p> : null}
+            <div className="mt-6 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+              <button type="button" className={`${secondary} w-full sm:w-auto`} onClick={onCancel} disabled={pending}>Cancel</button>
+              {choice === "send" ? (
+                <button
+                  type="button"
+                  className={`${primary} w-full sm:w-auto`}
+                  disabled={pending || nursesLoading || nurses.length === 0}
+                  onClick={() => {
+                    if (!nurseId) {
+                      onNurseError("Choose the nurse who will handle this patient.");
+                      return;
+                    }
+                    setReviewing(true);
+                  }}
+                >
+                  Continue
+                </button>
+              ) : null}
+            </div>
+          </>
+        )}
       </div>
     </div>
   );
@@ -3285,6 +3435,16 @@ function readSavedState(visitId: string): { steps: EncounterTab[]; snapshots: Pa
 
 function writeSavedState(visitId: string, steps: EncounterTab[], snapshots: Partial<Record<EncounterTab, string>>) {
   localStorage.setItem(savedStepsKey(visitId), JSON.stringify({ steps, snapshots }));
+}
+
+function formatBloodPressure(next: string, previous: string) {
+  const digits = next.replace(/\D/g, "").slice(0, 6);
+  if (!digits) return "";
+  const systolicLength = digits[0] === "1" || digits[0] === "2" ? 3 : 2;
+  if (digits.length < systolicLength) return digits;
+  const removedSlash = previous.endsWith("/") && !next.includes("/") && digits.length === systolicLength;
+  if (digits.length === systolicLength) return removedSlash ? digits : `${digits}/`;
+  return `${digits.slice(0, systolicLength)}/${digits.slice(systolicLength, systolicLength + 3)}`;
 }
 
 function missingForStep(form: ClinicalEncounter, step: EncounterTab) {

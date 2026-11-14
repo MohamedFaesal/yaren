@@ -249,7 +249,7 @@ export function RegisterPage({ token, actor }: { token: string; actor: User }) {
           ? `A visit was added for ${created.patient.name}.`
           : `${created.patient.name} was registered with a new visit.`,
       );
-      navigate(`/patients/${created.patient.id}/visits/${created.visit.id}`);
+      navigate(`/visits/${created.visit.visit_number}`);
     } catch (caught) {
       const message = messageOf(caught);
       const mapped = fields.applyServerMessage(message);
@@ -642,7 +642,7 @@ function MatchDialog({
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div className="min-w-0">
                   <Link
-                    to={`/patients/${patient.id}`}
+                    to={`/patients/${patient.mrn}`}
                     target="_blank"
                     rel="noreferrer"
                     className="text-sm font-semibold text-blue hover:underline"
@@ -651,7 +651,7 @@ function MatchDialog({
                   </Link>
                   <p className="mt-0.5 text-xs font-semibold text-muted">{patient.mrn}</p>
                   <Link
-                    to={`/patients/${patient.id}`}
+                    to={`/patients/${patient.mrn}`}
                     target="_blank"
                     rel="noreferrer"
                     className={`${secondary} mt-2 h-8 px-3 py-0 text-xs`}

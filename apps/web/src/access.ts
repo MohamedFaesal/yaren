@@ -11,6 +11,14 @@ export function canSeeDoctorCases(actor: User) {
   return actor.type === "super-admin" || actor.type === "admin" || actor.role === "Doctor";
 }
 
+export function canSeeRegistrarDashboard(actor: User) {
+  return actor.type === "super-admin" || actor.type === "admin" || actor.role === "Receptionist";
+}
+
+export function canSeeMonitoringHistory(actor: User) {
+  return actor.type === "super-admin" || actor.type === "admin" || actor.role === "Doctor" || actor.role === "Nurse";
+}
+
 export function canAct(actor: User, resource: ResourceName, action: ActionName, record?: { ownerId?: string | null; clinicId?: string | null }) {
   if (actor.type === "super-admin" || actor.access?.bypass) return true;
   const entry = actor.access?.[resource]?.[action];

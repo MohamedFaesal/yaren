@@ -104,7 +104,7 @@ export function PatientsPage({ token, actor }: { token: string; actor: User }) {
           {result.items.length === 0 ? (
             <tr><td className="px-4 py-10 text-center text-sm text-muted" colSpan={6}>{filtered ? "No patients match these filters." : "No patients yet."}</td></tr>
           ) : result.items.map((row) => (
-            <tr key={row.id} className="cursor-pointer border-t border-line-soft hover:bg-surface-2" onClick={() => navigate(`/patients/${row.id}`)}>
+            <tr key={row.id} className="cursor-pointer border-t border-line-soft hover:bg-surface-2" onClick={() => navigate(`/patients/${row.mrn}`)}>
               <td className="px-4 py-3 font-semibold">{row.name}</td>
               <td className="px-4 py-3 font-mono text-sm">{row.mrn}</td>
               <td className="px-4 py-3">{titleCase(row.gender)}</td>
@@ -112,8 +112,8 @@ export function PatientsPage({ token, actor }: { token: string; actor: User }) {
               <td className="px-4 py-3">{row.visit_count ?? 0}</td>
               <td className="px-4 py-3">
                 <div className="flex gap-2" onClick={(event) => event.stopPropagation()}>
-                  <IconAction kind="view" to={`/patients/${row.id}`} />
-                  {canAct(actor, "patient", "update", { ownerId: row.added_by }) ? <IconAction kind="edit" to={`/patients/${row.id}/edit`} /> : null}
+                  <IconAction kind="view" to={`/patients/${row.mrn}`} />
+                  {canAct(actor, "patient", "update", { ownerId: row.added_by }) ? <IconAction kind="edit" to={`/patients/${row.mrn}/edit`} /> : null}
                 </div>
               </td>
             </tr>

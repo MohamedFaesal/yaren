@@ -486,6 +486,10 @@ export function ConfirmDialog({
   error,
   onCancel,
   onConfirm,
+  eyebrow = "Confirm delete",
+  cancelLabel = "Keep",
+  pendingLabel = "Deleting",
+  className = "z-50",
 }: {
   open: boolean;
   title: string;
@@ -495,6 +499,10 @@ export function ConfirmDialog({
   error?: string | null;
   onCancel: () => void;
   onConfirm: () => void;
+  eyebrow?: string;
+  cancelLabel?: string;
+  pendingLabel?: string;
+  className?: string;
 }) {
   useEffect(() => {
     if (!open) return;
@@ -508,7 +516,7 @@ export function ConfirmDialog({
   if (!open) return null;
 
   return (
-    <div className="triage-dialog-backdrop fixed inset-0 z-50 grid place-items-center bg-shell/50 px-4 backdrop-blur-[2px]" role="presentation" onMouseDown={() => {
+    <div className={`triage-dialog-backdrop fixed inset-0 grid place-items-center bg-shell/50 px-4 backdrop-blur-[2px] ${className}`} role="presentation" onMouseDown={() => {
         if (!pending) onCancel();
       }}>
       <div
@@ -521,13 +529,13 @@ export function ConfirmDialog({
         <span className="grid h-11 w-11 place-items-center rounded-full bg-danger-soft text-danger" aria-hidden="true">
           <TrashIcon />
         </span>
-        <p className="mt-4 text-xs font-semibold uppercase tracking-wide text-danger">Confirm delete</p>
+        <p className="mt-4 text-xs font-semibold uppercase tracking-wide text-danger">{eyebrow}</p>
         <h2 id="confirm-title" className="mt-1 text-xl font-bold text-ink">{title}</h2>
         <p className="mt-2 text-sm leading-6 text-muted-strong">{body}</p>
         {error ? <p className="mt-3 text-sm text-danger">{error}</p> : null}
         <div className="mt-6 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
-          <button type="button" className={`${secondary} w-full sm:w-auto`} onClick={onCancel} disabled={pending}>Keep</button>
-          <button type="button" className={`${danger} w-full sm:w-auto`} onClick={onConfirm} disabled={pending}>{pending ? "Deleting" : confirmLabel}</button>
+          <button type="button" className={`${secondary} w-full sm:w-auto`} onClick={onCancel} disabled={pending}>{cancelLabel}</button>
+          <button type="button" className={`${danger} w-full sm:w-auto`} onClick={onConfirm} disabled={pending}>{pending ? pendingLabel : confirmLabel}</button>
         </div>
       </div>
     </div>

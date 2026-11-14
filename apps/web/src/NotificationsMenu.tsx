@@ -101,7 +101,8 @@ export function NotificationsMenu({ token }: { token: string }) {
             <div className="flex gap-1 px-3 pt-3">
               <FilterChip label="All" selected={filter === ""} onClick={() => setFilter("")} />
               {result.filters.includes("waiting_for_triage") ? <FilterChip label="Triage" selected={filter === "waiting_for_triage"} onClick={() => setFilter("waiting_for_triage")} /> : null}
-              {result.filters.includes("to_doctor") ? <FilterChip label="To doctor" selected={filter === "to_doctor"} onClick={() => setFilter("to_doctor")} /> : null}
+              {result.filters.includes("to_doctor") ? <FilterChip label="Waiting for doctor" selected={filter === "to_doctor"} onClick={() => setFilter("to_doctor")} /> : null}
+              {result.filters.includes("nurse_record") ? <FilterChip label="Nursing record" selected={filter === "nurse_record"} onClick={() => setFilter("nurse_record")} /> : null}
             </div>
           ) : null}
           <ul className="max-h-96 overflow-y-auto p-2">
@@ -114,7 +115,7 @@ export function NotificationsMenu({ token }: { token: string }) {
                   <span className="min-w-0">
                     <span className="block text-sm font-semibold text-ink">{item.title}</span>
                     <span className="mt-0.5 block text-xs text-muted">{item.body}</span>
-                    <span className="mt-1 block text-[11px] font-medium text-muted-strong">{item.kind === "waiting_for_triage" ? "Triage" : "To doctor"} · {ago(item.created_at)}</span>
+                    <span className="mt-1 block text-[11px] font-medium text-muted-strong">{noticeLabel(item.kind)} · {ago(item.created_at)}</span>
                   </span>
                 </Link>
               </li>
@@ -124,6 +125,12 @@ export function NotificationsMenu({ token }: { token: string }) {
       ) : null}
     </div>
   );
+}
+
+function noticeLabel(kind: AppNotification["kind"]) {
+  if (kind === "waiting_for_triage") return "Triage";
+  if (kind === "nurse_record") return "Nursing record";
+  return "Waiting for doctor";
 }
 
 function FilterChip({ label, selected, onClick }: { label: string; selected: boolean; onClick: () => void }) {

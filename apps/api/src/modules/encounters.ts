@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import type pg from "pg";
 import { z } from "zod";
-import { ApplicationError, procedureDetailErrors, procedureFields, procedureFormById, quantityForProcedureForm, readServices, readStaff } from "@yaren/shared-kernel";
+import { ApplicationError, procedureDetailErrors, procedureFields, procedureFormById, procedureServiceCharges, quantityForProcedureForm, readServices, readStaff, type ProcedureDetails } from "@yaren/shared-kernel";
 import { authenticate, parse } from "../http.js";
 import { loadAccess, workspaceClinicOptionsWhere } from "../permissions.js";
 import { fileUrl, removeUpload, saveEncounterFile } from "../uploads.js";
@@ -128,9 +128,12 @@ const encounterSchema = z.object({
 });
 
 const finishSchema = encounterSchema.extend({
-  assigned_nurse_id: z.string({ error: "Choose the nurse who will handle this patient" })
-    .uuid({ error: "Choose the nurse who will handle this patient" }),
+  outcome: z.enum(["complete", "refer", "send"]),
+  assigned_nurse_id: z.string().uuid().nullable().optional(),
 }).superRefine((value, context) => {
+  if (value.outcome === "send" && !value.assigned_nurse_id) {
+    context.addIssue({ code: "custom", message: "Choose the nurse who will handle this patient", path: ["assigned_nurse_id"] });
+  }
   if (!value.chief_complaint.trim()) {
     context.addIssue({ code: "custom", message: "Enter the chief complaint", path: ["chief_complaint"] });
   }
@@ -175,6 +178,7 @@ type CaseRow = {
   hotel_name: string;
   patient_name: string;
   patient_mrn: string;
+  visit_number: string;
   patient_gender: "male" | "female" | null;
   patient_nationality: string | null;
   patient_age_at_visit: number | null;
@@ -202,15 +206,25 @@ type CaseRow = {
 export function registerEncounters(app: FastifyInstance, pool: pg.Pool) {
   app.get("/api/doctor-cases/:id/encounter", { preHandler: authenticate }, async (request) => {
     const { id } = request.params as { id: string };
-    const visit = await loadCase(pool, request.user, id);
-    noteActivity(request, { entity: "patient", entityId: visit.patient_id, summary: `Opened the clinical encounter for ${visit.patient_name}` });
+    const loaded = await loadCase(pool, request.user, id);
+    const visit = await beginConsultation(pool, loaded, request.user.sub);
+    noteActivity(request, {
+      entity: "patient",
+      entityId: visit.patient_id,
+      summary: visit.status === "consultation_in_progress" && loaded.status === "to_doctor"
+        ? `Started the clinical encounter for ${visit.patient_name}`
+        : `Opened the clinical encounter for ${visit.patient_name}`,
+      changes: visit.status === "consultation_in_progress" && loaded.status === "to_doctor"
+        ? [changed("Status", "Waiting for doctor", "Consultation In Progress")].filter((item) => item !== null)
+        : undefined,
+    });
     return presentEncounter(pool, visit);
   });
 
   app.put("/api/doctor-cases/:id/encounter", { preHandler: authenticate }, async (request) => {
     const { id } = request.params as { id: string };
     const visit = await loadCase(pool, request.user, id);
-    if (visit.status !== "to_doctor") throw new ApplicationError(422, "encounter_finished", "This encounter is already finished");
+    if (!encounterOpen(visit.status)) throw new ApplicationError(422, "encounter_finished", "This encounter is already finished");
     const body = await applyRouteProcedures(pool, id, resolveDiagnosis(parse(encounterSchema, request.body)));
     await saveEncounter(pool, id, body, null);
     noteActivity(request, { entity: "patient", entityId: visit.patient_id, summary: `Saved the clinical encounter for ${visit.patient_name}` });
@@ -220,23 +234,42 @@ export function registerEncounters(app: FastifyInstance, pool: pg.Pool) {
   app.post("/api/doctor-cases/:id/encounter/finish", { preHandler: authenticate }, async (request) => {
     const { id } = request.params as { id: string };
     const visit = await loadCase(pool, request.user, id);
-    if (visit.status !== "to_doctor") throw new ApplicationError(422, "encounter_finished", "This encounter is already finished");
+    if (!encounterOpen(visit.status)) throw new ApplicationError(422, "encounter_finished", "This encounter is already finished");
     const parsed = parse(finishSchema, request.body);
-    const nurse = await assertNurseForClinic(pool, parsed.assigned_nurse_id, visit.clinic_id);
-    const { assigned_nurse_id, ...encounterInput } = parsed;
-    const body = await applyRouteProcedures(pool, id, resolveDiagnosis(encounterInput));
+    const { outcome, assigned_nurse_id: nurseId, ...encounterInput } = parsed;
+    const prepared = await applyRouteProcedures(pool, id, resolveDiagnosis(encounterInput));
+    const hasInvestigations = prepared.investigations.length > 0;
+    const hasMonitoring = prepared.procedure_orders.some((order) => orderIncludesMonitoring(order));
+    if (outcome !== "send" && (hasInvestigations || hasMonitoring)) {
+      throw new ApplicationError(422, "invalid_outcome", "Complete Encounter and Refer are only available when there are no investigations or monitoring services");
+    }
+    if (outcome === "send" && !hasInvestigations && !hasMonitoring) {
+      throw new ApplicationError(422, "invalid_outcome", "Send to Nurse needs an investigation or a monitoring service");
+    }
+    const nurse = outcome === "send" && nurseId ? await assertNurseForClinic(pool, nurseId, visit.clinic_id) : null;
+    const nextStatus = outcome === "complete"
+      ? "encounter_complete"
+      : outcome === "refer"
+        ? "referred"
+        : hasInvestigations
+          ? "waiting_for_investigation"
+          : "under_nursing_care";
+    const nextLabel = outcome === "send" && hasInvestigations && hasMonitoring
+      ? "Waiting for Investigation and Under Nursing Care"
+      : finishStatusLabel(nextStatus);
+    const hasNursingPlan = outcome === "send" && (
+      prepared.medication_orders.length > 0
+      || prepared.procedure_orders.length > 0
+      || prepared.patient_advices.length > 0
+      || Boolean(prepared.management_plan?.trim())
+    );
     const client = await pool.connect();
     try {
       await client.query("BEGIN");
-      await saveEncounter(client, id, body, request.user.sub);
-      if (body.investigations.length > 0) {
-        await materializeInvestigations(client, id, body.investigations, request.user.sub);
+      await saveEncounter(client, id, prepared, request.user.sub);
+      if (outcome === "send" && hasInvestigations) {
+        await materializeInvestigations(client, id, prepared.investigations, request.user.sub);
       }
-      const nextStatus = body.investigations.length > 0 ? "waiting_for_investigation" : "diagnosed";
-      const hasNursingPlan = body.medication_orders.length > 0
-        || body.procedure_orders.length > 0
-        || body.patient_advices.length > 0
-        || Boolean(body.management_plan?.trim());
       await client.query(
         `UPDATE patient_visit_encounters
          SET nursing_status = CASE WHEN $2::boolean THEN 'ordered' ELSE nursing_status END
@@ -246,17 +279,22 @@ export function registerEncounters(app: FastifyInstance, pool: pg.Pool) {
       await client.query(
         `UPDATE patient_visits
          SET status = $2,
-             assigned_nurse_id = $3,
-             nursing_plan_status = CASE WHEN $4::boolean THEN 'ordered' ELSE nursing_plan_status END,
+             assigned_nurse_id = CASE WHEN $7::boolean THEN $3 ELSE assigned_nurse_id END,
+             monitoring_status = CASE WHEN $4::boolean THEN 'in_progress' ELSE monitoring_status END,
+             monitoring_started_at = CASE
+               WHEN $4::boolean AND monitoring_status IS DISTINCT FROM 'in_progress' THEN now()
+               ELSE monitoring_started_at
+             END,
+             nursing_plan_status = CASE WHEN $5::boolean THEN 'ordered' ELSE nursing_plan_status END,
              status_changed_at = now(),
              updated_at = now()
-         WHERE id = $1 AND deleted_at IS NULL AND status = 'to_doctor'`,
-        [id, nextStatus, assigned_nurse_id, hasNursingPlan],
+         WHERE id = $1 AND deleted_at IS NULL AND status = $6`,
+        [id, nextStatus, nurse?.id ?? null, outcome === "send" && hasMonitoring, hasNursingPlan, visit.status, outcome === "send"],
       );
       await client.query(
         `INSERT INTO patient_visit_status_history (visit_id, from_status, to_status, changed_by, note)
-         VALUES ($1, 'to_doctor', $2, $3, $4)`,
-        [id, nextStatus, request.user.sub, `Assigned to nurse ${nurse.name}`],
+         VALUES ($1, $2, $3, $4, $5)`,
+        [id, visit.status, nextStatus, request.user.sub, nurse ? `Assigned to nurse ${nurse.name}` : nextLabel],
       );
       await client.query("COMMIT");
     } catch (error) {
@@ -268,10 +306,14 @@ export function registerEncounters(app: FastifyInstance, pool: pg.Pool) {
     noteActivity(request, {
       entity: "patient",
       entityId: visit.patient_id,
-      summary: `Finished the clinical encounter for ${visit.patient_name} and sent to ${nurse.name}`,
+      summary: nurse
+        ? `Finished the clinical encounter for ${visit.patient_name} and sent to ${nurse.name}`
+        : outcome === "refer"
+          ? `Referred ${visit.patient_name}`
+          : `Completed the encounter for ${visit.patient_name}`,
       changes: [
-        changed("Status", "To see the doctor", body.investigations.length > 0 ? "Waiting for investigation" : "Diagnosed"),
-        changed("Nurse", null, nurse.name),
+        changed("Status", finishStatusLabel(visit.status), nextLabel),
+        nurse ? changed("Nurse", null, nurse.name) : null,
       ].filter((item) => item !== null),
     });
     const finished = await loadCase(pool, request.user, id);
@@ -281,7 +323,7 @@ export function registerEncounters(app: FastifyInstance, pool: pg.Pool) {
   app.post("/api/doctor-cases/:id/encounter/files", { preHandler: authenticate }, async (request) => {
     const { id } = request.params as { id: string };
     const visit = await loadCase(pool, request.user, id);
-    if (visit.status !== "to_doctor") throw new ApplicationError(422, "encounter_finished", "This encounter is already finished");
+    if (!encounterOpen(visit.status)) throw new ApplicationError(422, "encounter_finished", "This encounter is already finished");
     const count = await pool.query<{ total: number }>(
       "SELECT count(*)::int AS total FROM patient_visit_encounter_files WHERE visit_id = $1",
       [id],
@@ -307,7 +349,7 @@ export function registerEncounters(app: FastifyInstance, pool: pg.Pool) {
   app.delete("/api/doctor-cases/:id/encounter/files/:fileId", { preHandler: authenticate }, async (request) => {
     const { id, fileId } = request.params as { id: string; fileId: string };
     const visit = await loadCase(pool, request.user, id);
-    if (visit.status !== "to_doctor") throw new ApplicationError(422, "encounter_finished", "This encounter is already finished");
+    if (!encounterOpen(visit.status)) throw new ApplicationError(422, "encounter_finished", "This encounter is already finished");
     if (!isUuid(fileId)) throw new ApplicationError(404, "not_found", "File was not found");
     const existing = await pool.query<{ file_path: string; original_name: string }>(
       "SELECT file_path, original_name FROM patient_visit_encounter_files WHERE id = $1 AND visit_id = $2",
@@ -325,6 +367,36 @@ export function registerEncounters(app: FastifyInstance, pool: pg.Pool) {
   });
 }
 
+function encounterOpen(status: string) {
+  return status === "to_doctor" || status === "consultation_in_progress";
+}
+
+function finishStatusLabel(status: string) {
+  if (status === "encounter_complete") return "Encounter Complete";
+  if (status === "referred") return "Referred";
+  if (status === "under_nursing_care") return "Under Nursing Care";
+  if (status === "waiting_for_investigation") return "Waiting for Investigation";
+  if (status === "consultation_in_progress") return "Consultation In Progress";
+  return "Waiting for doctor";
+}
+
+async function beginConsultation(pool: pg.Pool, visit: CaseRow, actorId: string) {
+  if (visit.status !== "to_doctor") return visit;
+  const updated = await pool.query(
+    `UPDATE patient_visits
+     SET status = 'consultation_in_progress', status_changed_at = now(), updated_at = now()
+     WHERE id = $1 AND deleted_at IS NULL AND status = 'to_doctor'`,
+    [visit.id],
+  );
+  if ((updated.rowCount ?? 0) === 0) return visit;
+  await pool.query(
+    `INSERT INTO patient_visit_status_history (visit_id, from_status, to_status, changed_by)
+     VALUES ($1, 'to_doctor', 'consultation_in_progress', $2)`,
+    [visit.id, actorId],
+  );
+  return { ...visit, status: "consultation_in_progress" };
+}
+
 async function loadCase(pool: pg.Pool, user: { sub: string; type: string; role: string }, id: string) {
   const seesAll = user.type === "super-admin" || user.type === "admin";
   if (!seesAll && user.role !== "Doctor") {
@@ -332,7 +404,7 @@ async function loadCase(pool: pg.Pool, user: { sub: string; type: string; role: 
   }
   if (!isUuid(id)) throw new ApplicationError(404, "not_found", "Case was not found");
   const found = await pool.query(
-    `SELECT v.id, v.patient_id, v.status, v.visit_type, v.currency, v.status_changed_at, v.hotel_room_no, v.clinic_id, v.assigned_doctor_id, v.assigned_nurse_id,
+    `SELECT v.id, v.visit_number, v.patient_id, v.status, v.visit_type, v.currency, v.status_changed_at, v.hotel_room_no, v.clinic_id, v.assigned_doctor_id, v.assigned_nurse_id,
             c.name AS clinic_name, h.name AS hotel_name,
             p.name AS patient_name, p.mrn AS patient_mrn, p.gender AS patient_gender,
             p.nationality AS patient_nationality,
@@ -352,7 +424,7 @@ async function loadCase(pool: pg.Pool, user: { sub: string; type: string; role: 
      WHERE v.id = $1
        AND v.deleted_at IS NULL
        AND p.deleted_at IS NULL
-       AND v.status IN ('to_doctor', 'seen', 'waiting_for_investigation', 'diagnosed', 'pending_payment')
+       AND v.status IN ('to_doctor', 'consultation_in_progress', 'seen', 'waiting_for_investigation', 'under_nursing_care', 'encounter_complete', 'referred', 'pending_payment')
        AND v.assigned_doctor_id IS NOT NULL
        AND t.completed_at IS NOT NULL`,
     [id],
@@ -644,6 +716,12 @@ function isMonitoringService(service: { code: string; name: string }) {
   return service.code === "YRN-MP-006" || /monitor/i.test(service.name);
 }
 
+function orderIncludesMonitoring(order: { code: string; name: string; details?: unknown }) {
+  if (isMonitoringService(order)) return true;
+  const details = order.details && typeof order.details === "object" ? order.details as ProcedureDetails : null;
+  return procedureServiceCharges(details).some((service) => isMonitoringService(service));
+}
+
 function isPerProcedure(service: { unit: string }) {
   return /per procedure/i.test(service.unit);
 }
@@ -763,6 +841,19 @@ async function saveEncounter(db: pg.Pool | pg.PoolClient, visitId: string, body:
   );
 }
 
+export async function loadSavedEncounter(pool: pg.Pool, visit: { id: string; status: string }) {
+  const exists = await pool.query("SELECT 1 FROM patient_visit_encounters WHERE visit_id = $1", [visit.id]);
+  if (!exists.rows[0]) return null;
+  const presented = await presentEncounter(pool, visit as CaseRow);
+  if (!presented.saved) return null;
+  return {
+    saved: presented.saved,
+    finished: presented.finished,
+    encounter: presented.encounter,
+    files: presented.files,
+  };
+}
+
 async function presentEncounter(pool: pg.Pool, visit: CaseRow) {
   const stored = await pool.query("SELECT * FROM patient_visit_encounters WHERE visit_id = $1", [visit.id]);
   const row = stored.rows[0] as Record<string, unknown> | undefined;
@@ -773,7 +864,7 @@ async function presentEncounter(pool: pg.Pool, visit: CaseRow) {
      ORDER BY created_at ASC`,
     [visit.id],
   );
-  const finished = visit.status !== "to_doctor" || Boolean(row?.finished_at);
+  const finished = !encounterOpen(visit.status) || Boolean(row?.finished_at);
   const tableInvestigations = finished ? await listVisitInvestigations(pool, visit.id) : [];
   const encounter = row ? storedEncounter(row, tableInvestigations) : blankEncounter(visit);
   return {

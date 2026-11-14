@@ -1,0 +1,17 @@
+ALTER TABLE patient_visits DROP CONSTRAINT IF EXISTS patient_visits_status_check;
+
+ALTER TABLE patient_visits
+  ADD CONSTRAINT patient_visits_status_check
+  CHECK (status IN (
+    'waiting_for_triage',
+    'to_doctor',
+    'consultation_in_progress',
+    'seen',
+    'waiting_for_investigation',
+    'under_nursing_care',
+    'encounter_complete',
+    'referred',
+    'diagnosed',
+    'pending_payment',
+    'patient_left'
+  ));

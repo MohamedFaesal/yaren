@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent, type ReactNode } from "react";
+import { Fragment, useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import {
   api,
   casePriorityClass,
@@ -15,6 +15,7 @@ import {
   type CasePriority,
   type EncounterInvestigation,
   type InvestigationPriority,
+  type ManagementPlanRecord,
   type MonitoringItem,
   type MonitoringObservation,
   type NurseDashboardSummary,
@@ -35,7 +36,7 @@ export function NurseSummaryTiles({
   const tiles = [
     { label: "Waiting for Triage", value: summary.waiting_for_triage, tone: "border-blue/20 bg-panel text-blue" },
     { label: "Triage in Progress", value: summary.triage_in_progress, tone: "border-warning-line bg-warning-soft text-warning" },
-    { label: "To See Doctor", value: summary.to_doctor, tone: "border-success/20 bg-success-soft text-success" },
+    { label: "Waiting for doctor", value: summary.to_doctor, tone: "border-success/20 bg-success-soft text-success" },
     { label: "Under Nursing Care", value: summary.under_nursing_care, tone: "border-panel-strong bg-panel-strong text-blue-strong" },
     { label: "Samples to Collect", value: summary.samples_to_collect, tone: "border-warning-line bg-warning-soft text-warning" },
   ];
@@ -87,9 +88,12 @@ export function NursingTasksPanel({
                     <p className="font-semibold text-ink">{item.patient_name}</p>
                     <p className="text-xs text-muted">{item.patient_mrn} · Management plan {item.plan_position}</p>
                   </div>
-                  <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${nursingPlanStatusClass(item.nursing_plan_status)}`}>
-                    {nursingPlanStatusLabel(item.nursing_plan_status)}
-                  </span>
+                  <div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5">
+                    {item.nursing_plan_status === "in_progress" && item.monitoring_status === "in_progress" ? <OnMonitoringChip /> : null}
+                    <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${nursingPlanStatusClass(item.nursing_plan_status)}`}>
+                      {nursingPlanStatusLabel(item.nursing_plan_status)}
+                    </span>
+                  </div>
                 </div>
                 <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-strong">
                   <span>Ordered {item.order_time ? formatClock(item.order_time) : "—"}</span>
@@ -187,10 +191,12 @@ export function SampleCollectionCard({
 export function MonitoringPanel({
   items,
   loading,
+  now,
   onRecord,
 }: {
   items: MonitoringItem[];
   loading?: boolean;
+  now: number;
   onRecord: (item: MonitoringItem) => void;
 }) {
   const [viewing, setViewing] = useState<MonitoringItem | null>(null);
@@ -218,13 +224,19 @@ export function MonitoringPanel({
                       {item.patient_mrn}
                       {serviceCount > 0 ? ` · ${serviceCount} service${serviceCount === 1 ? "" : "s"}` : " · No services"}
                     </p>
+                    <p className="mt-1 flex flex-wrap gap-x-3 text-xs text-muted-strong">
+                      <span>Started {item.monitoring_started_at ? formatClock(item.monitoring_started_at) : "—"}</span>
+                      <span className="font-mono font-semibold tabular-nums text-ink">
+                        {clockLabel(item.monitoring_started_at ? Math.max(0, now - new Date(item.monitoring_started_at).getTime()) : 0)}
+                      </span>
+                    </p>
                   </div>
-                  <span className={`inline-flex shrink-0 rounded-full px-2.5 py-1 text-xs font-semibold ${monitoringStatusClass(item.monitoring_status)}`}>
-                    {monitoringStatusLabel(item.monitoring_status)}
-                  </span>
-                </div>
-                <div className="mt-2">
-                  <PatientPriorityBanner priority={item.case_priority} compact />
+                  <div className="flex shrink-0 flex-col items-end gap-1.5">
+                    <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${monitoringStatusClass(item.monitoring_status)}`}>
+                      {monitoringStatusLabel(item.monitoring_status)}
+                    </span>
+                    <PriorityChip priority={item.case_priority} />
+                  </div>
                 </div>
                 {item.monitoring_status === "in_progress" ? (
                   <div className="mt-2.5 grid gap-2">
@@ -248,8 +260,17 @@ export function MonitoringPanel({
           })}
         </div>
       )}
-      {viewing ? <MonitoringRecordsModal item={viewing} onClose={() => setViewing(null)} /> : null}
+      {viewing ? <MonitoringRecordsModal item={viewing} now={now} onClose={() => setViewing(null)} /> : null}
     </section>
+  );
+}
+
+function OnMonitoringChip() {
+  return (
+    <span className="inline-flex items-center gap-1.5 rounded-full border border-blue/20 bg-panel px-2.5 py-1 text-xs font-semibold text-blue">
+      <span className="h-1.5 w-1.5 rounded-full bg-blue" aria-hidden="true" />
+      Already on Monitoring
+    </span>
   );
 }
 
@@ -258,8 +279,10 @@ function recordLabel(count: number) {
   return count === 1 ? "View 1 record" : `View ${count} records`;
 }
 
-function MonitoringRecordsModal({ item, onClose }: { item: MonitoringItem; onClose: () => void }) {
+export function MonitoringRecordsModal({ item, now, onClose }: { item: MonitoringItem; now: number; onClose: () => void }) {
   const records = item.observations ?? [];
+  const plans = item.plans ?? [];
+  const [tab, setTab] = useState<"readings" | "plan">("readings");
   return (
     <ModalShell
       title="Monitoring records"
@@ -279,24 +302,158 @@ function MonitoringRecordsModal({ item, onClose }: { item: MonitoringItem; onClo
         />
         <PatientPriorityBanner priority={item.case_priority} compact />
       </div>
-      {records.length === 0 ? (
-        <p className="mt-4 text-sm text-muted">No readings recorded yet.</p>
+      {(item.assigned_doctor_name || item.assigned_nurse_name) ? (
+        <p className="mt-3 text-sm text-muted-strong">
+          {[
+            item.assigned_doctor_name ? `Doctor: ${item.assigned_doctor_name}` : null,
+            item.assigned_nurse_name ? `Nurse: ${item.assigned_nurse_name}` : null,
+          ].filter(Boolean).join(" · ")}
+        </p>
+      ) : null}
+      <div className="mt-4 flex gap-2 border-b border-line-soft" role="tablist" aria-label="Monitoring history detail">
+        <button
+          type="button"
+          role="tab"
+          id="history-records-tab-readings"
+          aria-selected={tab === "readings"}
+          aria-controls="history-records-panel-readings"
+          className={`inline-flex items-center gap-2 border-b-2 px-3 py-2 text-sm font-semibold ${tab === "readings" ? "border-blue text-blue" : "border-transparent text-muted-strong"}`}
+          onClick={() => setTab("readings")}
+        >
+          Readings
+          <span className={`rounded-full px-2 py-0.5 text-xs ${tab === "readings" ? "bg-panel text-blue" : "bg-surface-3 text-muted"}`}>{records.length}</span>
+        </button>
+        <button
+          type="button"
+          role="tab"
+          id="history-records-tab-plan"
+          aria-selected={tab === "plan"}
+          aria-controls="history-records-panel-plan"
+          className={`inline-flex items-center gap-2 border-b-2 px-3 py-2 text-sm font-semibold ${tab === "plan" ? "border-blue text-blue" : "border-transparent text-muted-strong"}`}
+          onClick={() => setTab("plan")}
+        >
+          Management plan
+          <span className={`rounded-full px-2 py-0.5 text-xs ${tab === "plan" ? "bg-panel text-blue" : "bg-surface-3 text-muted"}`}>{plans.length}</span>
+        </button>
+      </div>
+      {tab === "readings" ? (
+        records.length === 0 ? (
+          <p id="history-records-panel-readings" role="tabpanel" aria-labelledby="history-records-tab-readings" className="mt-4 text-sm text-muted">
+            No readings recorded yet.
+          </p>
+        ) : (
+          <ul id="history-records-panel-readings" role="tabpanel" aria-labelledby="history-records-tab-readings" className="mt-4 space-y-3">
+            {records.map((row, index) => (
+              <ReadingCard key={row.id} row={row} latest={index === 0} now={now} />
+            ))}
+          </ul>
+        )
+      ) : plans.length === 0 ? (
+        <p id="history-records-panel-plan" role="tabpanel" aria-labelledby="history-records-tab-plan" className="mt-4 text-sm text-muted">
+          No management plan recorded for this monitoring.
+        </p>
       ) : (
-        <ul className="mt-4 space-y-3">
-          {records.map((row, index) => (
-            <ReadingCard key={row.id} row={row} latest={index === 0} />
+        <div id="history-records-panel-plan" role="tabpanel" aria-labelledby="history-records-tab-plan" className="mt-4 space-y-3">
+          {plans.map((entry) => (
+            <ImplementedPlanCard key={`${entry.position}:${entry.id ?? "encounter"}`} plan={entry} />
           ))}
-        </ul>
+        </div>
       )}
     </ModalShell>
   );
 }
 
-function ReadingCard({ row, latest = false, compact = false }: { row: MonitoringObservation; latest?: boolean; compact?: boolean }) {
+export function ImplementedPlanCard({ plan }: { plan: ManagementPlanRecord }) {
+  const procedures = plan.procedure_orders.filter((item) => !item.linked_medication_order_id);
+  return (
+    <section className="rounded-xl border border-line bg-surface-2 px-3 py-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h4 className="text-sm font-semibold text-ink">Management plan {plan.position}</h4>
+        <span className="inline-flex rounded-full bg-surface px-2.5 py-0.5 text-xs font-semibold text-muted-strong">
+          {plan.status === "completed" ? "Completed" : plan.status === "in_progress" ? "In progress" : plan.status === "ordered" ? "Ordered" : "—"}
+        </span>
+      </div>
+      {plan.assessment_status ? (
+        <p className="mt-2 text-xs text-muted-strong">
+          Assessment: {plan.assessment_status === "needs_review" ? "Needs Review" : plan.assessment_status === "deteriorating" ? "Deteriorating" : "Stable"}
+        </p>
+      ) : null}
+      {plan.clinical_assessment.trim() ? <p className="mt-2 whitespace-pre-wrap text-sm text-ink">{plan.clinical_assessment}</p> : null}
+      {plan.medication_orders.length > 0 ? (
+        <div className="mt-2">
+          <p className="text-[11px] font-bold uppercase tracking-wide text-muted-strong">Medications</p>
+          <ul className="mt-1 space-y-1 text-sm text-ink">
+            {plan.medication_orders.map((order) => (
+              <li key={order.id}>
+                <span className="font-medium">{order.medication}{order.strength ? ` ${order.strength}` : ""}</span>
+                <span className="text-xs text-muted"> · {[order.dose, order.route, order.frequency].filter(Boolean).join(" · ") || "As prescribed"}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+      {procedures.length > 0 ? (
+        <div className="mt-2">
+          <p className="text-[11px] font-bold uppercase tracking-wide text-muted-strong">Procedures</p>
+          <ul className="mt-1 list-disc space-y-0.5 pl-5 text-sm text-ink">
+            {procedures.map((order) => (
+              <li key={order.id}>{order.name}{order.notes ? ` — ${order.notes}` : ""}</li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+      {plan.patient_advices.length > 0 || plan.management_plan.trim() ? (
+        <div className="mt-2">
+          <p className="text-[11px] font-bold uppercase tracking-wide text-muted-strong">Advice</p>
+          {plan.patient_advices.length > 0 ? (
+            <ul className="mt-1 list-disc space-y-0.5 pl-5 text-sm text-ink">
+              {plan.patient_advices.map((advice) => <li key={advice.id}>{advice.text}</li>)}
+            </ul>
+          ) : null}
+          {plan.management_plan.trim() ? <p className="mt-1 whitespace-pre-wrap text-sm text-ink">{plan.management_plan}</p> : null}
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+export function DoctorReadingAssessment({
+  status,
+  clinical,
+}: {
+  status?: "stable" | "needs_review" | "deteriorating" | null;
+  clinical?: string | null;
+}) {
+  const text = clinical?.trim() ?? "";
+  if (!status && !text) return null;
+  const label = status === "needs_review" ? "Needs Review" : status === "deteriorating" ? "Deteriorating" : "Stable";
+  const tone = status === "needs_review"
+    ? "border-warning bg-warning-soft text-warning"
+    : status === "deteriorating"
+      ? "border-danger bg-danger-soft text-danger"
+      : "border-success bg-success-soft text-success";
+  return (
+    <div className="mt-2 space-y-1.5 rounded-xl bg-surface px-3 py-2">
+      {status ? (
+        <p className="flex flex-wrap items-center gap-2 text-sm text-ink">
+          <span className="font-semibold text-muted-strong">Doctor assessment</span>
+          <span className={`rounded-full border px-2 py-0.5 text-xs font-semibold ${tone}`}>{label}</span>
+        </p>
+      ) : null}
+      {text ? <p className="whitespace-pre-wrap text-sm text-ink"><span className="font-semibold text-muted-strong">Clinical assessment: </span>{text}</p> : null}
+    </div>
+  );
+}
+
+function ReadingCard({ row, latest = false, compact = false, now }: { row: MonitoringObservation; latest?: boolean; compact?: boolean; now?: number }) {
+  const elapsed = row.recorded_at && now != null ? Math.max(0, now - new Date(row.recorded_at).getTime()) : null;
   return (
     <li className="rounded-2xl border border-line bg-canvas p-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <p className="text-sm font-bold text-ink">{row.recorded_at ? formatWhen(row.recorded_at) : "—"}</p>
+        <div className="flex flex-wrap items-center gap-x-3">
+          <p className="text-sm font-bold text-ink">{row.recorded_at ? formatWhen(row.recorded_at) : "—"}</p>
+          {elapsed != null ? <span className="font-mono text-xs font-semibold tabular-nums text-ink">{clockLabel(elapsed)}</span> : null}
+        </div>
         <span className="flex flex-wrap items-center justify-end gap-1.5">
           {row.case_priority ? <span className={`rounded-full border px-2 py-0.5 text-[11px] font-semibold ${casePriorityClass(row.case_priority)}`}>{casePriorityLabel(row.case_priority)}</span> : null}
           {latest ? <span className="rounded-full bg-blue px-2 py-0.5 text-[11px] font-semibold text-white">Latest</span> : null}
@@ -311,6 +468,7 @@ function ReadingCard({ row, latest = false, compact = false }: { row: Monitoring
         <ReadingVital tone="spo2" label="SpO2" value={row.spo2 == null ? "—" : `${row.spo2}%`} alert={outOfRange("spo2", row.spo2)} />
       </dl>
       {row.notes.trim() ? <p className="mt-2 whitespace-pre-wrap rounded-xl bg-surface px-3 py-2 text-sm text-ink">{row.notes}</p> : null}
+      <DoctorReadingAssessment status={row.doctor_assessment} clinical={row.clinical_assessment} />
     </li>
   );
 }
@@ -368,20 +526,25 @@ export function TestsOrderedModal({
   busyId,
   onClose,
   onCollect,
+  onCollectOne,
   onSend,
+  onSendOne,
 }: {
   token: string;
   item: SampleCollectionItem;
   busyId: string | null;
   onClose: () => void;
   onCollect: (item: SampleCollectionItem) => void;
+  onCollectOne: (item: SampleCollectionItem, investigation: EncounterInvestigation) => Promise<void> | void;
   onSend: (item: SampleCollectionItem) => void;
+  onSendOne: (item: SampleCollectionItem, investigation: EncounterInvestigation) => Promise<void> | void;
 }) {
   const [items, setItems] = useState<EncounterInvestigation[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const collectBusy = busyId === `${item.visit_id}:collect`;
   const sendBusy = busyId === `${item.visit_id}:send`;
+  const oneBusy = (busyId?.startsWith(`${item.visit_id}:collect:`) || busyId?.startsWith(`${item.visit_id}:send:`)) ?? false;
 
   useEffect(() => {
     let cancelled = false;
@@ -400,6 +563,20 @@ export function TestsOrderedModal({
       cancelled = true;
     };
   }, [token, item.patient_id, item.visit_id, item.collectable_count, item.sendable_count]);
+
+  async function collectOne(row: EncounterInvestigation) {
+    await onCollectOne(item, row);
+    setItems((current) => current.map((entry) => (
+      entry.id === row.id ? { ...entry, status: "collected" as const } : entry
+    )));
+  }
+
+  async function sendOne(row: EncounterInvestigation) {
+    await onSendOne(item, row);
+    setItems((current) => current.map((entry) => (
+      entry.id === row.id ? { ...entry, status: "sent" as const } : entry
+    )));
+  }
 
   function printOrderedTests() {
     const popup = window.open("", "_blank", "width=800,height=900");
@@ -468,7 +645,7 @@ export function TestsOrderedModal({
       wide
       footer={
         <>
-          <button type="button" className={`${secondary} w-full sm:w-auto`} disabled={collectBusy || sendBusy} onClick={onClose}>
+          <button type="button" className={`${secondary} w-full sm:w-auto`} disabled={collectBusy || sendBusy || oneBusy} onClick={onClose}>
             Close
           </button>
           <button type="button" className={`${secondary} w-full gap-1.5 sm:w-auto`} disabled={loading || items.length === 0} onClick={printOrderedTests}>
@@ -479,20 +656,20 @@ export function TestsOrderedModal({
             <button
               type="button"
               className={`${secondary} w-full sm:w-auto`}
-              disabled={collectBusy || sendBusy}
+              disabled={collectBusy || sendBusy || oneBusy}
               onClick={() => onCollect(item)}
             >
-              {collectBusy ? "Collecting…" : "Mark as Collected"}
+              {collectBusy ? "Collecting…" : "Mark all as Collected"}
             </button>
           ) : null}
           {item.sendable_count > 0 ? (
             <button
               type="button"
               className={`${primary} w-full sm:w-auto`}
-              disabled={collectBusy || sendBusy}
+              disabled={collectBusy || sendBusy || oneBusy}
               onClick={() => onSend(item)}
             >
-              {sendBusy ? "Sending…" : "Send to Lab"}
+              {sendBusy ? "Sending…" : "Send all to Lab"}
             </button>
           ) : null}
         </>
@@ -510,7 +687,7 @@ export function TestsOrderedModal({
       />
       {error ? <p className="mt-4 text-sm text-danger">{error}</p> : null}
       <div className="mt-4 -mx-1 overflow-x-auto rounded-xl border border-line sm:mx-0">
-        <table className="min-w-[36rem] w-full text-left text-sm">
+        <table className="min-w-[42rem] w-full text-left text-sm">
           <thead>
             <tr className="bg-panel text-[11px] font-semibold uppercase tracking-wide text-blue">
               <th className="px-3 py-2.5">#</th>
@@ -518,30 +695,63 @@ export function TestsOrderedModal({
               <th className="px-3 py-2.5">Priority</th>
               <th className="px-3 py-2.5">Status</th>
               <th className="px-3 py-2.5">Ordered Time</th>
+              <th className="px-3 py-2.5">Action</th>
             </tr>
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan={5} className="px-3 py-6 text-center text-muted">Loading tests…</td></tr>
+              <tr><td colSpan={6} className="px-3 py-6 text-center text-muted">Loading tests…</td></tr>
             ) : items.length === 0 ? (
-              <tr><td colSpan={5} className="px-3 py-6 text-center text-muted">No investigations ordered.</td></tr>
-            ) : items.map((row, index) => (
-              <tr key={row.id} className="border-t border-line-soft">
-                <td className="px-3 py-3 tabular-nums text-muted">{index + 1}</td>
-                <td className="px-3 py-3 font-semibold text-blue">{row.name}</td>
-                <td className="px-3 py-3">
-                  <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${investigationPriorityClass(row.priority)}`}>
-                    {investigationPriorityLabel(row.priority)}
-                  </span>
-                </td>
-                <td className="px-3 py-3">
-                  <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${investigationStatusClass(row.status)}`}>
-                    {investigationStatusLabel(row.status)}
-                  </span>
-                </td>
-                <td className="px-3 py-3 text-muted">{row.ordered_at ? formatWhen(row.ordered_at) : "—"}</td>
-              </tr>
-            ))}
+              <tr><td colSpan={6} className="px-3 py-6 text-center text-muted">No investigations ordered.</td></tr>
+            ) : items.map((row, index) => {
+              const canCollect = Boolean(row.requires_collection) && row.status === "ordered";
+              const canSend = row.requires_collection ? row.status === "collected" : row.status === "ordered";
+              const collectRowBusy = busyId === `${item.visit_id}:collect:${row.id}`;
+              const sendRowBusy = busyId === `${item.visit_id}:send:${row.id}`;
+              return (
+                <tr key={row.id} className="border-t border-line-soft">
+                  <td className="px-3 py-3 tabular-nums text-muted">{index + 1}</td>
+                  <td className="px-3 py-3 font-semibold text-blue">{row.name}</td>
+                  <td className="px-3 py-3">
+                    <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${investigationPriorityClass(row.priority)}`}>
+                      {investigationPriorityLabel(row.priority)}
+                    </span>
+                  </td>
+                  <td className="px-3 py-3">
+                    <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${investigationStatusClass(row.status)}`}>
+                      {investigationStatusLabel(row.status)}
+                    </span>
+                  </td>
+                  <td className="px-3 py-3 text-muted">{row.ordered_at ? formatWhen(row.ordered_at) : "—"}</td>
+                  <td className="px-3 py-3">
+                    {canCollect || canSend ? (
+                      <div className="flex flex-wrap gap-1.5">
+                        {canCollect ? (
+                          <button
+                            type="button"
+                            className={`${secondary} h-8 px-2.5 py-0 text-xs`}
+                            disabled={collectBusy || sendBusy || oneBusy}
+                            onClick={() => void collectOne(row)}
+                          >
+                            {collectRowBusy ? "Collecting…" : "Mark as collected"}
+                          </button>
+                        ) : null}
+                        {canSend ? (
+                          <button
+                            type="button"
+                            className={`${primary} h-8 px-2.5 py-0 text-xs`}
+                            disabled={collectBusy || sendBusy || oneBusy}
+                            onClick={() => void sendOne(row)}
+                          >
+                            {sendRowBusy ? "Sending…" : "Send to Lab"}
+                          </button>
+                        ) : null}
+                      </div>
+                    ) : <span className="text-xs text-muted">—</span>}
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>
@@ -625,7 +835,9 @@ export function ManagementPlanModal({
         ? "bg-success-soft border-success/20 text-success"
         : "bg-surface-2 border-line text-muted-strong";
 
-  const canMonitor = detail != null && detail.visit.monitoring_status !== "completed";
+  const planStarted = selectedPlan?.status === "in_progress";
+  const onMonitoring = detail?.visit.monitoring_status === "in_progress";
+  const showMonitoringMessage = planStarted && onMonitoring;
 
   return (
     <ModalShell
@@ -637,14 +849,16 @@ export function ManagementPlanModal({
           <button type="button" className={`${secondary} w-full sm:w-auto`} disabled={pending} onClick={onClose}>
             Close
           </button>
-          <button
-            type="button"
-            className={`${secondary} w-full sm:w-auto`}
-            disabled={pending || !canMonitor || detail.visit.monitoring_status === "in_progress"}
-            onClick={() => void sendMonitoring()}
-          >
-            {detail.visit.monitoring_status === "in_progress" ? "Already in Monitoring" : "Send to Monitoring"}
-          </button>
+          {detail.visit.monitoring_status === "none" ? (
+            <button
+              type="button"
+              className={`${secondary} w-full sm:w-auto`}
+              disabled={pending}
+              onClick={() => void sendMonitoring()}
+            >
+              Send to Monitoring
+            </button>
+          ) : null}
           <button
             type="button"
             className={`${primary} w-full sm:w-auto`}
@@ -704,7 +918,10 @@ export function ManagementPlanModal({
               <div key={`${entry.position}:${entry.id ?? "encounter"}`} className="space-y-3 rounded-2xl border border-line bg-surface p-3">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <h3 className="text-sm font-semibold text-ink">Management plan {entry.position}</h3>
-                  {entry.assessment_status ? <PlanAssessmentStatus status={entry.assessment_status} /> : null}
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    {showMonitoringMessage ? <OnMonitoringChip /> : null}
+                    {entry.assessment_status ? <PlanAssessmentStatus status={entry.assessment_status} /> : null}
+                  </div>
                 </div>
                 {entry.clinical_assessment.trim() ? <p className="whitespace-pre-wrap text-sm text-ink">{entry.clinical_assessment}</p> : null}
                 <PlanSection title="Medication Orders" tone="bg-warning-soft border-warning-line text-warning">
@@ -767,7 +984,7 @@ export function RecordMonitoringModal({
   onSaved: () => void;
 }) {
   const toast = useToast();
-  const [temperature, setTemperature] = useState("36.8");
+  const [temperature, setTemperature] = useState("");
   const [pulse, setPulse] = useState("");
   const [systolic, setSystolic] = useState("");
   const [diastolic, setDiastolic] = useState("");
@@ -777,6 +994,7 @@ export function RecordMonitoringModal({
   const [pending, setPending] = useState(false);
   const [history, setHistory] = useState<MonitoringObservation[]>([]);
   const [historyLoading, setHistoryLoading] = useState(true);
+  const [tab, setTab] = useState<"record" | "history">("record");
 
   async function loadHistory() {
     setHistoryLoading(true);
@@ -799,7 +1017,7 @@ export function RecordMonitoringModal({
   }, [token, item.patient_id, item.visit_id]);
 
   function clearForm() {
-    setTemperature("36.8");
+    setTemperature("");
     setPulse("");
     setSystolic("");
     setDiastolic("");
@@ -817,8 +1035,29 @@ export function RecordMonitoringModal({
     diastolic: numberOrNull(diastolic),
   });
 
+  const last = history[0] ?? null;
+  const lastPressure = parsePressure(last?.blood_pressure ?? null);
+  const checks = {
+    temp: assessVital("temp", numberOrNull(temperature)),
+    pulse: assessVital("pulse", numberOrNull(pulse)),
+    bp: assessPressure(systolic, diastolic),
+    rr: assessVital("rr", numberOrNull(respiratory)),
+    spo2: assessVital("spo2", numberOrNull(spo2)),
+  };
+  const vitalNames: Record<keyof typeof checks, string> = { temp: "Temperature", pulse: "Heart rate", bp: "Blood pressure", rr: "Respiratory rate", spo2: "Oxygen saturation" };
+  const entries = Object.entries(checks) as [keyof typeof checks, VitalCheck][];
+  const invalid = entries.filter(([, check]) => check.state === "invalid");
+  const flagged = entries.filter(([, check]) => check.state === "abnormal" || check.state === "critical");
+  const entered = entries.some(([, check]) => check.state !== "empty" && check.state !== "invalid");
+  const blocker = invalid.length > 0
+    ? `Check ${invalid.map(([key]) => vitalNames[key].toLowerCase()).join(", ")}.`
+    : !entered
+      ? "Enter at least one vital sign to save."
+      : null;
+
   async function submit(event: FormEvent) {
     event.preventDefault();
+    if (blocker) return;
     setPending(true);
     try {
       const blood_pressure = systolic && diastolic ? `${systolic}/${diastolic}` : "";
@@ -851,76 +1090,162 @@ export function RecordMonitoringModal({
       wide
       footer={
         <>
+          {tab === "record" && blocker ? <p className="text-center text-xs font-medium text-muted-strong sm:mr-auto sm:self-center sm:text-left">{blocker}</p> : null}
           <button type="button" className={`${secondary} w-full sm:w-auto`} disabled={pending} onClick={onClose}>
             Close
           </button>
-          <button type="submit" form="record-monitoring-form" className={`${primary} w-full sm:w-auto`} disabled={pending}>
-            {pending ? "Saving…" : "Save Observation"}
-          </button>
+          {tab === "record" ? (
+            <>
+              <button type="submit" form="record-monitoring-form" className={`${primary} w-full sm:w-auto`} disabled={pending || Boolean(blocker)}>
+                {pending ? "Saving…" : "Save Observation"}
+              </button>
+            </>
+          ) : (
+            <button type="button" className={`${primary} w-full sm:w-auto`} onClick={() => setTab("record")}>
+              Record new reading
+            </button>
+          )}
         </>
       }
     >
-      <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_16rem] lg:items-start">
-        <PatientHero
-          name={item.patient_name}
-          mrn={item.patient_mrn}
-          age={item.patient_age_at_visit}
-          gender={item.patient_gender}
-          nationality={item.patient_nationality}
-          room={item.hotel_room_no}
-          clinicName={item.clinic_name}
-        />
-        <PatientPriorityBanner priority={priority} compact />
+      <PatientHero
+        name={item.patient_name}
+        mrn={item.patient_mrn}
+        age={item.patient_age_at_visit}
+        gender={item.patient_gender}
+        nationality={item.patient_nationality}
+        room={item.hotel_room_no}
+        clinicName={item.clinic_name}
+        casePriority={last?.case_priority ?? item.case_priority}
+      />
+      <div className="mt-4 flex gap-2 border-b border-line-soft" role="tablist" aria-label="Monitoring record">
+        <button
+          type="button"
+          role="tab"
+          id="monitoring-tab-record"
+          aria-selected={tab === "record"}
+          aria-controls="record-monitoring-form"
+          className={`inline-flex items-center gap-2 border-b-2 px-3 py-2 text-sm font-semibold ${tab === "record" ? "border-blue text-blue" : "border-transparent text-muted-strong"}`}
+          onClick={() => setTab("record")}
+        >
+          New reading
+        </button>
+        <button
+          type="button"
+          role="tab"
+          id="monitoring-tab-history"
+          aria-selected={tab === "history"}
+          aria-controls="monitoring-panel-history"
+          className={`inline-flex items-center gap-2 border-b-2 px-3 py-2 text-sm font-semibold ${tab === "history" ? "border-blue text-blue" : "border-transparent text-muted-strong"}`}
+          onClick={() => setTab("history")}
+        >
+          Previous readings
+          <span className={`rounded-full px-2 py-0.5 text-xs ${tab === "history" ? "bg-panel text-blue" : "bg-surface-3 text-muted"}`}>{history.length}</span>
+        </button>
       </div>
-      <div className="mt-4 grid gap-4 lg:grid-cols-[minmax(0,1.2fr)_minmax(16rem,0.8fr)] lg:items-start">
-        <form id="record-monitoring-form" className="rounded-2xl border border-line bg-canvas p-3 sm:p-4" onSubmit={(event) => void submit(event)}>
-          <h3 className="text-sm font-bold text-ink">New reading</h3>
-          <p className="mt-1 text-xs text-muted">Patient priority updates from the vital signs in this reading.</p>
-          <div className="mt-3 grid gap-2 sm:grid-cols-2">
-            <VitalField tone="temp" label="Temperature" unit="°C" hint="36.0 – 37.5" value={temperature} onChange={setTemperature} placeholder="36.8" />
-            <VitalField tone="pulse" label="Heart rate" unit="bpm" hint="60 – 100" value={pulse} onChange={setPulse} placeholder="72" />
-            <div className="rounded-2xl border border-gold bg-surface px-3 py-2.5 sm:col-span-2">
-              <span className="flex items-baseline justify-between gap-2">
-                <span className="text-[11px] font-bold uppercase tracking-wide text-warning">Blood pressure</span>
-                <span className="text-[11px] font-medium text-warning/80">90/60 – 120/80</span>
-              </span>
-              <span className="mt-1 flex items-baseline gap-2">
-                <input className="w-full bg-transparent text-2xl font-bold tracking-tight text-ink outline-none placeholder:text-muted-soft" inputMode="numeric" value={systolic} placeholder="120" aria-label="Systolic" onChange={(event) => setSystolic(event.target.value)} />
-                <span className="text-lg font-bold text-muted">/</span>
-                <input className="w-full bg-transparent text-2xl font-bold tracking-tight text-ink outline-none placeholder:text-muted-soft" inputMode="numeric" value={diastolic} placeholder="80" aria-label="Diastolic" onChange={(event) => setDiastolic(event.target.value)} />
-                <span className="shrink-0 text-xs font-semibold text-warning">mmHg</span>
-              </span>
-            </div>
-            <VitalField tone="rr" label="Respiratory rate" unit="/min" hint="12 – 20" value={respiratory} onChange={setRespiratory} placeholder="16" />
-            <VitalField tone="spo2" label="Oxygen saturation" unit="%" hint="≥ 95" value={spo2} onChange={setSpo2} placeholder="98" />
+      {tab === "record" ? (
+        <form
+          id="record-monitoring-form"
+          className="mt-4"
+          role="tabpanel"
+          aria-labelledby="monitoring-tab-record"
+          noValidate
+          onSubmit={(event) => void submit(event)}
+        >
+          <div className="flex flex-wrap items-baseline justify-between gap-2">
+            <h3 className="text-sm font-bold text-ink">Vital signs</h3>
+            <p className="text-xs text-muted">
+              {last?.recorded_at ? `Compared with the last reading, ${formatWhen(last.recorded_at)}` : "First reading for this visit"}
+            </p>
           </div>
-          <label className="mt-3 block">
-            <span className="text-xs font-bold uppercase tracking-wide text-muted-strong">Notes</span>
+          <div className="mt-3 grid gap-2.5 sm:grid-cols-2 lg:grid-cols-3">
+            <VitalInput
+              label="Temperature"
+              unit="°C"
+              range="36.0 – 37.5"
+              value={temperature}
+              onChange={(value) => setTemperature(decimalInput(value))}
+              placeholder="36.8"
+              inputMode="decimal"
+              check={checks.temp}
+              last={last?.temperature_c ?? null}
+              autoFocus
+            />
+            <VitalInput
+              label="Heart rate"
+              unit="bpm"
+              range="60 – 100"
+              value={pulse}
+              onChange={(value) => setPulse(wholeInput(value))}
+              placeholder="72"
+              check={checks.pulse}
+              last={last?.pulse ?? null}
+            />
+            <VitalInput
+              label="Respiratory rate"
+              unit="/min"
+              range="12 – 20"
+              value={respiratory}
+              onChange={(value) => setRespiratory(wholeInput(value))}
+              placeholder="16"
+              check={checks.rr}
+              last={last?.respiratory_rate ?? null}
+            />
+            <VitalInput
+              label="Oxygen saturation"
+              unit="%"
+              range="95 – 100"
+              value={spo2}
+              onChange={(value) => setSpo2(wholeInput(value))}
+              placeholder="98"
+              check={checks.spo2}
+              last={last?.spo2 ?? null}
+            />
+            <PressureInput
+              className="sm:col-span-2"
+              systolic={systolic}
+              diastolic={diastolic}
+              onSystolic={setSystolic}
+              onDiastolic={setDiastolic}
+              check={checks.bp}
+              last={lastPressure}
+            />
+          </div>
+          <AutomaticAssessment
+            priority={entered ? priority : null}
+            flagged={flagged.map(([key, check]) => ({ name: vitalNames[key], check }))}
+          />
+          <label className="mt-3 block rounded-2xl border border-line-strong bg-surface px-3 py-2.5 focus-within:ring-2 focus-within:ring-blue/20">
+            <span className="flex min-h-6 items-center justify-between gap-2">
+              <span className="text-[11px] font-bold uppercase tracking-wide text-muted-strong">Nursing notes</span>
+              <span className="text-[11px] text-muted">Optional · {notes.length}/500</span>
+            </span>
             <textarea
-              className={`${field} mt-1.5 min-h-24 bg-surface`}
+              className="mt-1 min-h-20 w-full resize-y bg-transparent text-sm text-ink outline-none placeholder:text-muted-soft"
               maxLength={500}
               value={notes}
-              placeholder="Enter nursing notes..."
+              placeholder="How the patient looks, complaints, actions taken…"
               onChange={(event) => setNotes(event.target.value)}
             />
-            <span className="mt-1 block text-right text-xs text-muted">{notes.length}/500</span>
           </label>
         </form>
-        <div className="grid gap-3">
-          <section className="rounded-2xl border border-success/30 bg-success-soft/70 p-3">
-            <h3 className="text-xs font-bold uppercase tracking-wide text-success">Previous readings{history.length > 0 ? ` · ${history.length}` : ""}</h3>
-            {historyLoading ? <p className="mt-2 text-sm text-muted">Loading history…</p> : null}
-            {!historyLoading && history.length === 0 ? <p className="mt-2 text-sm text-muted">No readings yet.</p> : null}
-            {history.length > 0 ? (
-              <ul className="mt-2 max-h-[28rem] space-y-2 overflow-y-auto">
-                {history.map((row, index) => (
-                  <ReadingCard key={row.id} row={row} latest={index === 0} compact />
-                ))}
-              </ul>
-            ) : null}
-          </section>
-        </div>
-      </div>
+      ) : (
+        <section
+          className="mt-4"
+          role="tabpanel"
+          id="monitoring-panel-history"
+          aria-labelledby="monitoring-tab-history"
+        >
+          {historyLoading && history.length === 0 ? <p className="py-6 text-center text-sm text-muted">Loading readings…</p> : null}
+          {!historyLoading && history.length === 0 ? (
+            <div className="rounded-2xl border border-dashed border-line-strong px-4 py-8 text-center">
+              <p className="text-sm font-semibold text-ink">No readings yet</p>
+              <p className="mt-1 text-sm text-muted">Readings you save appear here, newest first.</p>
+            </div>
+          ) : null}
+          {history.length > 0 ? <ReadingTimeline rows={history} /> : null}
+        </section>
+      )}
     </ModalShell>
   );
 }
@@ -1099,6 +1424,23 @@ function PatientPriorityBanner({ priority, compact = false }: { priority?: CaseP
   );
 }
 
+export function PriorityChip({ priority }: { priority?: CasePriority | null }) {
+  if (!priority) {
+    return <span className="inline-flex rounded-full border border-line bg-surface-2 px-2.5 py-1 text-xs font-semibold text-muted">No priority</span>;
+  }
+  const icon = priority === "emergency"
+    ? <PriorityEmergencyIcon className="h-3.5 w-3.5" />
+    : priority === "urgent"
+      ? <PriorityUrgentIcon className="h-3.5 w-3.5" />
+      : <PriorityStableIcon className="h-3.5 w-3.5" />;
+  return (
+    <span className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-xs font-semibold ${casePriorityClass(priority)}`} title="Patient priority">
+      {icon}
+      {casePriorityLabel(priority)}
+    </span>
+  );
+}
+
 function PriorityStableIcon({ className = "h-4 w-4" }: { className?: string }) {
   return (
     <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -1161,47 +1503,354 @@ function PlanSection({ title, tone, children }: { title: string; tone: string; c
   );
 }
 
-function VitalField({
-  tone,
+type VitalKind = "temp" | "pulse" | "rr" | "spo2";
+type VitalState = "empty" | "normal" | "abnormal" | "critical" | "invalid";
+export type VitalCheck = { state: VitalState; label: string; message?: string };
+
+const vitalLimits: Record<VitalKind, [number, number]> = { temp: [30, 45], pulse: [20, 250], rr: [4, 80], spo2: [50, 100] };
+
+export function assessVital(kind: VitalKind, value: number | null): VitalCheck {
+  if (value == null) return { state: "empty", label: "" };
+  const [min, max] = vitalLimits[kind];
+  if (value < min || value > max || (kind !== "temp" && !Number.isInteger(value))) {
+    return { state: "invalid", label: "Check", message: `Enter a value between ${min} and ${max}.` };
+  }
+  if (kind === "temp") {
+    if (value >= 39) return { state: "critical", label: "Critical high" };
+    if (value < 35) return { state: "critical", label: "Critical low" };
+    if (value >= 38) return { state: "abnormal", label: "High" };
+  } else if (kind === "pulse") {
+    if (value >= 130) return { state: "critical", label: "Critical high" };
+    if (value < 50) return { state: "critical", label: "Critical low" };
+    if (value >= 100) return { state: "abnormal", label: "High" };
+  } else if (kind === "rr") {
+    if (value >= 30) return { state: "critical", label: "Critical high" };
+    if (value < 10) return { state: "critical", label: "Critical low" };
+    if (value >= 22) return { state: "abnormal", label: "High" };
+  } else {
+    if (value < 90) return { state: "critical", label: "Critical low" };
+    if (value < 94) return { state: "abnormal", label: "Low" };
+  }
+  return { state: "normal", label: "Normal" };
+}
+
+export function assessPressure(systolic: string, diastolic: string): VitalCheck {
+  if (!systolic && !diastolic) return { state: "empty", label: "" };
+  if (!systolic || !diastolic) return { state: "invalid", label: "Check", message: "Enter both numbers, for example 120/80." };
+  const top = Number(systolic);
+  const bottom = Number(diastolic);
+  if (top < 50 || top > 300 || bottom < 20 || bottom > 200 || bottom >= top) {
+    return { state: "invalid", label: "Check", message: "These numbers do not look like a blood pressure." };
+  }
+  if (top >= 180 || bottom >= 110) return { state: "critical", label: "Critical high" };
+  if (top < 90) return { state: "critical", label: "Critical low" };
+  if (top >= 140 || bottom >= 90) return { state: "abnormal", label: "High" };
+  return { state: "normal", label: "Normal" };
+}
+
+export function parsePressure(value: string | null) {
+  const match = value?.match(/(\d+)\s*\/\s*(\d+)/);
+  return match ? { systolic: Number(match[1]), diastolic: Number(match[2]) } : null;
+}
+
+function decimalInput(value: string) {
+  const cleaned = value.replace(/[^\d.]/g, "");
+  const [whole = "", ...rest] = cleaned.split(".");
+  if (rest.length === 0) return whole.slice(0, 2);
+  return `${whole.slice(0, 2)}.${rest.join("").slice(0, 1)}`;
+}
+
+function wholeInput(value: string) {
+  return value.replace(/\D/g, "").slice(0, 3);
+}
+
+export function vitalTone(state: VitalState) {
+  if (state === "critical") return { card: "border-danger bg-danger-soft/60", chip: "bg-danger text-white" };
+  if (state === "abnormal") return { card: "border-warning bg-warning-soft/60", chip: "bg-warning text-white" };
+  if (state === "invalid") return { card: "border-danger bg-surface", chip: "bg-danger-soft text-danger" };
+  if (state === "normal") return { card: "border-success/50 bg-surface", chip: "bg-success-soft text-success" };
+  return { card: "border-line-strong bg-surface", chip: "" };
+}
+
+export function trendText(current: number | null, previous: number | null, decimals = 0) {
+  if (current == null || previous == null) return null;
+  const diff = Number((current - previous).toFixed(decimals));
+  if (diff === 0) return "no change";
+  return `${diff > 0 ? "↑" : "↓"} ${Math.abs(diff).toFixed(decimals)}`;
+}
+
+export function AutomaticAssessment({
+  priority,
+  flagged,
+  emptyText = "Enter vital signs to see the priority for this reading.",
+}: {
+  priority: CasePriority | null;
+  flagged: { name: string; check: VitalCheck }[];
+  emptyText?: string;
+}) {
+  const tone = priority === "emergency"
+    ? { box: "border-danger bg-danger-soft text-danger", chip: "bg-danger text-white", icon: <PriorityEmergencyIcon className="h-5 w-5" />, hint: "Immediate action required." }
+    : priority === "urgent"
+      ? { box: "border-warning bg-warning-soft text-warning", chip: "bg-warning text-white", icon: <PriorityUrgentIcon className="h-5 w-5" />, hint: "Needs prompt attention; monitor closely." }
+      : priority === "stable"
+        ? { box: "border-success bg-success-soft text-success", chip: "bg-success text-white", icon: <PriorityStableIcon className="h-5 w-5" />, hint: "Vital signs are within range." }
+        : { box: "border-line bg-surface-2 text-muted-strong", chip: "bg-surface-3 text-muted", icon: <PriorityMissingIcon className="h-5 w-5" />, hint: emptyText };
+  return (
+    <section className={`mt-3 flex flex-col gap-3 rounded-2xl border-2 px-4 py-3 sm:flex-row sm:items-center ${tone.box}`} role="status" aria-live="polite">
+      <div className="flex min-w-0 flex-1 items-center gap-3">
+        <span className={`grid h-10 w-10 shrink-0 place-items-center rounded-xl ${tone.chip}`}>{tone.icon}</span>
+        <div className="min-w-0">
+          <p className="text-[11px] font-bold uppercase tracking-wide opacity-80">Automatic assessment</p>
+          <p className="text-base font-bold leading-6">{priority ? casePriorityLabel(priority) : "Waiting for vitals"}</p>
+          <p className="text-xs font-medium opacity-90">{tone.hint}</p>
+        </div>
+      </div>
+      {flagged.length > 0 ? (
+        <ul className="flex flex-wrap gap-1.5 sm:max-w-[55%] sm:justify-end">
+          {flagged.map(({ name, check }) => (
+            <li key={name} className={`whitespace-nowrap rounded-full px-2.5 py-1 text-xs font-semibold ${check.state === "critical" ? "bg-danger text-white" : "bg-surface text-warning ring-1 ring-warning"}`}>
+              {name} · {check.label}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </section>
+  );
+}
+
+export function VitalShell({
+  label,
+  check,
+  range,
+  lastText,
+  trend,
+  lastLabel = "Last",
+  className = "",
+  children,
+}: {
+  label: string;
+  check: VitalCheck;
+  range: string;
+  lastText: string | null;
+  trend: string | null;
+  lastLabel?: string;
+  className?: string;
+  children: ReactNode;
+}) {
+  const tone = vitalTone(check.state);
+  return (
+    <div className={`rounded-2xl border px-3 py-2.5 transition-colors focus-within:ring-2 focus-within:ring-blue/20 ${tone.card} ${className}`}>
+      <div className="flex min-h-6 items-center justify-between gap-2">
+        <span className="min-w-0 truncate text-[11px] font-bold uppercase tracking-wide text-muted-strong" title={label}>{label}</span>
+        {check.state !== "empty" ? <span className={`shrink-0 whitespace-nowrap rounded-full px-2 py-0.5 text-[11px] font-bold ${tone.chip}`}>{check.label}</span> : null}
+      </div>
+      {children}
+      {check.message ? (
+        <p className="mt-1 text-xs font-medium text-danger">{check.message}</p>
+      ) : (
+        <div className="mt-1.5 space-y-0.5 border-t border-line-soft pt-1.5 text-[11px] leading-4 text-muted">
+          <p className="whitespace-nowrap">Normal {range}</p>
+          {lastText ? (
+            <p className="whitespace-nowrap">
+              {lastLabel} {lastText}
+              {trend ? <span className="ml-1 font-semibold text-muted-strong">{trend}</span> : null}
+            </p>
+          ) : null}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function VitalInput({
   label,
   unit,
-  hint,
+  range,
   value,
   onChange,
   placeholder,
+  inputMode = "numeric",
+  check,
+  last,
+  autoFocus,
 }: {
-  tone: "temp" | "pulse" | "rr" | "spo2";
   label: string;
   unit: string;
-  hint: string;
+  range: string;
   value: string;
   onChange: (value: string) => void;
   placeholder: string;
+  inputMode?: "numeric" | "decimal";
+  check: VitalCheck;
+  last: number | null;
+  autoFocus?: boolean;
 }) {
-  const palette = tone === "temp"
-    ? "border-warning-line bg-warning-soft text-warning"
-    : tone === "pulse"
-      ? "border-panel-strong bg-panel text-blue"
-      : tone === "rr"
-        ? "border-success/30 bg-success-soft text-success"
-        : "border-panel-strong bg-panel-strong text-blue-strong";
+  const decimals = inputMode === "decimal" ? 1 : 0;
   return (
-    <label className={`block rounded-2xl border px-3 py-2.5 ${palette}`}>
-      <span className="flex items-baseline justify-between gap-2">
-        <span className="text-[11px] font-bold uppercase tracking-wide">{label}</span>
-        <span className="text-[11px] font-medium opacity-75">{hint}</span>
-      </span>
-      <span className="mt-1 flex items-baseline gap-1.5">
+    <VitalShell label={label} check={check} range={range} lastText={last == null ? null : `${last} ${unit}`} trend={trendText(numberOrNull(value), last, decimals)}>
+      <label className="mt-1 flex items-baseline gap-1.5">
+        <span className="sr-only">{label}</span>
         <input
-          className="w-full bg-transparent text-2xl font-bold tracking-tight text-ink outline-none placeholder:text-muted-soft"
-          inputMode="decimal"
+          className="w-full min-w-0 bg-transparent text-2xl font-bold tracking-tight text-ink outline-none placeholder:font-semibold placeholder:text-muted-soft"
+          inputMode={inputMode}
+          autoComplete="off"
+          autoFocus={autoFocus}
+          aria-invalid={check.state === "invalid"}
           value={value}
           placeholder={placeholder}
           onChange={(event) => onChange(event.target.value)}
         />
-        <span className="shrink-0 text-xs font-semibold">{unit}</span>
-      </span>
-    </label>
+        <span className="shrink-0 text-xs font-semibold text-muted-strong">{unit}</span>
+      </label>
+    </VitalShell>
+  );
+}
+
+function PressureInput({
+  className,
+  systolic,
+  diastolic,
+  onSystolic,
+  onDiastolic,
+  check,
+  last,
+}: {
+  className?: string;
+  systolic: string;
+  diastolic: string;
+  onSystolic: (value: string) => void;
+  onDiastolic: (value: string) => void;
+  check: VitalCheck;
+  last: { systolic: number; diastolic: number } | null;
+}) {
+  const systolicRef = useRef<HTMLInputElement>(null);
+  const diastolicRef = useRef<HTMLInputElement>(null);
+  const inputClass = "w-full min-w-0 bg-transparent text-2xl font-bold tracking-tight text-ink outline-none placeholder:font-semibold placeholder:text-muted-soft";
+  return (
+    <VitalShell
+      className={className}
+      label="Blood pressure"
+      check={check}
+      range="90/60 – 120/80"
+      lastText={last ? `${last.systolic}/${last.diastolic}` : null}
+      trend={trendText(numberOrNull(systolic), last?.systolic ?? null)}
+    >
+      <div className="mt-1 flex items-baseline gap-1">
+        <input
+          ref={systolicRef}
+          className={`${inputClass} text-right`}
+          inputMode="numeric"
+          autoComplete="off"
+          aria-label="Systolic"
+          aria-invalid={check.state === "invalid"}
+          value={systolic}
+          placeholder="120"
+          onChange={(event) => {
+            const next = wholeInput(event.target.value);
+            onSystolic(next);
+            if (next.length === 3 || (next.length === 2 && !/^[12]/.test(next))) diastolicRef.current?.focus();
+          }}
+        />
+        <span className="text-xl font-bold text-muted">/</span>
+        <input
+          ref={diastolicRef}
+          className={inputClass}
+          inputMode="numeric"
+          autoComplete="off"
+          aria-label="Diastolic"
+          aria-invalid={check.state === "invalid"}
+          value={diastolic}
+          placeholder="80"
+          onKeyDown={(event) => {
+            if (event.key === "Backspace" && !diastolic) systolicRef.current?.focus();
+          }}
+          onChange={(event) => onDiastolic(wholeInput(event.target.value))}
+        />
+        <span className="shrink-0 text-xs font-semibold text-muted-strong">mmHg</span>
+      </div>
+    </VitalShell>
+  );
+}
+
+export function ReadingTimeline({ rows }: { rows: MonitoringObservation[] }) {
+  return (
+    <div className="overflow-x-auto rounded-2xl border border-line">
+      <table className="w-full min-w-[42rem] text-sm">
+        <thead className="bg-surface-2 text-left text-[11px] font-bold uppercase tracking-wide text-muted-strong">
+          <tr>
+            <th className="px-3 py-2.5">Recorded</th>
+            <th className="px-3 py-2.5">Temp <span className="font-medium normal-case text-muted">°C</span></th>
+            <th className="px-3 py-2.5">Heart rate <span className="font-medium normal-case text-muted">bpm</span></th>
+            <th className="px-3 py-2.5">BP <span className="font-medium normal-case text-muted">mmHg</span></th>
+            <th className="px-3 py-2.5">RR <span className="font-medium normal-case text-muted">/min</span></th>
+            <th className="px-3 py-2.5">SpO2 <span className="font-medium normal-case text-muted">%</span></th>
+            <th className="px-3 py-2.5">Priority</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row, index) => {
+            const previous = rows[index + 1] ?? null;
+            const pressure = parsePressure(row.blood_pressure);
+            const previousPressure = parsePressure(previous?.blood_pressure ?? null);
+            const notes = row.notes.trim();
+            const clinical = row.clinical_assessment?.trim() ?? "";
+            return (
+              <Fragment key={row.id}>
+                <tr className={`border-t border-line-soft align-top ${index === 0 ? "bg-panel/40" : ""}`}>
+                  <td className="px-3 py-2.5">
+                    <span className="flex items-center gap-1.5 font-semibold text-ink">
+                      {row.recorded_at ? formatWhen(row.recorded_at) : "—"}
+                      {index === 0 ? <span className="rounded-full bg-blue px-2 py-0.5 text-[10px] font-semibold text-white">Latest</span> : null}
+                    </span>
+                    <span className="block text-xs text-muted">{row.recorded_by_name?.trim() || "Nurse"}</span>
+                  </td>
+                  <TimelineCell value={row.temperature_c} check={assessVital("temp", row.temperature_c)} trend={trendText(row.temperature_c, previous?.temperature_c ?? null, 1)} />
+                  <TimelineCell value={row.pulse} check={assessVital("pulse", row.pulse)} trend={trendText(row.pulse, previous?.pulse ?? null)} />
+                  <TimelineCell
+                    value={pressure ? `${pressure.systolic}/${pressure.diastolic}` : null}
+                    check={pressure ? assessPressure(String(pressure.systolic), String(pressure.diastolic)) : { state: "empty", label: "" }}
+                    trend={trendText(pressure?.systolic ?? null, previousPressure?.systolic ?? null)}
+                  />
+                  <TimelineCell value={row.respiratory_rate} check={assessVital("rr", row.respiratory_rate)} trend={trendText(row.respiratory_rate, previous?.respiratory_rate ?? null)} />
+                  <TimelineCell value={row.spo2} check={assessVital("spo2", row.spo2)} trend={trendText(row.spo2, previous?.spo2 ?? null)} />
+                  <td className="px-3 py-2.5">
+                    {row.case_priority ? <span className={`inline-flex rounded-full border px-2 py-0.5 text-[11px] font-semibold ${casePriorityClass(row.case_priority)}`}>{casePriorityLabel(row.case_priority)}</span> : <span className="text-muted">—</span>}
+                  </td>
+                </tr>
+                {notes || row.doctor_assessment || clinical ? (
+                  <tr className={index === 0 ? "bg-panel/40" : ""}>
+                    <td colSpan={7} className="px-3 pb-2.5">
+                      {notes ? <p className="whitespace-pre-wrap rounded-lg bg-surface-2 px-3 py-1.5 text-sm text-ink"><span className="font-semibold text-muted-strong">Note: </span>{notes}</p> : null}
+                      <DoctorReadingAssessment status={row.doctor_assessment} clinical={clinical} />
+                    </td>
+                  </tr>
+                ) : null}
+              </Fragment>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function TimelineCell({ value, check, trend }: { value: number | string | null; check: VitalCheck; trend: string | null }) {
+  const tone = check.state === "critical"
+    ? "bg-danger-soft text-danger"
+    : check.state === "abnormal"
+      ? "bg-warning-soft text-warning"
+      : "text-ink";
+  return (
+    <td className="px-3 py-2.5">
+      {value == null ? (
+        <span className="text-muted">—</span>
+      ) : (
+        <>
+          <span className={`inline-flex rounded-md px-1.5 py-0.5 font-bold tabular-nums ${tone}`} title={check.state === "abnormal" || check.state === "critical" ? check.label : undefined}>{value}</span>
+          {trend && trend !== "no change" ? <span className="ml-1 text-[11px] font-semibold text-muted">{trend}</span> : null}
+        </>
+      )}
+    </td>
   );
 }
 

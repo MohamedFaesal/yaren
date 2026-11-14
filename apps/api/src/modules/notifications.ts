@@ -5,7 +5,7 @@ import { ApplicationError } from "@yaren/shared-kernel";
 import { authenticate, parse, type Actor } from "../http.js";
 import { canList, loadAccess, viewWhere, workspaceClinicOptionsWhere } from "../permissions.js";
 
-const kinds = ["waiting_for_triage", "to_doctor"] as const;
+const kinds = ["waiting_for_triage", "to_doctor", "nurse_record"] as const;
 type Kind = (typeof kinds)[number];
 
 type Notice = {
@@ -57,8 +57,9 @@ async function listNotices(pool: pg.Pool, user: Actor, clinicId: string | null) 
     items.push(...await triageNotices(pool, user, access, clinicId));
   }
   if (seesAll || user.role === "Doctor") {
-    filters.push("to_doctor");
+    filters.push("to_doctor", "nurse_record");
     items.push(...await doctorNotices(pool, user, access, clinicId, seesAll));
+    items.push(...await nurseRecordNotices(pool, user, access, clinicId, seesAll));
   }
   items.sort((left, right) => new Date(right.created_at).getTime() - new Date(left.created_at).getTime());
   return { items: items.slice(0, 40), filters };
@@ -139,6 +140,54 @@ async function doctorNotices(
   return result.rows.map((row) => present(row, "to_doctor"));
 }
 
+async function nurseRecordNotices(
+  pool: pg.Pool,
+  user: Actor,
+  access: Awaited<ReturnType<typeof loadAccess>>,
+  clinicId: string | null,
+  seesAll: boolean,
+) {
+  const values: unknown[] = [user.sub];
+  const reader = 1;
+  const clauses = [
+    "v.deleted_at IS NULL",
+    "p.deleted_at IS NULL",
+    "v.assigned_doctor_id IS NOT NULL",
+  ];
+  if (!seesAll) clauses.push("v.assigned_doctor_id = $1");
+  const workspace = workspaceClinicOptionsWhere(access);
+  if (workspace && !workspace.allClinics) {
+    values.push(workspace.params[0]);
+    clauses.push(`v.clinic_id = ANY($${values.length}::uuid[])`);
+  }
+  if (clinicId) {
+    values.push(clinicId);
+    clauses.push(`v.clinic_id = $${values.length}`);
+  }
+  const result = await pool.query(
+    `SELECT v.id AS visit_id, v.patient_id, p.name AS patient_name, p.mrn AS patient_mrn,
+            c.name AS clinic_name, v.hotel_room_no, latest.sent_to_doctor_at AS created_at,
+            (r.read_at IS NOT NULL AND r.read_at >= latest.sent_to_doctor_at) AS read
+     FROM patient_visits v
+     JOIN patients p ON p.id = v.patient_id
+     JOIN clinics c ON c.id = v.clinic_id
+     JOIN LATERAL (
+       SELECT o.sent_to_doctor_at
+       FROM patient_visit_nurse_observations o
+       WHERE o.visit_id = v.id AND o.sent_to_doctor_at IS NOT NULL
+       ORDER BY o.sent_to_doctor_at DESC
+       LIMIT 1
+     ) latest ON TRUE
+     LEFT JOIN notification_reads r
+       ON r.user_id = $${reader} AND r.visit_id = v.id AND r.kind = 'nurse_record'
+     WHERE ${clauses.join(" AND ")}
+     ORDER BY latest.sent_to_doctor_at DESC
+     LIMIT 40`,
+    values,
+  );
+  return result.rows.map((row) => present(row, "nurse_record"));
+}
+
 function present(row: {
   visit_id: string;
   patient_id: string;
@@ -156,14 +205,18 @@ function present(row: {
     kind,
     title: kind === "waiting_for_triage"
       ? `${row.patient_name} is waiting for triage`
-      : `${row.patient_name} is waiting to be seen`,
+      : kind === "nurse_record"
+        ? `${row.patient_name} has a new nursing record`
+        : `${row.patient_name} is waiting to be seen`,
     body: place,
     clinic_name: row.clinic_name,
     created_at: row.created_at,
     read: row.read,
     href: kind === "waiting_for_triage"
       ? `/patients/triage?patient=${row.patient_id}&visit=${row.visit_id}`
-      : `/patients/to-doctor/${row.visit_id}/encounter`,
+      : kind === "nurse_record"
+        ? "/patients/to-doctor"
+        : `/patients/to-doctor/${row.visit_id}/encounter`,
   };
 }
 

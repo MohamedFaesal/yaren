@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router";
-import { api, type Patient, type PatientVisit, type User, type VisitCareStatus, visitStatusLabel, visitTypeLabel } from "../api";
+import { api, isUuid, type InvestigationPhase, type Patient, type PatientVisit, type User, type VisitCareStatus, visitStatusChips, visitStatusText, visitTypeLabel } from "../api";
 import { canAct } from "../access";
 import { NationalityLabel } from "../nationalities";
 import { useToast } from "../toast";
@@ -30,8 +30,16 @@ export function PatientViewPage({ token, actor }: { token: string; actor: User }
         : "details";
 
   useEffect(() => {
-    api<Patient>(`/api/patients/${id}`, {}, token).then(setPatient).catch((caught) => setError(messageOf(caught)));
-  }, [id, token]);
+    if (!id) return;
+    const path = isUuid(id) ? `/api/patients/${id}` : `/api/patients/by-mrn/${encodeURIComponent(id)}`;
+    api<Patient>(path, {}, token).then((next) => {
+      setPatient(next);
+      if (id !== next.mrn) {
+        const search = params.toString();
+        navigate(`/patients/${next.mrn}${search ? `?${search}` : ""}`, { replace: true });
+      }
+    }).catch((caught) => setError(messageOf(caught)));
+  }, [id, token, navigate, params]);
 
   const age = patient ? ageFromBirthdate(patient.birthdate) : null;
 
@@ -50,8 +58,8 @@ export function PatientViewPage({ token, actor }: { token: string; actor: User }
       action={
         <>
           <Link className={secondary} to="/patients">Back to list</Link>
-          {canWrite && tab === "details" ? <IconAction kind="edit" to={`/patients/${id}/edit`} /> : null}
-          {canCreateVisit && tab === "visits" ? <Link to={`/patients/${id}/visits/new`} className={primary}><PlusIcon />Add visit</Link> : null}
+          {patient && canWrite && tab === "details" ? <IconAction kind="edit" to={`/patients/${patient.mrn}/edit`} /> : null}
+          {patient && canCreateVisit && tab === "visits" ? <Link to={`/patients/${patient.mrn}/visits/new`} className={primary}><PlusIcon />Add visit</Link> : null}
           {canDelete ? <IconAction kind="delete" onClick={() => { setDeleteError(null); setConfirmOpen(true); }} /> : null}
         </>
       }
@@ -103,18 +111,18 @@ export function PatientViewPage({ token, actor }: { token: string; actor: User }
             ) : null}
             {tab === "visits" ? (
               <PatientVisitsPanel
-                patientId={patient.id}
+                patientId={patient.mrn}
                 visits={patient.visits ?? []}
                 ownerId={patient.added_by}
                 actor={actor}
                 canCreate={canCreateVisit}
               />
             ) : null}
-            {canViewActivity && id ? (
+            {canViewActivity ? (
               <EntityActivityPanel
                 token={token}
                 entity="patient"
-                entityId={id}
+                entityId={patient.id}
                 active={tab === "activity"}
                 onTotal={setActivityTotal}
               />
@@ -142,7 +150,7 @@ export function PatientViewPage({ token, actor }: { token: string; actor: User }
         onConfirm={() => {
           setPending(true);
           setDeleteError(null);
-          api(`/api/patients/${id}`, { method: "DELETE" }, token)
+          api(`/api/patients/${patient?.id}`, { method: "DELETE" }, token)
             .then(() => {
               toast.success("Patient deleted", `${patient?.name ?? "The patient"} was removed.`);
               navigate("/patients");
@@ -218,11 +226,11 @@ function PatientVisitsPanel({
                 </div>
                 <div className="group min-w-0 flex-1 rounded-2xl border border-line-soft bg-surface px-4 py-3.5 transition hover:border-panel-strong hover:bg-panel">
                   <div className="flex flex-wrap items-start justify-between gap-3">
-                    <Link to={`/patients/${patientId}/visits/${visit.id}`} className="min-w-0 flex-1">
+                    <Link to={`/visits/${visit.visit_number}`} className="min-w-0 flex-1">
                       <div className="flex flex-wrap items-center gap-2">
                         <p className="truncate text-base font-semibold text-ink group-hover:text-blue">{visit.clinic_name}</p>
                         {visit.patient_age_at_visit != null ? <AgeBadge age={visit.patient_age_at_visit} /> : null}
-                        <CareStatus status={visit.status} />
+                        <CareStatuses status={visit.status} monitoring={visit.monitoring_status} phase={visit.investigation_phase} />
                         <span className="rounded-md bg-surface-2 px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-ink">{visitTypeLabel(visit.visit_type)}</span>
                         <span className={`rounded-md px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide ${status.badge}`}>
                           {status.label}
@@ -246,8 +254,8 @@ function PatientVisitsPanel({
                       </div>
                     </Link>
                     <div className="flex shrink-0 gap-2">
-                      <IconAction kind="view" to={`/patients/${patientId}/visits/${visit.id}`} />
-                      {canEdit ? <IconAction kind="edit" to={`/patients/${patientId}/visits/${visit.id}/edit`} /> : null}
+                      <IconAction kind="view" to={`/visits/${visit.visit_number}`} />
+                      {canEdit ? <IconAction kind="edit" to={`/visits/${visit.visit_number}/edit`} /> : null}
                     </div>
                   </div>
                 </div>
@@ -269,14 +277,26 @@ function VisitMeta({ label, value, mono }: { label: string; value: ReactNode; mo
   );
 }
 
-function CareStatus({ status }: { status?: VisitCareStatus }) {
+function CareStatuses({ status, monitoring, phase }: { status?: VisitCareStatus; monitoring?: "none" | "in_progress" | "completed" | null; phase?: InvestigationPhase | null }) {
+  const chips = visitStatusChips({ status, monitoring_status: monitoring });
+  if (chips.length === 0) return null;
+  return <span className="inline-flex flex-wrap gap-1">{chips.map((item) => <CareStatus key={item} status={item} phase={item === "waiting_for_investigation" ? phase : null} />)}</span>;
+}
+
+function CareStatus({ status, phase }: { status?: VisitCareStatus; phase?: InvestigationPhase | null }) {
   if (!status) return null;
-  const tone = status === "seen" || status === "diagnosed"
-    ? "bg-success-soft text-success"
-    : status === "pending_payment" || status === "waiting_for_triage"
+  const tone = status === "patient_left"
+    ? "bg-surface-3 text-muted-strong"
+    : status === "consultation_in_progress" || (status === "waiting_for_investigation" && phase !== "results_ready")
       ? "bg-warning-soft text-warning"
-      : "bg-panel text-blue";
-  return <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${tone}`}>{visitStatusLabel(status)}</span>;
+      : status === "seen" || status === "encounter_complete" || status === "under_nursing_care" || (status === "waiting_for_investigation" && phase === "results_ready")
+        ? "bg-success-soft text-success"
+        : status === "referred"
+          ? "bg-panel text-blue"
+          : status === "pending_payment" || status === "waiting_for_triage"
+            ? "bg-warning-soft text-warning"
+            : "bg-panel text-blue";
+  return <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${tone}`}>{visitStatusText({ status, investigation_phase: phase })}</span>;
 }
 
 function visitStatus(visit: PatientVisit) {

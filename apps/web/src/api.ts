@@ -138,6 +138,8 @@ export type PatientVisit = {
   hotel_name: string;
   patient_nationality?: string;
   status?: VisitCareStatus;
+  monitoring_status?: MonitoringStatus | null;
+  investigation_phase?: InvestigationPhase | null;
   status_changed_at?: string;
   assigned_doctor_id?: string | null;
   assigned_doctor_name?: string | null;
@@ -145,6 +147,7 @@ export type PatientVisit = {
   patient_added_by?: string;
   patient_name?: string;
   patient_mrn?: string;
+  visit_number?: string;
   documents?: VisitDocument[];
   status_history?: VisitStatusEvent[];
   created_at: string;
@@ -152,16 +155,52 @@ export type PatientVisit = {
   deleted_at: string | null;
 };
 
-export type VisitCareStatus = "waiting_for_triage" | "to_doctor" | "seen" | "waiting_for_investigation" | "diagnosed" | "pending_payment";
+export function isUuid(value: string) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
+}
 
-export function visitStatusLabel(status?: VisitCareStatus) {
+export type VisitCareStatus = "waiting_for_triage" | "to_doctor" | "consultation_in_progress" | "seen" | "waiting_for_investigation" | "under_nursing_care" | "encounter_complete" | "referred" | "pending_payment" | "patient_left";
+export type InvestigationPhase = "awaiting_collection" | "collected" | "at_lab" | "results_ready";
+
+export function investigationPhaseLabel(phase?: InvestigationPhase | null) {
+  if (phase === "awaiting_collection") return "Waiting for Sample Collection";
+  if (phase === "collected") return "Sample Collected";
+  if (phase === "at_lab") return "Sent to Lab";
+  if (phase === "results_ready") return "Results Ready";
+  return null;
+}
+
+export function visitStatusLabel(status?: VisitCareStatus | string | null) {
   if (status === "waiting_for_triage") return "Waiting for triage";
-  if (status === "to_doctor") return "To see the doctor";
+  if (status === "to_doctor") return "Waiting for doctor";
+  if (status === "consultation_in_progress") return "Consultation In Progress";
   if (status === "seen") return "Seen by the doctor";
-  if (status === "waiting_for_investigation") return "Waiting for investigation";
+  if (status === "waiting_for_investigation") return "Waiting for Investigation";
+  if (status === "under_nursing_care") return "Under Nursing Care";
+  if (status === "encounter_complete") return "Encounter Complete";
+  if (status === "referred") return "Referred";
   if (status === "diagnosed") return "Diagnosed";
   if (status === "pending_payment") return "Pending payment";
+  if (status === "patient_left") return "Patient Left";
   return "—";
+}
+
+export function visitStatusText(visit: {
+  status?: VisitCareStatus | string | null;
+  investigation_phase?: InvestigationPhase | null;
+}) {
+  if (visit.status === "waiting_for_investigation") {
+    return investigationPhaseLabel(visit.investigation_phase) ?? visitStatusLabel(visit.status);
+  }
+  return visitStatusLabel(visit.status);
+}
+
+export function visitStatusChips(visit: { status?: VisitCareStatus; monitoring_status?: MonitoringStatus | null }): VisitCareStatus[] {
+  if (!visit.status) return [];
+  if (visit.status === "waiting_for_investigation" && visit.monitoring_status === "in_progress") {
+    return ["waiting_for_investigation", "under_nursing_care"];
+  }
+  return [visit.status];
 }
 export type VisitType = "new" | "follow-up";
 
@@ -224,8 +263,10 @@ export type VisitStatusHistory = {
 
 export type TriageQueueItem = {
   id: string;
+  visit_number?: string;
   patient_id: string;
   status: VisitCareStatus;
+  investigation_phase?: InvestigationPhase | null;
   status_changed_at: string;
   assigned_doctor_id: string | null;
   assigned_doctor_name: string | null;
@@ -248,8 +289,10 @@ export type TriageQueueItem = {
 
 export type DoctorCase = {
   id: string;
+  visit_number: string;
   patient_id: string;
   status: VisitCareStatus;
+  investigation_phase?: InvestigationPhase | null;
   status_changed_at: string;
   assigned_doctor_id: string | null;
   assigned_doctor_name: string | null;
@@ -399,6 +442,7 @@ export type InvestigationVisitOverallStatus = "sent" | "partially_completed" | "
 
 export type InvestigationVisitItem = {
   visit_id: string;
+  visit_number?: string;
   patient_id: string;
   clinic_id: string;
   hotel_room_no: string | null;
@@ -524,12 +568,20 @@ export type MonitoringOrderedService = {
 
 export type MonitoringItem = {
   visit_id: string;
+  visit_number?: string;
   patient_id: string;
   clinic_id: string;
   hotel_room_no: string | null;
   status: VisitCareStatus;
+  investigation_phase?: InvestigationPhase | null;
   monitoring_status: MonitoringStatus;
+  monitoring_started_at: string | null;
+  monitoring_completed_at?: string | null;
   nursing_plan_status: NursingPlanStatus;
+  assigned_doctor_id?: string | null;
+  assigned_doctor_name?: string | null;
+  assigned_nurse_id?: string | null;
+  assigned_nurse_name?: string | null;
   clinic_name: string;
   hotel_name: string;
   patient_name: string;
@@ -540,7 +592,17 @@ export type MonitoringItem = {
   case_priority: CasePriority | null;
   ordered_services: MonitoringOrderedService[];
   observations?: MonitoringObservation[];
+  plans?: ManagementPlanRecord[];
 };
+
+export type MonitoringHistoryPage = {
+  items: MonitoringItem[];
+  total: number;
+  page: number;
+  page_size: number;
+};
+
+export type DoctorAssessmentStatus = "stable" | "needs_review" | "deteriorating";
 
 export type MonitoringObservation = {
   id: string;
@@ -551,10 +613,13 @@ export type MonitoringObservation = {
   blood_pressure: string | null;
   notes: string;
   case_priority?: CasePriority | null;
+  doctor_assessment?: DoctorAssessmentStatus | null;
+  clinical_assessment?: string | null;
   recorded_by: string | null;
   recorded_by_name: string | null;
   recorded_at: string | null;
   sent_to_doctor_at: string | null;
+  doctor_viewed_at: string | null;
 };
 
 export function nursingPlanStatusLabel(status?: NursingPlanStatus | null) {
@@ -658,6 +723,7 @@ export type ManagementPlanRecord = {
 };
 
 export type NursingPlanDetail = {
+  can_end_encounter: boolean;
   visit: {
     id: string;
     patient_id: string;
@@ -671,8 +737,10 @@ export type NursingPlanDetail = {
     clinic_id: string;
     clinic_name: string;
     visit_type: VisitType;
+    status?: VisitCareStatus;
     nursing_plan_status: NursingPlanStatus;
     monitoring_status: MonitoringStatus;
+    investigation_phase?: InvestigationPhase | null;
     case_priority: CasePriority | null;
   };
   plan: {
@@ -700,6 +768,28 @@ export type EncounterRecord = {
   files: EncounterFile[];
   saved: boolean;
   finished: boolean;
+};
+
+export type VisitCareEncounter = {
+  saved: boolean;
+  finished: boolean;
+  encounter: ClinicalEncounter;
+  files: EncounterFile[];
+};
+
+export type VisitCareMonitoring = {
+  monitoring_status: MonitoringStatus;
+  monitoring_started_at: string | null;
+  monitoring_completed_at: string | null;
+  observations: MonitoringObservation[];
+  plans: ManagementPlanRecord[];
+};
+
+export type VisitCareProfile = {
+  triage: VisitTriage | null;
+  encounter: VisitCareEncounter | null;
+  monitoring: VisitCareMonitoring | null;
+  investigations: EncounterInvestigation[];
 };
 
 export type DoctorCaseDetail = DoctorCase & {
@@ -767,8 +857,12 @@ export type DoctorCaseSummary = {
   emergency: number;
   urgent: number;
   normal: number;
-  diagnosed: number;
   waiting_for_investigation: number;
+  awaiting_collection: number;
+  collected: number;
+  at_lab: number;
+  results_ready: number;
+  closed: number;
   average_wait_minutes: number;
 };
 
@@ -806,6 +900,7 @@ export type TriageDetail = {
     patient_birthdate?: string;
     patient_nationality?: string;
     patient_age_at_visit?: number | null;
+    passport_number?: string | null;
   };
   triage: VisitTriage | null;
   history: VisitStatusHistory[];
@@ -860,10 +955,31 @@ export type VisitPageResult = {
   page_size: number;
 };
 
+export type RegistrarLeftVisit = {
+  id: string;
+  visit_number: string;
+  patient_id: string;
+  patient_name: string;
+  patient_mrn: string;
+  status: VisitCareStatus;
+  visit_type: VisitType;
+  hotel_room_no: string | null;
+  clinic_name: string;
+  hotel_name: string;
+  recorded_at: string;
+};
+
+export type RegistrarLeftPage = {
+  items: RegistrarLeftVisit[];
+  total: number;
+  page: number;
+  page_size: number;
+};
+
 export type AppNotification = {
   visit_id: string;
   patient_id: string;
-  kind: "waiting_for_triage" | "to_doctor";
+  kind: "waiting_for_triage" | "to_doctor" | "nurse_record";
   title: string;
   body: string;
   clinic_name: string;

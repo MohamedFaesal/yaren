@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Navigate, NavLink, Route, Routes, useLocation, useNavigate } from "react-router";
-import { api, loadSession, saveSession, type DoctorCasePage, type Session, type TriageQueueResult, type User } from "./api";
-import { canAct, canManageSettings, canSeeDoctorCases } from "./access";
+import { api, loadSession, saveSession, type DoctorCasePage, type RegistrarLeftPage, type Session, type TriageQueueResult, type User } from "./api";
+import { canAct, canManageSettings, canSeeDoctorCases, canSeeMonitoringHistory, canSeeRegistrarDashboard } from "./access";
 import { RoleIcon, typeLabel } from "./pages/ui";
 import { ClinicFormPage } from "./pages/ClinicFormPage";
 import { ClinicsPage } from "./pages/ClinicsPage";
@@ -19,6 +19,8 @@ import { PatientsPage } from "./pages/PatientsPage";
 import { PatientFormPage } from "./pages/PatientFormPage";
 import { PatientViewPage } from "./pages/PatientViewPage";
 import { RegisterPage } from "./pages/RegisterPage";
+import { RegistrarDashboardPage } from "./pages/RegistrarDashboardPage";
+import { MonitoringHistoryPage } from "./pages/MonitoringHistoryPage";
 import { VisitsPage } from "./pages/VisitsPage";
 import { TriagePage } from "./pages/TriagePage";
 import { InvestigationsPage } from "./pages/InvestigationsPage";
@@ -124,12 +126,16 @@ export function App() {
           <Route path="/patients/to-doctor/:id/encounter" element={<EncounterPage token={session.token} />} />
           <Route path="/patients/visits" element={<VisitsPage token={session.token} actor={session.user} />} />
           <Route path="/patients/register" element={<RegisterPage token={session.token} actor={session.user} />} />
+          <Route path="/patients/registrar" element={<RegistrarDashboardPage token={session.token} actor={session.user} />} />
+          <Route path="/patients/monitoring-history" element={<MonitoringHistoryPage token={session.token} actor={session.user} />} />
           <Route path="/patients/new" element={<PatientFormPage token={session.token} actor={session.user} />} />
           <Route path="/patients/:id/edit" element={<PatientFormPage token={session.token} actor={session.user} />} />
           <Route path="/patients/:patientId/visits/new" element={<VisitFormPage token={session.token} actor={session.user} />} />
           <Route path="/patients/:patientId/visits/:id/edit" element={<VisitFormPage token={session.token} actor={session.user} />} />
           <Route path="/patients/:patientId/visits/:id" element={<VisitViewPage token={session.token} actor={session.user} />} />
           <Route path="/patients/:id" element={<PatientViewPage token={session.token} actor={session.user} />} />
+          <Route path="/visits/:visitNumber/edit" element={<VisitFormPage token={session.token} actor={session.user} />} />
+          <Route path="/visits/:visitNumber" element={<VisitViewPage token={session.token} actor={session.user} />} />
           <Route path="/activity" element={<ActivityPage token={session.token} />} />
           <Route path="/settings" element={<SettingsPage token={session.token} />} />
           <Route path="/services" element={<ServicesPage token={session.token} actor={session.user} />} />
@@ -196,7 +202,7 @@ function AppShell({
         aria-label="Main navigation"
       >
         <div className="mb-5 flex items-center justify-between gap-3 border-b border-white/10 px-2 pb-5">
-          <img src="/yaren-logo.png" alt="Yaren Healthcare" className="h-12 w-auto max-w-full rounded-xl bg-surface px-2.5 py-1.5" />
+          <img src="/yaren-logo-white.png" alt="Yaren Healthcare" className="h-16 w-auto max-w-full" />
           <button
             type="button"
             className="grid h-9 w-9 place-items-center rounded-lg text-white/70 hover:bg-white/10 hover:text-white lg:hidden"
@@ -212,11 +218,13 @@ function AppShell({
           </NavSection>
           <NavSection title="Care">
             {canAct(user, "visit", "create") ? <NavLink to="/patients/register" className={navClass}><RegisterIcon />Register</NavLink> : null}
+            {canSeeRegistrarDashboard(user) ? <RegistrarNavLink token={token} pathname={pathname} /> : null}
             {canAct(user, "triage", "view") ? <TriageNavLink token={token} pathname={pathname} /> : null}
             {canAct(user, "triage", "view") || canAct(user, "visit", "view") ? (
               <NavLink to="/patients/investigations" className={navClass}><InvestigationsIcon />Investigations</NavLink>
             ) : null}
             {canSeeDoctorCases(user) ? <DoctorCasesNavLink token={token} pathname={pathname} /> : null}
+            {canSeeMonitoringHistory(user) ? <NavLink to="/patients/monitoring-history" className={navClass}><MonitorIcon />Monitoring History</NavLink> : null}
             {canAct(user, "visit", "view") ? <NavLink to="/patients/visits" className={navClass}><VisitsIcon />Visits</NavLink> : null}
             {canAct(user, "patient", "view") ? <NavLink to="/patients" end className={navClass}><PatientsIcon />Patients</NavLink> : null}
             <NavLink to="/services" className={navClass}><PriceIcon />Clinic Services</NavLink>
@@ -479,6 +487,57 @@ function TriageNavLink({ token, pathname }: { token: string; pathname: string })
   );
 }
 
+function RegistrarNavLink({ token, pathname }: { token: string; pathname: string }) {
+  const { clinicId } = useActiveClinic();
+  const [left, setLeft] = useState(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    function load() {
+      const params = new URLSearchParams({ page: "1", page_size: "1" });
+      if (clinicId) params.set("clinic_id", clinicId);
+      api<RegistrarLeftPage>(`/api/registrar/left?${params}`, {}, token)
+        .then((data) => {
+          if (!cancelled) setLeft(data.total);
+        })
+        .catch(() => {
+          if (!cancelled) setLeft(0);
+        });
+    }
+    load();
+    const timer = window.setInterval(load, 30000);
+    function onFocus() {
+      load();
+    }
+    window.addEventListener("focus", onFocus);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+      window.removeEventListener("focus", onFocus);
+    };
+  }, [token, clinicId, pathname]);
+
+  return (
+    <NavLink
+      to="/patients/registrar"
+      className={({ isActive }) => `${navClass({ isActive })} justify-between gap-2`}
+    >
+      <span className="flex min-w-0 items-center gap-3">
+        <RegistrarIcon />
+        <span className="leading-snug">Registrar Dashboard</span>
+      </span>
+      {left > 0 ? (
+        <span
+          className="shrink-0 rounded-full bg-gold px-2 py-0.5 text-[11px] font-bold tabular-nums text-shell"
+          aria-label={`${left} registrar visits`}
+        >
+          {left > 99 ? "99+" : left}
+        </span>
+      ) : null}
+    </NavLink>
+  );
+}
+
 function DoctorCasesNavLink({ token, pathname }: { token: string; pathname: string }) {
   const { clinicId } = useActiveClinic();
   const [count, setCount] = useState(0);
@@ -579,6 +638,7 @@ function heading(pathname: string) {
     if (id === "investigations") return "Investigations";
     if (id === "to-doctor") return "Doctor Dashboard";
     if (id === "register") return "Register";
+    if (id === "registrar") return "Registrar Dashboard";
     if (id === "new") return "New patient";
     if (action === "edit") return "Edit patient";
     if (action === "visits") {
@@ -645,6 +705,10 @@ function PriceIcon() {
   return <Icon><path d="M7 7h.01" /><path d="M4 12.5 12.5 4H18v5.5L9.5 18 4 12.5Z" /><path d="M14 8h.01" /></Icon>;
 }
 
+function MonitorIcon() {
+  return <Icon><rect x="3" y="5" width="18" height="12" rx="2" /><path d="M8 21h8" /><path d="M12 17v4" /><path d="M7 11h2l1.5-3 2 6 1.5-3H17" /></Icon>;
+}
+
 function VisitsIcon() {
   return <Icon><rect x="4" y="5" width="16" height="15" rx="2" /><path d="M8 3v4" /><path d="M16 3v4" /><path d="M4 10h16" /><path d="M9 14h6" /></Icon>;
 }
@@ -663,6 +727,10 @@ function InvestigationsIcon() {
 
 function RegisterIcon() {
   return <Icon><path d="M8 4h8a2 2 0 0 1 2 2v14l-3-2-3 2-3-2-3 2V6a2 2 0 0 1 2-2z" /><path d="M9 10h6" /><path d="M9 14h4" /></Icon>;
+}
+
+function RegistrarIcon() {
+  return <Icon><path d="M8 19v-1a4 4 0 0 1 4-4h0a4 4 0 0 1 4 4v1" /><circle cx="12" cy="8" r="3" /><path d="M16 5l3-2" /><path d="M16 5l3 2" /></Icon>;
 }
 
 function Icon({ children }: { children: ReactNode }) {

@@ -222,31 +222,36 @@ async function seedDummyVisits(pool: pg.Pool, addedBy: string) {
 
   for (const visit of visits) {
     const assignedDoctorId = visit.assignDoctor ? doctorId : null;
-    await pool.query(
-      `INSERT INTO patient_visits (
-         id, patient_id, passport_number, preferred_contact_method, emergency_contact_name, emergency_contact_phone,
-         emergency_contact_relationship, hotel_checkin_date, hotel_checkout_date, hotel_room_no, clinic_id,
-         visit_type, currency, professional_service_id, status, status_changed_at, assigned_doctor_id
-       ) VALUES (
-         $1, $2, $3, 'phone', 'Hotel Front Desk', '01000000999', 'cousin',
-         $4::date, $5::date, $6, $7, $8, $9, $10, $11, now(), $12
-       )
-       ON CONFLICT (id) DO NOTHING`,
-      [
-        visit.id,
-        visit.patientId,
-        visit.passport,
-        iso(-1),
-        iso(5),
-        visit.room,
-        visit.clinicId,
-        visit.visitType,
-        visit.currency,
-        professionalServiceId,
-        visit.status,
-        assignedDoctorId,
-      ],
-    );
+    const existing = await pool.query("SELECT id FROM patient_visits WHERE id = $1", [visit.id]);
+    if ((existing.rowCount ?? 0) === 0) {
+      const visitNumber = await nextSeedVisitNumber(pool);
+      await pool.query(
+        `INSERT INTO patient_visits (
+           id, patient_id, visit_number, passport_number, preferred_contact_method, emergency_contact_name, emergency_contact_phone,
+           emergency_contact_relationship, hotel_checkin_date, hotel_checkout_date, hotel_room_no, clinic_id,
+           visit_type, currency, professional_service_id, status, status_changed_at, assigned_doctor_id
+         ) VALUES (
+           $1, $2, $3, $4, 'phone', 'Hotel Front Desk', '01000000999', 'cousin',
+           $5::date, $6::date, $7, $8, $9, $10, $11, $12, now(), $13
+         )
+         ON CONFLICT (id) DO NOTHING`,
+        [
+          visit.id,
+          visit.patientId,
+          visitNumber,
+          visit.passport,
+          iso(-1),
+          iso(5),
+          visit.room,
+          visit.clinicId,
+          visit.visitType,
+          visit.currency,
+          professionalServiceId,
+          visit.status,
+          assignedDoctorId,
+        ],
+      );
+    }
 
     await pool.query(
       `INSERT INTO patient_visit_status_history (visit_id, from_status, to_status, changed_by)
@@ -281,4 +286,16 @@ async function seedDummyVisits(pool: pg.Pool, addedBy: string) {
       );
     }
   }
+}
+
+async function nextSeedVisitNumber(pool: pg.Pool) {
+  const year = new Date().getUTCFullYear();
+  const result = await pool.query<{ last_number: number }>(
+    `INSERT INTO visit_number_years (year, last_number) VALUES ($1, 1)
+     ON CONFLICT (year) DO UPDATE SET last_number = visit_number_years.last_number + 1
+     RETURNING last_number`,
+    [year],
+  );
+  const number = result.rows[0]?.last_number ?? 1;
+  return `YV-${year}-${String(number).padStart(6, "0")}`;
 }

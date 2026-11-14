@@ -140,7 +140,41 @@ export function presentInvestigationRow(row: Record<string, unknown>): Presented
   };
 }
 
-export async function maybeCompleteVisitInvestigations(db: Db, visitId: string, actorId: string) {
+export const investigationPhases = ["awaiting_collection", "collected", "at_lab", "results_ready"] as const;
+export type InvestigationPhase = (typeof investigationPhases)[number];
+
+/** Computed phase for visits in waiting_for_investigation; NULL otherwise. */
+export function investigationPhaseSql(alias = "v") {
+  return `(CASE
+    WHEN ${alias}.status <> 'waiting_for_investigation' THEN NULL
+    WHEN EXISTS (
+      SELECT 1 FROM patient_visit_investigations i
+      WHERE i.visit_id = ${alias}.id
+        AND i.requires_collection
+        AND i.status = 'ordered'
+    ) THEN 'awaiting_collection'
+    WHEN EXISTS (
+      SELECT 1 FROM patient_visit_investigations i
+      WHERE i.visit_id = ${alias}.id
+        AND (
+          i.status = 'collected'
+          OR (NOT i.requires_collection AND i.status = 'ordered')
+        )
+    ) THEN 'collected'
+    WHEN EXISTS (
+      SELECT 1 FROM patient_visit_investigations i
+      WHERE i.visit_id = ${alias}.id
+        AND i.status IN ('sent', 'result_uploaded')
+    ) THEN 'at_lab'
+    WHEN EXISTS (
+      SELECT 1 FROM patient_visit_investigations i
+      WHERE i.visit_id = ${alias}.id
+    ) THEN 'results_ready'
+    ELSE NULL
+  END)`;
+}
+
+export async function maybeCompleteVisitInvestigations(db: Db, visitId: string, _actorId: string) {
   const pending = await db.query<{ remaining: number }>(
     `SELECT count(*)::int AS remaining
      FROM patient_visit_investigations
@@ -150,18 +184,12 @@ export async function maybeCompleteVisitInvestigations(db: Db, visitId: string, 
   if ((pending.rows[0]?.remaining ?? 0) > 0) return false;
   const updated = await db.query<{ id: string }>(
     `UPDATE patient_visits
-     SET status = 'diagnosed', status_changed_at = now(), updated_at = now()
+     SET updated_at = now()
      WHERE id = $1 AND deleted_at IS NULL AND status = 'waiting_for_investigation'
      RETURNING id`,
     [visitId],
   );
-  if (!updated.rows[0]) return false;
-  await db.query(
-    `INSERT INTO patient_visit_status_history (visit_id, from_status, to_status, changed_by, note)
-     VALUES ($1, 'waiting_for_investigation', 'diagnosed', $2, 'All investigation results completed')`,
-    [visitId, actorId],
-  );
-  return true;
+  return Boolean(updated.rows[0]);
 }
 
 function iso(value: unknown) {

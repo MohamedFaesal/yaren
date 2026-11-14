@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } 
 import { Link, useSearchParams } from "react-router";
 import {
   api,
+  type EncounterInvestigation,
   type MonitoringItem,
   type NurseDashboardSummary,
   type NursingCareItem,
@@ -30,7 +31,7 @@ import {
   SampleCollectionCard,
   TestsOrderedModal,
 } from "./NurseDashboardPanels";
-import { field, label, messageOf, primary, secondary } from "./ui";
+import { ConfirmDialog, danger, field, formatWhen, label, messageOf, primary, secondary } from "./ui";
 
 const historyOptions = [
   { value: "hypertension", label: "Hypertension" },
@@ -45,7 +46,7 @@ const historyOptions = [
 const nurseTabs = [
   { status: "waiting_for_triage", label: "Waiting for triage", count: "bg-warning-soft text-warning", tab: "border-warning text-warning" },
   { status: "waiting_for_investigation", label: "Waiting for investigation", count: "bg-panel-strong text-blue-strong", tab: "border-blue text-blue" },
-  { status: "to_doctor", label: "To doctor", count: "bg-blue text-white", tab: "border-blue text-blue" },
+  { status: "to_doctor", label: "Waiting for doctor", count: "bg-blue text-white", tab: "border-blue text-blue" },
 ] as const;
 
 type NurseTab = (typeof nurseTabs)[number]["status"];
@@ -111,6 +112,7 @@ export function TriagePage({ token, actor }: { token: string; actor: User }) {
   const [loading, setLoading] = useState(false);
   const [waitSettings, setWaitSettings] = useState<GeneralSettings>({ triage_wait_minutes: 20, doctor_wait_minutes: 20, clinics: [] });
   const [saving, setSaving] = useState(false);
+  const [confirmLeft, setConfirmLeft] = useState(false);
   const [detailLoading, setDetailLoading] = useState(false);
   const [sampleItems, setSampleItems] = useState<SampleCollectionItem[]>([]);
   const [sampleLoading, setSampleLoading] = useState(false);
@@ -288,6 +290,7 @@ export function TriagePage({ token, actor }: { token: string; actor: User }) {
       const doctor = doctors.find((item) => item.id === form.assigned_doctor_id)?.name ?? "the new doctor";
       toast.success("Doctor changed", `${selected.patient_name} is now assigned to ${doctor}.`);
       await refreshQueue();
+      refreshNursePanels();
     } catch (caught) {
       setError(messageOf(caught));
     } finally {
@@ -298,7 +301,7 @@ export function TriagePage({ token, actor }: { token: string; actor: User }) {
   async function sendToDoctor(event: FormEvent) {
     event.preventDefault();
     if (!selected || readonly) return;
-    const missing = validateRequired(form);
+    const missing = validateRequired(form, true);
     if (missing) {
       setError(missing);
       return;
@@ -313,10 +316,43 @@ export function TriagePage({ token, actor }: { token: string; actor: User }) {
       );
       setDetail(data);
       setForm(formFromTriage(data));
-      toast.success("Sent to doctor", `${selected.patient_name} is now waiting to see the doctor.`);
+      toast.success("Sent to doctor", `${selected.patient_name} is now waiting for the doctor.`);
       await refreshQueue();
+      refreshNursePanels();
     } catch (caught) {
       setError(messageOf(caught));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function markPatientLeft() {
+    if (!selected || readonly) return;
+    const missing = validateRequired(form, false);
+    if (missing) {
+      setError(missing);
+      setConfirmLeft(false);
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    try {
+      await api<TriageDetail>(
+        `/api/patients/${selected.patient_id}/visits/${selected.id}/triage/left`,
+        {
+          method: "POST",
+          body: JSON.stringify({ ...payloadFromForm(form), assigned_doctor_id: null }),
+        },
+        token,
+      );
+      toast.success("Patient left", `${selected.patient_name} was marked as Patient Left.`);
+      setConfirmLeft(false);
+      closeAssessment();
+      await refreshQueue();
+      refreshNursePanels();
+    } catch (caught) {
+      setError(messageOf(caught));
+      setConfirmLeft(false);
     } finally {
       setSaving(false);
     }
@@ -339,11 +375,11 @@ export function TriagePage({ token, actor }: { token: string; actor: User }) {
   useEffect(() => {
     if (!selectedKey) return;
     function onKey(event: KeyboardEvent) {
-      if (event.key === "Escape") closeAssessment();
+      if (event.key === "Escape" && !confirmLeft) closeAssessment();
     }
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [selectedKey]);
+  }, [selectedKey, confirmLeft]);
 
   useEffect(() => {
     let cancelled = false;
@@ -438,6 +474,31 @@ export function TriagePage({ token, actor }: { token: string; actor: User }) {
     setCareTick((value) => value + 1);
   }
 
+  async function refreshDashboard() {
+    try {
+      await refreshQueue();
+    } catch {
+      // Keep background poll quiet; panel effects still refresh independently.
+    }
+    refreshNursePanels();
+  }
+
+  useEffect(() => {
+    let cancelled = false;
+    const run = () => {
+      if (cancelled) return;
+      void refreshDashboard();
+    };
+    run();
+    const timer = window.setInterval(run, 30_000);
+    window.addEventListener("focus", run);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+      window.removeEventListener("focus", run);
+    };
+  }, [token, clinicId, page, statusFilter, search]);
+
   async function collectVisit(item: SampleCollectionItem) {
     setSampleBusy(`${item.visit_id}:collect`);
     try {
@@ -451,6 +512,20 @@ export function TriagePage({ token, actor }: { token: string; actor: User }) {
     }
   }
 
+  async function collectInvestigation(item: SampleCollectionItem, investigation: EncounterInvestigation) {
+    setSampleBusy(`${item.visit_id}:collect:${investigation.id}`);
+    try {
+      await api(`/api/investigations/${investigation.id}/collect`, { method: "POST" }, token);
+      toast.success("Sample collected", `${investigation.name} marked collected for ${item.patient_name}.`);
+      refreshNursePanels();
+    } catch (caught) {
+      toast.error("Could not collect", messageOf(caught));
+      throw caught;
+    } finally {
+      setSampleBusy(null);
+    }
+  }
+
   async function sendVisit(item: SampleCollectionItem) {
     setSampleBusy(`${item.visit_id}:send`);
     try {
@@ -459,6 +534,20 @@ export function TriagePage({ token, actor }: { token: string; actor: User }) {
       refreshNursePanels();
     } catch (caught) {
       toast.error("Could not send", messageOf(caught));
+    } finally {
+      setSampleBusy(null);
+    }
+  }
+
+  async function sendInvestigation(item: SampleCollectionItem, investigation: EncounterInvestigation) {
+    setSampleBusy(`${item.visit_id}:send:${investigation.id}`);
+    try {
+      await api(`/api/investigations/${investigation.id}/send`, { method: "POST" }, token);
+      toast.success("Sent to lab", `${investigation.name} sent for ${item.patient_name}.`);
+      refreshNursePanels();
+    } catch (caught) {
+      toast.error("Could not send", messageOf(caught));
+      throw caught;
     } finally {
       setSampleBusy(null);
     }
@@ -653,6 +742,7 @@ export function TriagePage({ token, actor }: { token: string; actor: User }) {
         <MonitoringPanel
           items={monitorItems}
           loading={monitorLoading}
+          now={now}
           onRecord={setMonitorModal}
         />
       </div>
@@ -664,7 +754,9 @@ export function TriagePage({ token, actor }: { token: string; actor: User }) {
           busyId={sampleBusy}
           onClose={() => setTestsModal(null)}
           onCollect={(item) => void collectVisit(item)}
+          onCollectOne={collectInvestigation}
           onSend={(item) => void sendVisit(item)}
+          onSendOne={sendInvestigation}
         />
       ) : null}
 
@@ -720,7 +812,7 @@ export function TriagePage({ token, actor }: { token: string; actor: User }) {
                       {selected.patient_gender ? <><span className="text-muted"> · </span>{titleCase(selected.patient_gender)}</> : null}
                       {selected.patient_nationality ? <><span className="text-muted"> · </span>{selected.patient_nationality}</> : null}
                     </p>
-                    <Link className={`${secondary} mt-2 h-9 px-3 py-0 text-sm`} to={`/patients/${selected.patient_id}`}>
+                    <Link className={`${secondary} mt-2 h-9 px-3 py-0 text-sm`} to={`/patients/${selected.patient_mrn}`}>
                       View profile
                     </Link>
                   </div>
@@ -762,7 +854,7 @@ export function TriagePage({ token, actor }: { token: string; actor: User }) {
                       <VitalField label="Temperature" unit="°C" icon={<TempIcon />} value={form.temperature_c} disabled={readonly} required alert={form.temperature_c !== "" && Number(form.temperature_c) >= 38} onChange={(value) => setForm((current) => ({ ...current, temperature_c: value }))} />
                       <VitalField label="Pulse" unit="/min" icon={<PulseIcon />} value={form.pulse} disabled={readonly} required alert={form.pulse !== "" && Number(form.pulse) >= 100} onChange={(value) => setForm((current) => ({ ...current, pulse: value }))} />
                       <VitalField label="Respiratory rate" unit="/min" icon={<LungsIcon />} value={form.respiratory_rate} disabled={readonly} required alert={form.respiratory_rate !== "" && Number(form.respiratory_rate) >= 22} onChange={(value) => setForm((current) => ({ ...current, respiratory_rate: value }))} />
-                      <VitalField label="Blood pressure" unit="mmHg" icon={<PulseIcon />} value={form.blood_pressure} disabled={readonly} required inputMode="text" placeholder="120/80" onChange={(value) => setForm((current) => ({ ...current, blood_pressure: value }))} />
+                      <VitalField label="Blood pressure" unit="mmHg" icon={<PulseIcon />} value={form.blood_pressure} disabled={readonly} required inputMode="numeric" placeholder="120/80" format={formatBloodPressure} onChange={(value) => setForm((current) => ({ ...current, blood_pressure: value }))} />
                       <VitalField label="SpO2" unit="%" icon={<OxygenIcon />} value={form.spo2} disabled={readonly} required alert={form.spo2 !== "" && Number(form.spo2) < 94} onChange={(value) => setForm((current) => ({ ...current, spo2: value }))} />
                     </div>
                   </Group>
@@ -883,14 +975,14 @@ export function TriagePage({ token, actor }: { token: string; actor: User }) {
                     </div>
                   </Group>
 
-                  <Group title="Decision" hint="Set the urgency, then choose the doctor.">
+                  <Group title="Decision" hint="Choose a doctor to send the patient on. Patient left does not need a doctor.">
                     <div>
                       <FieldLabel required>Triage category</FieldLabel>
                     <div className="grid gap-2 sm:grid-cols-3">
                       {([
                         { value: "emergency", label: "Emergency", idle: "border-danger-line text-danger", active: "border-danger bg-danger text-white", icon: <AlertIcon /> },
                         { value: "urgent", label: "Urgent", idle: "border-warning-line text-warning", active: "border-warning bg-warning text-white", icon: <UrgentIcon /> },
-                        { value: "normal", label: "Normal", idle: "border-line text-success", active: "border-success bg-success text-white", icon: <CheckIcon /> },
+                        { value: "normal", label: "Stable", idle: "border-line text-success", active: "border-success bg-success text-white", icon: <CheckIcon /> },
                       ] as const).map((option) => {
                         const active = form.triage_category === option.value;
                         return (
@@ -909,18 +1001,20 @@ export function TriagePage({ token, actor }: { token: string; actor: User }) {
                     </div>
                     </div>
                     <div>
-                      <FieldLabel required>Doctor</FieldLabel>
+                      <FieldLabel>Doctor</FieldLabel>
                       <select
                         className={field}
                         value={form.assigned_doctor_id}
                         disabled={!canEdit || (selected != null && selected.status !== "waiting_for_triage" && selected.status !== "to_doctor")}
-                        required
                         onChange={(event) => setForm((current) => ({ ...current, assigned_doctor_id: event.target.value }))}
                       >
                         {doctorOptions.map((option) => (
                           <option key={option.value || "empty"} value={option.value}>{option.label}</option>
                         ))}
                       </select>
+                      {selected?.status === "waiting_for_triage" ? (
+                        <p className="mt-2 text-xs text-muted">Required before sending to the doctor. Optional if the patient left.</p>
+                      ) : null}
                     {doctors.length === 0 ? (
                       <p className="mt-2 text-xs text-muted">No doctors found for this clinic. Assign clinic access to a Doctor user.</p>
                     ) : selected?.status === "to_doctor" ? (
@@ -959,8 +1053,17 @@ export function TriagePage({ token, actor }: { token: string; actor: User }) {
                     readonly={readonly}
                     saving={saving}
                     missing={missingFields(form)}
+                    needsDoctor={!form.assigned_doctor_id}
                     doctorChanged={selected?.status === "to_doctor" && form.assigned_doctor_id !== (selected.assigned_doctor_id ?? "")}
                     onChangeDoctor={() => void changeDoctor()}
+                    onPrint={() => printFormalTriage({
+                      visit: selected,
+                      form,
+                      doctorName: doctors.find((item) => item.id === form.assigned_doctor_id)?.name ?? selected.assigned_doctor_name,
+                      nurseName: detail?.triage?.completed_by_name || actor.name,
+                      completedAt: detail?.triage?.completed_at ?? null,
+                    })}
+                    onPatientLeft={() => setConfirmLeft(true)}
                   />
                 </div>
               </form>
@@ -968,6 +1071,20 @@ export function TriagePage({ token, actor }: { token: string; actor: User }) {
           </section>
         </div>
       ) : null}
+
+      <ConfirmDialog
+        open={confirmLeft}
+        className="z-[80]"
+        eyebrow="Confirm"
+        title="Mark this visit as Patient Left?"
+        body="The visit will leave the triage queue. Any notes already entered are kept."
+        confirmLabel="Patient left"
+        cancelLabel="Cancel"
+        pendingLabel="Saving…"
+        pending={saving}
+        onCancel={() => { if (!saving) setConfirmLeft(false); }}
+        onConfirm={() => void markPatientLeft()}
+      />
     </section>
   );
 }
@@ -979,10 +1096,9 @@ function itemKey(item: { patient_id: string; id: string }) {
 function missingFields(form: FormState) {
   const missing: string[] = [];
   if (!form.chief_complaint.trim()) missing.push("Chief complaint");
-  if (!form.temperature_c.trim() || !form.pulse.trim() || !form.respiratory_rate.trim() || !form.blood_pressure.trim() || !form.spo2.trim()) missing.push("Vital signs");
+  if (!form.temperature_c.trim() || !form.pulse.trim() || !form.respiratory_rate.trim() || !form.spo2.trim() || !/^\d{2,3}\/\d{2,3}$/.test(form.blood_pressure.trim())) missing.push("Vital signs");
   if (!form.initial_assessment.trim()) missing.push("Nurse assessment");
   if (!form.triage_category) missing.push("Triage category");
-  if (!form.assigned_doctor_id) missing.push("Doctor");
   return missing;
 }
 
@@ -990,16 +1106,23 @@ function TriageActions({
   readonly,
   saving,
   missing,
+  needsDoctor,
   doctorChanged,
   onChangeDoctor,
+  onPrint,
+  onPatientLeft,
 }: {
   readonly: boolean;
   saving: boolean;
   missing: string[];
+  needsDoctor: boolean;
   doctorChanged: boolean;
   onChangeDoctor: () => void;
+  onPrint: () => void;
+  onPatientLeft: () => void;
 }) {
-  const ready = missing.length === 0;
+  const readyToLeave = missing.length === 0;
+  const readyToSend = readyToLeave && !needsDoctor;
   return (
     <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <p className="min-w-0 text-sm text-muted-strong">
@@ -1007,13 +1130,15 @@ function TriageActions({
             ? doctorChanged
               ? "This visit is still waiting to be seen. Save to assign the new doctor."
               : "This triage has been sent to the doctor."
-            : ready
-              ? "Ready to save and send this patient to the doctor."
-              : <span>Still needed: <span className="font-semibold text-ink">{missing.join(", ")}</span></span>}
+            : readyToSend
+              ? "Ready to send this patient to the selected doctor, or record that the patient left."
+              : readyToLeave
+                ? "The triage is complete. Choose a doctor to send the patient on, or record that the patient left."
+                : <span>Still needed: <span className="font-semibold text-ink">{missing.join(", ")}</span></span>}
         </p>
         <div className="flex shrink-0 flex-col gap-2 sm:flex-row">
-          <button type="button" className={`${secondary} h-11 w-full gap-1.5 sm:h-auto sm:w-auto`} onClick={() => window.print()}>
-            <PrintIcon />Print note
+          <button type="button" className={`${secondary} h-11 w-full gap-1.5 sm:h-auto sm:w-auto`} onClick={onPrint}>
+            <PrintIcon />Print triage
           </button>
           {readonly && doctorChanged ? (
             <button type="button" className={`${primary} h-11 w-full whitespace-nowrap sm:h-auto sm:w-auto`} disabled={saving} onClick={onChangeDoctor}>
@@ -1021,8 +1146,13 @@ function TriageActions({
             </button>
           ) : null}
           {readonly ? null : (
-            <button type="submit" className={`${primary} h-11 w-full whitespace-nowrap sm:h-auto sm:w-auto`} disabled={saving || !ready}>
-              <SendIcon />{saving ? "Sending…" : "Save triage & send to doctor"}
+            <button type="button" className={`${danger} h-11 w-full whitespace-nowrap sm:h-auto sm:w-auto`} disabled={saving || !readyToLeave} onClick={onPatientLeft}>
+              Patient left
+            </button>
+          )}
+          {readonly ? null : (
+            <button type="submit" className={`${primary} h-11 w-full whitespace-nowrap sm:h-auto sm:w-auto`} disabled={saving || !readyToSend}>
+              <SendIcon />{saving ? "Sending…" : "Send to doctor"}
             </button>
           )}
         </div>
@@ -1030,11 +1160,140 @@ function TriageActions({
   );
 }
 
-function validateRequired(form: FormState) {
+function printFormalTriage({
+  visit,
+  form,
+  doctorName,
+  nurseName,
+  completedAt,
+}: {
+  visit: TriageDetail["visit"];
+  form: FormState;
+  doctorName: string | null;
+  nurseName: string;
+  completedAt: string | null;
+}) {
+  const popup = window.open("", "_blank", "width=800,height=1000");
+  if (!popup) return;
+  const patientLine = [
+    visit.patient_age_at_visit != null ? `${visit.patient_age_at_visit} years` : null,
+    visit.patient_gender ? titleCase(visit.patient_gender) : null,
+    visit.patient_nationality,
+  ].filter(Boolean).join(" · ");
+  const history = [
+    ...historyOptions.filter((option) => form.relevant_history.includes(option.value)).map((option) => option.label),
+    ...form.relevant_history_items.map((item) => item.name.trim()).filter(Boolean),
+  ];
+  const category = form.triage_category === "emergency" ? "Emergency" : form.triage_category === "urgent" ? "Urgent" : form.triage_category === "normal" ? "Stable" : "Not set";
+  const vital = (value: string, unit: string) => escapeHtml(value.trim() ? `${value.trim()} ${unit}` : "—");
+  popup.document.open();
+  popup.document.write(`<!DOCTYPE html>
+    <html lang="en">
+      <head>
+        <meta charset="utf-8" />
+        <title>Triage note ${escapeHtml(visit.patient_name)}</title>
+        <style>
+          @page { size: A4; margin: 14mm; }
+          body { margin: 0; color: #12263a; font: 13px/1.45 Inter, ui-sans-serif, system-ui, sans-serif; }
+          header { border-bottom: 2px solid #0f7f91; padding-bottom: 12px; }
+          h1 { margin: 4px 0 0; font-size: 22px; }
+          h2 { margin: 22px 0 8px; color: #0f7f91; font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; }
+          .eyebrow { margin: 0; color: #0f7f91; font-size: 11px; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; }
+          table { width: 100%; border-collapse: collapse; }
+          th, td { border: 1px solid #d0dbe1; padding: 8px 10px; text-align: left; vertical-align: top; }
+          th { background: #f4f7f8; font-size: 11px; letter-spacing: 0.04em; text-transform: uppercase; }
+          .facts { margin-top: 16px; }
+          .facts td { width: 50%; }
+          .label { display: block; color: #6b7f8f; font-size: 11px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; }
+          .prose { border: 1px solid #d0dbe1; min-height: 3.2em; padding: 10px 12px; white-space: pre-wrap; }
+          .signs { margin-top: 28px; }
+          .signs td { width: 50%; border: 0; padding: 0 24px 0 0; }
+          .line { margin-top: 42px; border-top: 1px solid #12263a; padding-top: 6px; font-size: 12px; }
+        </style>
+      </head>
+      <body>
+        <header>
+          <p class="eyebrow">Yaren Healthcare</p>
+          <h1>Triage note</h1>
+        </header>
+        <table class="facts">
+          <tr>
+            <td><span class="label">Patient</span>${escapeHtml(visit.patient_name)}<br />${escapeHtml(visit.patient_mrn)}${patientLine ? ` / ${escapeHtml(patientLine)}` : ""}</td>
+            <td><span class="label">Clinic</span>${escapeHtml(visit.clinic_name)}<br />${escapeHtml(visit.hotel_name)}${visit.hotel_room_no ? ` · Room ${escapeHtml(visit.hotel_room_no)}` : ""}</td>
+          </tr>
+          <tr>
+            <td><span class="label">Passport number</span>${escapeHtml(visit.passport_number?.trim() || "—")}</td>
+            <td><span class="label">Visit</span>${escapeHtml(visitTypeLabel(visit.visit_type))}<br /><span class="label">Registered</span>${escapeHtml(formatWhen(visit.created_at))}</td>
+          </tr>
+          <tr>
+            <td><span class="label">Triage category</span>${escapeHtml(category)}</td>
+            <td><span class="label">Assigned doctor</span>${escapeHtml(doctorName?.trim() || "—")}</td>
+          </tr>
+          <tr>
+            <td><span class="label">Nurse</span>${escapeHtml(nurseName)}</td>
+            <td><span class="label">${completedAt ? "Triage completed" : "Printed"}</span>${escapeHtml(formatWhen(completedAt ?? new Date().toISOString()))}</td>
+          </tr>
+        </table>
+        <h2>Chief complaint</h2>
+        <div class="prose">${escapeHtml(form.chief_complaint.trim() || "—")}</div>
+        <h2>Vital signs</h2>
+        <table>
+          <thead><tr><th>Temperature</th><th>Pulse</th><th>Respiratory rate</th><th>Blood pressure</th><th>SpO2</th></tr></thead>
+          <tbody><tr>
+            <td>${vital(form.temperature_c, "°C")}</td>
+            <td>${vital(form.pulse, "/min")}</td>
+            <td>${vital(form.respiratory_rate, "/min")}</td>
+            <td>${vital(form.blood_pressure, "mmHg")}</td>
+            <td>${vital(form.spo2, "%")}</td>
+          </tr></tbody>
+        </table>
+        <h2>History</h2>
+        <table class="facts">
+          <tr>
+            <td><span class="label">Allergies</span>${escapeHtml(namedList(form.allergies))}</td>
+            <td><span class="label">Current medications</span>${escapeHtml(namedList(form.medications))}</td>
+          </tr>
+          <tr>
+            <td colspan="2"><span class="label">Relevant history</span>${escapeHtml(history.length ? history.join(", ") : "None recorded")}</td>
+          </tr>
+        </table>
+        <h2>Initial assessment</h2>
+        <div class="prose">${escapeHtml(form.initial_assessment.trim() || "—")}</div>
+        <table class="signs">
+          <tr>
+            <td><div class="line">Nurse signature · ${escapeHtml(nurseName)}</div></td>
+            <td><div class="line">Doctor signature${doctorName ? ` · ${escapeHtml(doctorName)}` : ""}</div></td>
+          </tr>
+        </table>
+        <script>window.addEventListener("load", function () { window.focus(); window.print(); });</script>
+      </body>
+    </html>`);
+  popup.document.close();
+}
+
+function namedList(items: { name: string }[]) {
+  const names = items.map((item) => item.name.trim()).filter(Boolean);
+  return names.length ? names.join(", ") : "None recorded";
+}
+
+function escapeHtml(value: string) {
+  return value.replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[character] ?? character));
+}
+
+function formatBloodPressure(next: string, previous: string) {
+  const digits = next.replace(/\D/g, "").slice(0, 6);
+  if (!digits) return "";
+  const systolicLength = digits[0] === "1" || digits[0] === "2" ? 3 : 2;
+  if (digits.length < systolicLength) return digits;
+  const removedSlash = previous.endsWith("/") && !next.includes("/") && digits.length === systolicLength;
+  if (digits.length === systolicLength) return removedSlash ? digits : `${digits}/`;
+  return `${digits.slice(0, systolicLength)}/${digits.slice(systolicLength, systolicLength + 3)}`;
+}
+
+function validateRequired(form: FormState, requireDoctor: boolean) {
   if (!form.chief_complaint.trim()) return "Enter the chief complaint";
   if (!form.temperature_c.trim()) return "Enter temperature";
   if (!form.pulse.trim()) return "Enter pulse";
-  if (!form.respiratory_rate.trim()) return "Enter respiratory rate";
   if (!form.respiratory_rate.trim()) return "Enter respiratory rate";
   if (!/^\d{2,3}\/\d{2,3}$/.test(form.blood_pressure.trim())) return "Enter blood pressure as systolic/diastolic, for example 120/80";
   if (!form.spo2.trim()) return "Enter SpO2";
@@ -1043,7 +1302,7 @@ function validateRequired(form: FormState) {
   }
   if (!form.initial_assessment.trim()) return "Enter the nurse initial assessment";
   if (!form.triage_category) return "Choose a triage category";
-  if (!form.assigned_doctor_id) return "Assign a doctor before sending";
+  if (requireDoctor && !form.assigned_doctor_id) return "Assign a doctor before sending";
   return null;
 }
 
@@ -1142,14 +1401,14 @@ function titleCase(value: string) {
 function statusLabel(status: VisitCareStatus) {
   if (status === "waiting_for_triage") return "Waiting for Triage";
   if (status === "waiting_for_investigation") return "Waiting for investigation";
-  return "To See the Doctor";
+  return "Waiting for doctor";
 }
 
 function StatusBadge({ status, compact = false }: { status: VisitCareStatus; compact?: boolean }) {
   const waiting = status === "waiting_for_triage";
   const investigation = status === "waiting_for_investigation";
   const tone = waiting ? "bg-warning-soft text-warning" : "bg-panel text-blue";
-  const compactLabel = waiting ? "Waiting for Triage" : investigation ? "Waiting for investigation" : "To doctor";
+  const compactLabel = waiting ? "Waiting for Triage" : investigation ? "Waiting for investigation" : "Waiting for doctor";
   return (
     <span className={`inline-flex w-max shrink-0 items-center gap-1 whitespace-nowrap rounded-full px-2.5 py-1 text-[11px] font-semibold leading-none ${tone}`}>
       {waiting || investigation ? <WaitingIcon /> : <DoctorIcon />}
@@ -1192,6 +1451,7 @@ function VitalField({
   alert,
   inputMode = "decimal",
   placeholder,
+  format,
   onChange,
 }: {
   label: string;
@@ -1201,8 +1461,9 @@ function VitalField({
   disabled?: boolean;
   required?: boolean;
   alert?: boolean;
-  inputMode?: "decimal" | "text";
+  inputMode?: "decimal" | "numeric" | "text";
   placeholder?: string;
+  format?: (next: string, previous: string) => string;
   onChange: (value: string) => void;
 }) {
   return (
@@ -1212,7 +1473,24 @@ function VitalField({
         {title}{required ? <span className="text-danger"> *</span> : null}
       </span>
       <span className="relative mt-1 block">
-        <input className={`${field} pr-14 ${alert ? "border-danger bg-danger-soft text-danger" : ""}`} inputMode={inputMode} placeholder={placeholder} value={value} disabled={disabled} required={required} onChange={(event) => onChange(event.target.value)} />
+        <input
+          className={`${field} pr-14 ${alert ? "border-danger bg-danger-soft text-danger" : ""}`}
+          inputMode={inputMode}
+          placeholder={placeholder}
+          value={value}
+          disabled={disabled}
+          required={required}
+          onChange={(event) => {
+            const input = event.currentTarget;
+            const raw = input.value;
+            const next = format ? format(raw, value) : raw;
+            const atEnd = (input.selectionStart ?? raw.length) >= raw.length;
+            onChange(next);
+            if (next !== raw && atEnd) {
+              requestAnimationFrame(() => input.setSelectionRange(next.length, next.length));
+            }
+          }}
+        />
         <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-xs font-semibold text-muted">{unit}</span>
       </span>
     </label>
@@ -1254,7 +1532,7 @@ function CategoryBanner({ category }: { category: TriageCategory | null }) {
   const copy = {
     emergency: { title: "Emergency", body: "Requires immediate doctor review.", icon: <AlertIcon /> },
     urgent: { title: "Urgent", body: "Requires doctor review within 5 minutes.", icon: <UrgentIcon /> },
-    normal: { title: "Normal", body: "Routine doctor review.", icon: <CheckIcon /> },
+    normal: { title: "Stable", body: "Routine doctor review.", icon: <CheckIcon /> },
   }[category];
   const tone = category === "emergency"
     ? "bg-danger-soft text-danger"

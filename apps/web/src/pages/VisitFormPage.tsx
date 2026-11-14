@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router";
-import { api, type Clinic, type MedicalService, type Patient, type PatientVisit, type User } from "../api";
+import { api, isUuid, type Clinic, type MedicalService, type Patient, type PatientVisit, type User } from "../api";
 import { canAct } from "../access";
 import { useActiveClinic } from "../ClinicWorkspace";
 import { useToast } from "../toast";
@@ -30,7 +30,8 @@ const relationshipOptions = [
 ];
 
 export function VisitFormPage({ token, actor }: { token: string; actor: User }) {
-  const { patientId, id } = useParams();
+  const { patientId, id, visitNumber } = useParams();
+  const editing = Boolean(id || visitNumber);
   const navigate = useNavigate();
   const toast = useToast();
   const fields = useFieldErrors();
@@ -49,29 +50,36 @@ export function VisitFormPage({ token, actor }: { token: string; actor: User }) 
   const [clinicId, setClinicId] = useState("");
   const [documents, setDocuments] = useState<Partial<Record<VisitDocumentType, File | null>>>({});
   const [scanType, setScanType] = useState<VisitDocumentType | null>(null);
+  const [record, setRecord] = useState<PatientVisit | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
   const { clinicId: activeClinicId } = useActiveClinic();
-  const canWrite = id
+  const canWrite = editing
     ? canAct(actor, "visit", "update", { ownerId: patient?.added_by, clinicId: clinicId || undefined })
     : canAct(actor, "visit", "create");
 
   useEffect(() => {
-    api<Patient>(`/api/patients/${patientId}`, {}, token).then((next) => {
+    if (!patientId) return;
+    const path = isUuid(patientId) ? `/api/patients/${patientId}` : `/api/patients/by-mrn/${encodeURIComponent(patientId)}`;
+    api<Patient>(path, {}, token).then((next) => {
       setPatient(next);
-      if (!id && next.identity_number) setPassport(next.identity_number);
+      if (!editing && next.identity_number) setPassport(next.identity_number);
+      if (!editing && patientId !== next.mrn) navigate(`/patients/${next.mrn}/visits/new`, { replace: true });
     }).catch((caught) => setError(messageOf(caught)));
-    api<Clinic[]>("/api/clinics?for=visit", {}, token).then(setClinics).catch(() => setClinics([]));
-  }, [patientId, token, id]);
+  }, [patientId, token, editing, navigate]);
 
   useEffect(() => {
-    if (id) return;
+    api<Clinic[]>("/api/clinics?for=visit", {}, token).then(setClinics).catch(() => setClinics([]));
+  }, [token]);
+
+  useEffect(() => {
+    if (editing) return;
     setClinicId((current) => {
       if (activeClinicId && clinics.some((item) => item.id === activeClinicId)) return activeClinicId;
       if (current && clinics.some((item) => item.id === current)) return current;
       return clinics.length === 1 ? clinics[0].id : current;
     });
-  }, [activeClinicId, clinics, id]);
+  }, [activeClinicId, clinics, editing]);
 
   useEffect(() => {
     if (!clinicId) {
@@ -93,30 +101,44 @@ export function VisitFormPage({ token, actor }: { token: string; actor: User }) 
     };
   }, [clinicId, token]);
 
+  function applyVisit(visit: PatientVisit) {
+    setRecord(visit);
+    setPassport(visit.passport_number);
+    setContact(visit.preferred_contact_method ?? "");
+    setEmergencyName(visit.emergency_contact_name ?? "");
+    setEmergencyPhone(visit.emergency_contact_phone ?? "");
+    setRelationship(visit.emergency_contact_relationship ?? "");
+    setCheckin(visit.hotel_checkin_date ?? "");
+    setCheckout(visit.hotel_checkout_date ?? "");
+    setRoom(visit.hotel_room_no ?? "");
+    setProfessionalServiceId(visit.professional_service_id ?? "");
+    setClinicId(visit.clinic_id);
+    if (!patient) {
+      api<Patient>(`/api/patients/${visit.patient_id}`, {}, token).then(setPatient).catch((caught) => setError(messageOf(caught)));
+    }
+  }
+
   useEffect(() => {
-    if (!id || !patientId) return;
-    api<PatientVisit>(`/api/patients/${patientId}/visits/${id}`, {}, token).then((visit) => {
-      setPassport(visit.passport_number);
-      setContact(visit.preferred_contact_method ?? "");
-      setEmergencyName(visit.emergency_contact_name ?? "");
-      setEmergencyPhone(visit.emergency_contact_phone ?? "");
-      setRelationship(visit.emergency_contact_relationship ?? "");
-      setCheckin(visit.hotel_checkin_date ?? "");
-      setCheckout(visit.hotel_checkout_date ?? "");
-      setRoom(visit.hotel_room_no ?? "");
-      setProfessionalServiceId(visit.professional_service_id ?? "");
-      setClinicId(visit.clinic_id);
+    const request = visitNumber
+      ? api<PatientVisit>(`/api/visits/by-number/${encodeURIComponent(visitNumber)}`, {}, token)
+      : id && patientId
+        ? api<PatientVisit>(`/api/patients/${patientId}/visits/${id}`, {}, token)
+        : null;
+    if (!request) return;
+    request.then((visit) => {
+      applyVisit(visit);
+      if (!visitNumber && visit.visit_number) navigate(`/visits/${visit.visit_number}/edit`, { replace: true });
     }).catch((caught) => setError(messageOf(caught)));
-  }, [id, patientId, token]);
+  }, [id, patientId, visitNumber, token, navigate]);
 
   return (
     <Page
-      title={id ? "Edit visit" : "New visit"}
+      title={editing ? "Edit visit" : "New visit"}
       description={patient ? `Hotel stay details for ${patient.name}.` : "Hotel stay details for this patient."}
       crumbs={[
         { label: "Patients", to: "/patients" },
-        { label: patient?.name ?? "Patient", to: `/patients/${patientId}?tab=visits` },
-        { label: id ? "Edit visit" : "New visit" },
+        { label: patient?.name ?? "Patient", to: `/patients/${patient?.mrn ?? patientId}?tab=visits` },
+        { label: editing ? "Edit visit" : "New visit" },
       ]}
     >
       {error ? <p className="mb-4 text-sm text-danger">{error}</p> : null}
@@ -126,9 +148,9 @@ export function VisitFormPage({ token, actor }: { token: string; actor: User }) 
             noValidate
             onSubmit={async (event) => {
               event.preventDefault();
-              if (!canWrite || !patientId) return;
+              if (!canWrite || !patient) return;
               if (!fields.validateForm(event.currentTarget)) return;
-              if (!id) {
+              if (!editing) {
                 const missingDocs = visitDocumentMeta.filter((item) => item.required && !documents[item.type]).map((item) => `document_${item.type}`);
                 if (missingDocs.length > 0) {
                   fields.setErrors(Object.fromEntries(missingDocs.map((name) => [name, "This file is required."])));
@@ -151,25 +173,26 @@ export function VisitFormPage({ token, actor }: { token: string; actor: User }) 
                 clinic_id: clinicId,
               };
               try {
-                if (id) {
-                  await api(`/api/patients/${patientId}/visits/${id}`, { method: "PATCH", body: JSON.stringify(body) }, token);
+                if (editing) {
+                  if (!record) return;
+                  await api(`/api/patients/${record.patient_id}/visits/${record.id}`, { method: "PATCH", body: JSON.stringify(body) }, token);
                   toast.success("Visit updated", `Stay details for ${patient?.name ?? "the patient"} were saved.`);
-                  navigate(`/patients/${patientId}/visits/${id}`);
+                  navigate(`/visits/${record.visit_number}`);
                 } else {
-                  const created = await api<{ id: string }>(`/api/patients/${patientId}/visits`, { method: "POST", body: JSON.stringify(body) }, token);
+                  const created = await api<PatientVisit>(`/api/patients/${patient.id}/visits`, { method: "POST", body: JSON.stringify(body) }, token);
                   for (const item of visitDocumentMeta) {
                     const file = documents[item.type];
                     if (!file) continue;
                     const upload = new FormData();
                     upload.append("file", file);
                     await api(
-                      `/api/patients/${patientId}/visits/${created.id}/documents/${item.type}`,
+                      `/api/patients/${patient.id}/visits/${created.id}/documents/${item.type}`,
                       { method: "POST", body: upload },
                       token,
                     );
                   }
                   toast.success("Visit created", `A new visit was added for ${patient?.name ?? "the patient"}.`);
-                  navigate(`/patients/${patientId}/visits/${created.id}`);
+                  navigate(`/visits/${created.visit_number}`);
                 }
               } catch (caught) {
                 const message = messageOf(caught);
@@ -234,7 +257,7 @@ export function VisitFormPage({ token, actor }: { token: string; actor: User }) 
                 <SearchSelect name="emergency_contact_relationship" value={relationship} onChange={(value) => { setRelationship(value); fields.clearField("emergency_contact_relationship"); }} options={relationshipOptions} placeholder="Not set" disabled={!canWrite} />
               </Field>
             </div>
-            {!id ? (
+            {!editing ? (
               <>
                 <div className="mt-6"><Section index="3" title="Consent & Privacy" /></div>
                 <div className="space-y-3">
@@ -318,8 +341,8 @@ export function VisitFormPage({ token, actor }: { token: string; actor: User }) 
               </>
             ) : null}
             <div className="mt-6 flex justify-end gap-2">
-              <Link className={secondary} to={id ? `/patients/${patientId}/visits/${id}` : `/patients/${patientId}?tab=visits`}>Cancel</Link>
-              <button className={primary} disabled={pending || !canWrite}>{pending ? "Saving" : id ? "Save visit" : <><PlusIcon />Create visit</>}</button>
+              <Link className={secondary} to={record?.visit_number ? `/visits/${record.visit_number}` : `/patients/${patient?.mrn ?? patientId}?tab=visits`}>Cancel</Link>
+              <button className={primary} disabled={pending || !canWrite}>{pending ? "Saving" : editing ? "Save visit" : <><PlusIcon />Create visit</>}</button>
             </div>
           </form>
         </Card>

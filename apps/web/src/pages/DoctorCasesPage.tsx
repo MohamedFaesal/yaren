@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState, type MouseEvent, type ReactNode } from "react";
 import { Link } from "react-router";
-import { api, casePriorityClass, casePriorityLabel, investigationPriorityClass, investigationPriorityLabel, investigationStatusClass, investigationStatusLabel, monitoringStatusClass, monitoringStatusLabel, visitStatusLabel, visitTypeLabel, waitMinutes, type CasePriority, type CatalogMedication, type DoctorCase, type DoctorCaseDetail, type DoctorCasePage, type DoctorCaseSummary, type DoctorMonitoringRecord, type GeneralSettings, type ManagementPlanRecord, type MedicalService, type MedicationOrder, type MonitoringObservation, type MonitoringStatus, type NursingPlanDetail, type ProcedureOrder, type TriageCategory, type User, type VisitCareStatus, type VisitInvestigation } from "../api";
+import { api, casePriorityClass, casePriorityLabel, investigationPriorityClass, investigationPriorityLabel, investigationStatusClass, investigationStatusLabel, monitoringStatusClass, monitoringStatusLabel, visitStatusChips, visitStatusText, visitTypeLabel, waitMinutes, type CasePriority, type CatalogMedication, type DoctorCase, type DoctorCaseDetail, type DoctorCasePage, type DoctorCaseSummary, type DoctorMonitoringRecord, type GeneralSettings, type InvestigationPhase, type ManagementPlanRecord, type MedicalService, type MedicationOrder, type MonitoringObservation, type MonitoringStatus, type NursingPlanDetail, type ProcedureOrder, type TriageCategory, type User, type VisitCareStatus, type VisitInvestigation } from "../api";
 import { canAct } from "../access";
 import { useActiveClinic } from "../ClinicWorkspace";
 import { useToast } from "../toast";
-import { IconAction, Page, field, messageOf, primary, secondary, th } from "./ui";
-import { emptyOrder, emptyProcedure, encounterStepSaved, MedicationOrderDialog, ProcedureOrderDialog, reconcileProcedures, standaloneProcedures } from "./EncounterPage";
+import { ConfirmDialog, IconAction, Page, field, messageOf, primary, secondary, th } from "./ui";
+import { emptyOrder, emptyProcedure, MedicationOrderDialog, ProcedureOrderDialog, reconcileProcedures, standaloneProcedures } from "./EncounterPage";
+import { assessPressure, assessVital, AutomaticAssessment, DoctorReadingAssessment, parsePressure, PriorityChip, ReadingTimeline, trendText, VitalShell, type VitalCheck } from "./NurseDashboardPanels";
 
 const pageSize = 10;
 const emptySummary: DoctorCaseSummary = {
@@ -15,17 +16,21 @@ const emptySummary: DoctorCaseSummary = {
   emergency: 0,
   urgent: 0,
   normal: 0,
-  diagnosed: 0,
   waiting_for_investigation: 0,
+  awaiting_collection: 0,
+  collected: 0,
+  at_lab: 0,
+  results_ready: 0,
+  closed: 0,
   average_wait_minutes: 0,
 };
 
-type CaseFocus = "" | "today" | "now" | "emergency" | "urgent" | "normal" | "diagnosed" | "waiting_for_investigation";
+type CaseFocus = "" | "today" | "now" | "emergency" | "urgent" | "normal" | "waiting_for_investigation" | "awaiting_collection" | "collected" | "at_lab" | "results_ready";
 
 const categoryLabel: Record<TriageCategory, string> = {
   emergency: "Emergency",
   urgent: "Urgent",
-  normal: "Normal",
+  normal: "Stable",
 };
 
 const historyLabel: Record<string, string> = {
@@ -188,7 +193,7 @@ export function DoctorCasesPage({ token, actor }: { token: string; actor: User }
   return (
     <Page
       title="Doctor Dashboard"
-      description="Patients waiting to see the doctor, plus diagnosed and waiting-for-investigation visits."
+      description="Patients waiting to see the doctor, plus finished encounters and visits handed to nursing."
       crumbs={[{ label: "Care" }, { label: "Doctor Dashboard" }]}
     >
       {error ? <p className="mb-4 text-sm text-danger">{error}</p> : null}
@@ -202,15 +207,17 @@ export function DoctorCasesPage({ token, actor }: { token: string; actor: User }
       <section className="rounded-2xl border border-line bg-surface shadow-card">
         <div className="border-b border-line-soft p-4 sm:p-5">
           <h2 className="text-base font-semibold text-ink">Patient queue</h2>
-          <p className="mt-0.5 text-sm text-muted">Waiting to see the doctor, plus diagnosed and waiting-for-investigation visits.</p>
+          <p className="mt-0.5 text-sm text-muted">Waiting to see the doctor, plus investigation and nursing-care visits.</p>
           <div className="mt-4 flex flex-wrap gap-2">
-            <QueueChip label="All" count={summary.waiting + summary.diagnosed + summary.waiting_for_investigation} active={focus === ""} onClick={() => chooseFocus("")} />
+            <QueueChip label="All" count={summary.waiting + summary.waiting_for_investigation + summary.closed} active={focus === ""} onClick={() => chooseFocus("")} />
             <QueueChip label="To see now" count={summary.to_see_now} active={focus === "now"} onClick={() => chooseFocus("now")} dot="bg-danger" />
             <QueueChip label="Emergency" count={summary.emergency} active={focus === "emergency"} onClick={() => chooseFocus("emergency")} dot="bg-danger" />
             <QueueChip label="Urgent" count={summary.urgent} active={focus === "urgent"} onClick={() => chooseFocus("urgent")} dot="bg-warning" />
-            <QueueChip label="Normal" count={summary.normal} active={focus === "normal"} onClick={() => chooseFocus("normal")} dot="bg-success" />
-            <QueueChip label="Diagnosed" count={summary.diagnosed} active={focus === "diagnosed"} onClick={() => chooseFocus("diagnosed")} dot="bg-success" />
-            <QueueChip label="Waiting for investigation" count={summary.waiting_for_investigation} active={focus === "waiting_for_investigation"} onClick={() => chooseFocus("waiting_for_investigation")} dot="bg-blue" />
+            <QueueChip label="Stable" count={summary.normal} active={focus === "normal"} onClick={() => chooseFocus("normal")} dot="bg-success" />
+            <QueueChip label="Waiting for Sample Collection" count={summary.awaiting_collection} active={focus === "awaiting_collection"} onClick={() => chooseFocus("awaiting_collection")} dot="bg-warning" />
+            <QueueChip label="Sample Collected" count={summary.collected} active={focus === "collected"} onClick={() => chooseFocus("collected")} dot="bg-blue" />
+            <QueueChip label="Sent to Lab" count={summary.at_lab} active={focus === "at_lab"} onClick={() => chooseFocus("at_lab")} dot="bg-blue" />
+            <QueueChip label="Results Ready" count={summary.results_ready} active={focus === "results_ready"} onClick={() => chooseFocus("results_ready")} dot="bg-success" />
           </div>
           <label className="relative mt-4 block max-w-xl">
             <span className="sr-only">Search queue</span>
@@ -250,7 +257,7 @@ export function DoctorCasesPage({ token, actor }: { token: string; actor: User }
                               {row.hotel_room_no ? `Room ${row.hotel_room_no}` : "No room"}
                               {row.hotel_name ? ` · ${row.hotel_name}` : ""}
                             </span>
-                            <span className="mt-1.5 block"><QueueStatus status={row.status} /></span>
+                            <span className="mt-1.5 block"><QueueStatus status={row.status} monitoring={row.monitoring_status} phase={row.investigation_phase} /></span>
                           </button>
                         </td>
                         <td className="px-4 py-3"><CategoryPill category={row.triage_category} /></td>
@@ -259,7 +266,7 @@ export function DoctorCasesPage({ token, actor }: { token: string; actor: User }
                         <td className="px-4 py-3">
                           <div className="flex items-center gap-2">
                             <IconAction kind="view" onClick={() => setSelectedId(row.id)} />
-                            <StartEncounterLink to={`/patients/to-doctor/${row.id}/encounter`} label={encounterActionLabel(row.status, row.id)} />
+                            <StartEncounterLink to={`/patients/to-doctor/${row.visit_number}/encounter`} label={encounterActionLabel(row.status)} />
                           </div>
                         </td>
                       </tr>
@@ -300,6 +307,11 @@ export function DoctorCasesPage({ token, actor }: { token: string; actor: User }
               waitMinutesTarget={waitMinutes(waitSettings, selected.clinic_id, "doctor")}
               canOpenVisit={canOpenVisit}
               seesAll={seesAll}
+              token={token}
+              onEnded={() => {
+                setRefreshKey((value) => value + 1);
+                setSelectedId(null);
+              }}
               onClose={() => setSelectedId(null)}
             />
           </section>
@@ -310,7 +322,7 @@ export function DoctorCasesPage({ token, actor }: { token: string; actor: User }
 }
 
 function closedCase(status: VisitCareStatus) {
-  return status === "diagnosed" || status === "waiting_for_investigation";
+  return status === "waiting_for_investigation" || status === "under_nursing_care" || status === "encounter_complete" || status === "referred";
 }
 
 function waitFor(row: DoctorCase, now: number) {
@@ -323,9 +335,10 @@ function waitFor(row: DoctorCase, now: number) {
   return { done, elapsed };
 }
 
-function encounterActionLabel(status: VisitCareStatus, visitId: string) {
+function encounterActionLabel(status: VisitCareStatus) {
   if (closedCase(status)) return "View encounter";
-  return encounterStepSaved(visitId) ? "Resume Encounter" : "Start encounter";
+  if (status === "consultation_in_progress") return "Resume Encounter";
+  return "Start encounter";
 }
 
 function VisitTypeBox({ type }: { type?: DoctorCase["visit_type"] }) {
@@ -337,21 +350,36 @@ function VisitTypeBox({ type }: { type?: DoctorCase["visit_type"] }) {
   return <span className={`inline-flex whitespace-nowrap rounded-lg px-2.5 py-1 text-xs font-semibold ${tone}`}>{visitTypeLabel(type)}</span>;
 }
 
-function QueueStatus({ status }: { status: VisitCareStatus }) {
-  const tone = status === "diagnosed"
-    ? "bg-success-soft text-success"
-    : status === "seen"
-      ? "bg-panel-strong text-blue-strong"
-      : status === "waiting_for_investigation"
-        ? "bg-warning-soft text-warning"
-        : status === "pending_payment"
-          ? "bg-danger-soft text-danger"
-          : status === "waiting_for_triage"
-            ? "bg-surface-3 text-muted-strong"
-            : status === "to_doctor"
-              ? "bg-panel text-blue"
-              : "bg-surface-2 text-muted";
-  return <span className={`inline-flex whitespace-nowrap rounded-lg px-2.5 py-1 text-xs font-semibold ${tone}`}>{visitStatusLabel(status)}</span>;
+function QueueStatus({ status, monitoring, phase }: { status: VisitCareStatus; monitoring?: MonitoringStatus | null; phase?: InvestigationPhase | null }) {
+  return (
+    <span className="inline-flex flex-wrap gap-1">
+      {visitStatusChips({ status, monitoring_status: monitoring }).map((item) => {
+        const tone = item === "encounter_complete" || (item === "waiting_for_investigation" && phase === "results_ready")
+          ? "bg-success-soft text-success"
+          : item === "seen"
+            ? "bg-panel-strong text-blue-strong"
+            : item === "waiting_for_investigation"
+              ? "bg-warning-soft text-warning"
+              : item === "under_nursing_care"
+                ? "bg-success-soft text-success"
+                : item === "referred"
+                  ? "bg-panel text-blue"
+                  : item === "pending_payment"
+                    ? "bg-danger-soft text-danger"
+                    : item === "waiting_for_triage"
+                      ? "bg-surface-3 text-muted-strong"
+                      : item === "consultation_in_progress"
+                        ? "bg-warning-soft text-warning"
+                        : item === "to_doctor"
+                          ? "bg-panel text-blue"
+                          : "bg-surface-2 text-muted";
+        const label = item === "waiting_for_investigation"
+          ? visitStatusText({ status: item, investigation_phase: phase })
+          : visitStatusText({ status: item });
+        return <span key={item} className={`inline-flex whitespace-nowrap rounded-lg px-2.5 py-1 text-xs font-semibold ${tone}`}>{label}</span>;
+      })}
+    </span>
+  );
 }
 
 function StartEncounterLink({ to, label = "Start encounter", onClick }: { to: string; label?: string; onClick?: (event: MouseEvent<HTMLAnchorElement>) => void }) {
@@ -388,6 +416,8 @@ function CasePanel({
   waitMinutesTarget,
   canOpenVisit,
   seesAll,
+  token,
+  onEnded,
   onClose,
 }: {
   row: DoctorCase | null;
@@ -400,8 +430,13 @@ function CasePanel({
   waitMinutesTarget: number;
   canOpenVisit: boolean;
   seesAll: boolean;
+  token: string;
+  onEnded?: () => void;
   onClose?: () => void;
 }) {
+  const toast = useToast();
+  const [ending, setEnding] = useState(false);
+  const [endError, setEndError] = useState<string | null>(null);
   const chart = detail ?? row;
   const history = (detail?.relevant_history ?? []).filter((item) => item !== "other").map((item) => historyLabel[item] ?? item);
   for (const item of detail?.relevant_history_items ?? []) {
@@ -412,6 +447,29 @@ function CasePanel({
   const timing = row ? waitFor(row, now) : null;
   const over = timing?.elapsed != null && timing.elapsed >= waitMinutesTarget * 60_000;
   const gender = detail?.patient_gender === "male" ? "Male" : detail?.patient_gender === "female" ? "Female" : null;
+  const phase = chart?.investigation_phase ?? null;
+  const monitoring = chart?.monitoring_status ?? null;
+  const canEndFromResults = Boolean(
+    chart
+    && canEndEncounter(chart.status, monitoring, phase)
+    && phase === "results_ready"
+    && monitoring !== "in_progress",
+  );
+
+  async function endFromResults() {
+    if (!chart || !canEndFromResults || ending) return;
+    setEnding(true);
+    setEndError(null);
+    try {
+      await api(`/api/patients/${chart.patient_id}/visits/${chart.id}/monitoring/end-encounter`, { method: "POST" }, token);
+      toast.success("Encounter complete", `${chart.patient_name} is now Encounter Complete.`);
+      onEnded?.();
+    } catch (caught) {
+      setEndError(messageOf(caught));
+    } finally {
+      setEnding(false);
+    }
+  }
 
   if (!chart) {
     return <div className="grid min-h-80 place-items-center px-6 text-sm text-muted">Select a patient to see the chart.</div>;
@@ -438,7 +496,7 @@ function CasePanel({
               </p>
               <div className="mt-2 flex flex-wrap items-center gap-1.5">
                 <CategoryPill category={chart.triage_category} />
-                <QueueStatus status={chart.status} />
+                <QueueStatus status={chart.status} monitoring={chart.monitoring_status} phase={phase} />
                 <VisitTypeBox type={chart.visit_type} />
                 {row?.monitoring_status === "completed" || row?.monitoring_status === "in_progress" ? (
                   <span className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${monitoringStatusClass(row.monitoring_status)}`}>
@@ -457,9 +515,9 @@ function CasePanel({
           </div>
           <div className="flex shrink-0 flex-wrap items-center gap-2">
             {canOpenVisit ? (
-              <Link className={`${secondary} h-9 px-3 py-0 text-sm`} to={`/patients/${chart.patient_id}/visits/${chart.id}`}>Open visit</Link>
+              <Link className={`${secondary} h-9 px-3 py-0 text-sm`} to={`/visits/${chart.visit_number}`}>Open visit</Link>
             ) : null}
-            <StartEncounterLink to={`/patients/to-doctor/${chart.id}/encounter`} label={encounterActionLabel(chart.status, chart.id)} />
+            <StartEncounterLink to={`/patients/to-doctor/${chart.visit_number}/encounter`} label={encounterActionLabel(chart.status)} />
             {onClose ? (
               <button type="button" className="grid h-9 w-9 place-items-center rounded-lg text-xl leading-none text-muted hover:bg-surface hover:text-ink" aria-label="Close" onClick={onClose}>×</button>
             ) : null}
@@ -495,6 +553,18 @@ function CasePanel({
           </>
         ) : null}
         <Investigations items={investigations} loading={investigationsLoading && investigations.length === 0} />
+        {canEndFromResults ? (
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-success/30 bg-success-soft/40 px-4 py-3">
+            <div>
+              <p className="text-sm font-semibold text-ink">All investigation results are ready.</p>
+              <p className="mt-0.5 text-sm text-muted">Review the results, then end the encounter.</p>
+              {endError ? <p className="mt-1 text-sm text-danger">{endError}</p> : null}
+            </div>
+            <button type="button" className={primary} disabled={ending} onClick={() => void endFromResults()}>
+              {ending ? "Ending…" : "End encounter"}
+            </button>
+          </div>
+        ) : null}
       </div>
     </div>
   );
@@ -533,7 +603,14 @@ function groupNurseRecords(records: DoctorMonitoringRecord[]): NursePatientRecor
       latest,
       records: sorted,
     };
-  }).sort((left, right) => new Date(right.latest.recorded_at ?? 0).getTime() - new Date(left.latest.recorded_at ?? 0).getTime());
+  }).sort((left, right) => {
+    const leftWaiting = unviewedSince(left);
+    const rightWaiting = unviewedSince(right);
+    if (leftWaiting && !rightWaiting) return -1;
+    if (!leftWaiting && rightWaiting) return 1;
+    if (leftWaiting && rightWaiting) return new Date(leftWaiting).getTime() - new Date(rightWaiting).getTime();
+    return new Date(right.latest.recorded_at ?? 0).getTime() - new Date(left.latest.recorded_at ?? 0).getTime();
+  });
 }
 
 function NurseRecordsPanel({ patients, now, token, onChanged }: { patients: NursePatientRecord[]; now: number; token: string; onChanged: () => void }) {
@@ -553,6 +630,14 @@ function NurseRecordsPanel({ patients, now, token, onChanged }: { patients: Nurs
     urgent: patients.filter((item) => item.latest.case_priority === "urgent").length,
     emergency: patients.filter((item) => item.latest.case_priority === "emergency").length,
   };
+
+  function openNurseRecord(item: NursePatientRecord) {
+    setViewing(item);
+    if (!unviewedSince(item)) return;
+    void api(`/api/doctor-cases/${item.visitId}/monitoring/viewed`, { method: "POST" }, token)
+      .then(() => onChanged())
+      .catch(() => undefined);
+  }
 
   return (
     <section className="rounded-2xl border border-panel-strong bg-surface shadow-card">
@@ -583,8 +668,11 @@ function NurseRecordsPanel({ patients, now, token, onChanged }: { patients: Nurs
               </tr>
             </thead>
             <tbody>
-              {visible.map((item) => (
-                <tr key={item.visitId} className="border-t border-line-soft">
+              {visible.map((item) => {
+                const waitingSince = unviewedSince(item);
+                const age = waitingSince ? Math.max(0, now - new Date(waitingSince).getTime()) : 0;
+                return (
+                <tr key={item.visitId} className={waitingSince ? "border-t border-warning-line bg-warning-soft" : "border-t border-line-soft"}>
                   <td className="px-4 py-3">
                     <p className="truncate font-semibold text-ink">{item.patientName}</p>
                     <p className="mt-0.5 truncate text-xs text-muted">
@@ -594,15 +682,25 @@ function NurseRecordsPanel({ patients, now, token, onChanged }: { patients: Nurs
                       {item.hotelName ? ` · ${item.hotelName}` : ""}
                     </p>
                     <p className="mt-0.5 text-xs text-muted">{agoLabel(item.latest.recorded_at, now)} · {item.records.length} reading{item.records.length === 1 ? "" : "s"}</p>
+                    {waitingSince ? (
+                      <p className="mt-1.5 inline-flex items-center gap-1.5 rounded-full bg-warning px-2.5 py-1 text-xs font-semibold text-white">
+                        <span className="h-1.5 w-1.5 rounded-full bg-white" aria-hidden="true" />
+                        Unviewed · {clockLabel(age)}
+                      </p>
+                    ) : null}
                   </td>
                   <td className="px-4 py-3">
-                    {item.latest.case_priority ? <span className={`inline-flex whitespace-nowrap rounded-lg border px-2.5 py-1 text-xs font-semibold ${casePriorityClass(item.latest.case_priority)}`}>{casePriorityLabel(item.latest.case_priority)}</span> : <span className="text-muted">—</span>}
+                    <div className="flex flex-col items-start gap-1.5">
+                      <span className={`inline-flex whitespace-nowrap rounded-full px-2.5 py-1 text-xs font-semibold ${monitoringStatusClass(item.monitoringStatus)}`}>{monitoringStatusLabel(item.monitoringStatus)}</span>
+                      <PriorityChip priority={item.latest.case_priority} />
+                    </div>
                   </td>
                   <td className="px-4 py-3">
-                    <button type="button" className={`${secondary} h-8 px-3 py-0 text-xs`} onClick={() => setViewing(item)}>View</button>
+                    <button type="button" className={`${waitingSince ? primary : secondary} h-8 px-3 py-0 text-xs`} onClick={() => openNurseRecord(item)}>View</button>
                   </td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
         )}
@@ -632,7 +730,14 @@ function MonitoringAssessmentDialog({
   onChanged: () => void;
 }) {
   const toast = useToast();
-  const latest = patient.records[0];
+  const [savedOnReading, setSavedOnReading] = useState<{ id: string; doctor_assessment: DoctorAssessmentStatus | null; clinical_assessment: string } | null>(null);
+  const [completeConfirmed, setCompleteConfirmed] = useState(false);
+  const records = patient.records.map((row) => (
+    savedOnReading && row.id === savedOnReading.id
+      ? { ...row, doctor_assessment: savedOnReading.doctor_assessment, clinical_assessment: savedOnReading.clinical_assessment }
+      : row
+  ));
+  const latest = records[0];
   const [plan, setPlan] = useState<NursingPlanDetail | null>(null);
   const [savedPlans, setSavedPlans] = useState<ManagementPlanRecord[]>([]);
   const [loading, setLoading] = useState(true);
@@ -644,35 +749,72 @@ function MonitoringAssessmentDialog({
   const [procedures, setProcedures] = useState<ProcedureOrder[]>([]);
   const [status, setStatus] = useState<DoctorAssessmentStatus | "">("");
   const [clinical, setClinical] = useState("");
-  const [showRecords, setShowRecords] = useState(false);
+  const [tab, setTab] = useState<"assessment" | "history">("assessment");
   const [editor, setEditor] = useState<OrderEditor | null>(null);
-  const [pending, setPending] = useState<"send" | "complete" | null>(null);
+  const [pending, setPending] = useState<"send" | "note" | "complete" | "end" | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
+  const [offerEnd, setOfferEnd] = useState(false);
+  const [confirmComplete, setConfirmComplete] = useState(false);
   const nationality = plan?.visit.patient_nationality;
   const monitoringStatus = plan?.visit.monitoring_status ?? patient.monitoringStatus;
   const listedProcedures = standaloneProcedures(procedures);
   const nextPlanPosition = savedPlans.reduce((max, item) => Math.max(max, item.position), 0) + 1;
   const canSend = medications.length + listedProcedures.length > 0;
-  const canComplete = monitoringStatus === "in_progress" && patient.records.length > 0;
-  const assessment = automaticAssessment(latest);
+  const canSendNote = Boolean(latest) && (status === "stable" || status === "needs_review" || status === "deteriorating") && clinical.trim().length > 0;
+  const canComplete = monitoringStatus === "in_progress" && records.length > 0;
+  const visitStatus = plan?.visit.status;
+  const canOfferEnd = offerEnd
+    && Boolean(plan?.can_end_encounter)
+    && canEndEncounter(visitStatus, monitoringStatus, plan?.visit.investigation_phase);
+  const previous = records[1];
+  const latestPressure = parsePressure(latest?.blood_pressure ?? null);
+  const previousPressure = parsePressure(previous?.blood_pressure ?? null);
+  const checks = {
+    temp: assessVital("temp", latest?.temperature_c ?? null),
+    pulse: assessVital("pulse", latest?.pulse ?? null),
+    bp: latestPressure ? assessPressure(String(latestPressure.systolic), String(latestPressure.diastolic)) : { state: "empty", label: "" } as VitalCheck,
+    rr: assessVital("rr", latest?.respiratory_rate ?? null),
+    spo2: assessVital("spo2", latest?.spo2 ?? null),
+  };
+  const vitalNames: Record<keyof typeof checks, string> = { temp: "Temperature", pulse: "Heart rate", bp: "Blood pressure", rr: "Respiratory rate", spo2: "Oxygen saturation" };
+  const flagged = (Object.entries(checks) as [keyof typeof checks, VitalCheck][])
+    .filter(([, check]) => check.state === "abnormal" || check.state === "critical")
+    .map(([key, check]) => ({ name: vitalNames[key], check }));
 
   useEffect(() => {
-    if (editor) return;
+    if (editor || confirmComplete) return;
     function onKey(event: KeyboardEvent) {
       if (event.key === "Escape") onClose();
     }
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [editor, onClose]);
+  }, [editor, confirmComplete, onClose]);
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
     setLoadError(null);
+    setOfferEnd(false);
     api<NursingPlanDetail>(`/api/patients/${patient.patientId}/visits/${patient.visitId}/nursing-plan`, {}, token)
       .then((detail) => {
         if (cancelled) return;
-        setPlan(detail);
+        setPlan((current) => {
+          if (current?.visit.monitoring_status === "completed" && detail.visit.monitoring_status !== "completed") {
+            const canEnd = current.can_end_encounter && canEndEncounter(detail.visit.status, "completed", detail.visit.investigation_phase);
+            return {
+              ...detail,
+              can_end_encounter: canEnd,
+              visit: { ...detail.visit, monitoring_status: "completed" },
+            };
+          }
+          return detail;
+        });
+        setOfferEnd((current) => {
+          if (current && detail.visit.monitoring_status !== "completed") {
+            return current && canEndEncounter(detail.visit.status, "completed", detail.visit.investigation_phase);
+          }
+          return detail.can_end_encounter;
+        });
         setSavedPlans(detail.plans ?? []);
         setMedications([]);
         setProcedures([]);
@@ -765,13 +907,107 @@ function MonitoringAssessmentDialog({
     }
   }
 
+  async function sendNoteToNurse() {
+    if (!canSendNote || pending || !latest) return;
+    if (status !== "stable" && status !== "needs_review" && status !== "deteriorating") {
+      setFormError("Choose Stable, Needs Review, or Deteriorating.");
+      return;
+    }
+    if (!clinical.trim()) {
+      setFormError("Enter a clinical assessment for the nurse.");
+      return;
+    }
+    setPending("note");
+    setFormError(null);
+    try {
+      const result = await api<{ observation_id: string; doctor_assessment: DoctorAssessmentStatus; clinical_assessment: string }>(
+        `/api/patients/${patient.patientId}/visits/${patient.visitId}/monitoring/note`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            doctor_assessment: status,
+            clinical_assessment: clinical.trim(),
+          }),
+        },
+        token,
+      );
+      setSavedOnReading({
+        id: result.observation_id,
+        doctor_assessment: result.doctor_assessment,
+        clinical_assessment: result.clinical_assessment,
+      });
+      toast.success("Note sent to nurse", "The assessment is on the latest nursing record.");
+      onChanged();
+    } catch (caught) {
+      setFormError(messageOf(caught));
+    } finally {
+      setPending(null);
+    }
+  }
+
   async function completeMonitoring() {
     if (!canComplete || pending) return;
     setPending("complete");
     setFormError(null);
     try {
-      await api(`/api/patients/${patient.patientId}/visits/${patient.visitId}/monitoring/complete`, { method: "POST" }, token);
+      const result = await api<{ can_end_encounter: boolean; observation_id: string | null; status?: VisitCareStatus }>(`/api/patients/${patient.patientId}/visits/${patient.visitId}/monitoring/complete`, {
+        method: "POST",
+        body: JSON.stringify({
+          doctor_assessment: status || null,
+          clinical_assessment: clinical.trim(),
+        }),
+      }, token);
+      setConfirmComplete(false);
+      setCompleteConfirmed(true);
+      if (result.observation_id) {
+        setSavedOnReading({
+          id: result.observation_id,
+          doctor_assessment: status || null,
+          clinical_assessment: clinical.trim(),
+        });
+      }
       toast.success("Monitoring completed", `${patient.patientName} is no longer under observation.`);
+      onChanged();
+      const nextStatus = result.status;
+      if (result.can_end_encounter && canEndEncounter(nextStatus, "completed", plan?.visit.investigation_phase)) {
+        setOfferEnd(true);
+        setPlan((current) => current ? {
+          ...current,
+          can_end_encounter: true,
+          visit: {
+            ...current.visit,
+            monitoring_status: "completed",
+            status: nextStatus ?? current.visit.status,
+          },
+        } : current);
+      } else {
+        setOfferEnd(false);
+        setPlan((current) => current ? {
+          ...current,
+          can_end_encounter: false,
+          visit: {
+            ...current.visit,
+            monitoring_status: "completed",
+            status: nextStatus ?? current.visit.status,
+          },
+        } : current);
+        onClose();
+      }
+    } catch (caught) {
+      setFormError(messageOf(caught));
+      setConfirmComplete(false);
+    } finally {
+      setPending(null);
+    }
+  }
+
+  async function endEncounter() {
+    if (!canOfferEnd || pending) return;
+    setPending("end");
+    setFormError(null);
+    try {
+      await api(`/api/patients/${patient.patientId}/visits/${patient.visitId}/monitoring/end-encounter`, { method: "POST" }, token);
+      toast.success("Encounter complete", `${patient.patientName} is now Encounter Complete.`);
       onChanged();
       onClose();
     } catch (caught) {
@@ -798,7 +1034,7 @@ function MonitoringAssessmentDialog({
           aria-labelledby="monitoring-assessment-title"
           onMouseDown={(event) => event.stopPropagation()}
         >
-          <div className="flex items-start justify-between gap-3 border-b border-line-soft px-5 py-4">
+          <div className="flex items-start justify-between gap-3 px-5 pt-4">
             <div className="flex min-w-0 items-start gap-3">
               <span className="grid h-12 w-12 shrink-0 place-items-center rounded-full bg-blue text-sm font-bold text-white">{initials(name)}</span>
               <div className="min-w-0">
@@ -813,49 +1049,89 @@ function MonitoringAssessmentDialog({
                 </p>
               </div>
             </div>
-            <div className="flex shrink-0 items-center gap-2">
-              <button type="button" className={`${secondary} h-9 px-3 py-0`} onClick={() => setShowRecords((value) => !value)}>
-                {showRecords ? "Hide records" : "View all records"}
-              </button>
+            <div className="flex shrink-0 items-start gap-2">
+              <div className="flex flex-col items-end gap-1.5">
+                <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${monitoringStatusClass(monitoringStatus)}`}>{monitoringStatusLabel(monitoringStatus)}</span>
+                <PriorityChip priority={latest?.case_priority} />
+              </div>
               <button type="button" className="grid h-9 w-9 place-items-center rounded-lg text-xl leading-none text-muted hover:bg-surface-2 hover:text-ink" aria-label="Close" onClick={onClose}>×</button>
             </div>
           </div>
-          <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
+          <div className="mt-3 flex gap-2 border-b border-line-soft px-5" role="tablist" aria-label="Monitoring details">
+            <button
+              type="button"
+              role="tab"
+              id="doctor-monitoring-tab-assessment"
+              aria-selected={tab === "assessment"}
+              aria-controls="doctor-monitoring-panel"
+              className={`inline-flex items-center gap-2 border-b-2 px-3 py-2 text-sm font-semibold ${tab === "assessment" ? "border-blue text-blue" : "border-transparent text-muted-strong"}`}
+              onClick={() => setTab("assessment")}
+            >
+              Assessment
+            </button>
+            <button
+              type="button"
+              role="tab"
+              id="doctor-monitoring-tab-history"
+              aria-selected={tab === "history"}
+              aria-controls="doctor-monitoring-panel"
+              className={`inline-flex items-center gap-2 border-b-2 px-3 py-2 text-sm font-semibold ${tab === "history" ? "border-blue text-blue" : "border-transparent text-muted-strong"}`}
+              onClick={() => setTab("history")}
+            >
+              Previous readings
+              <span className={`rounded-full px-2 py-0.5 text-xs ${tab === "history" ? "bg-panel text-blue" : "bg-surface-3 text-muted"}`}>{records.length}</span>
+            </button>
+          </div>
+          <div
+            className="min-h-0 flex-1 overflow-y-auto px-5 py-4"
+            role="tabpanel"
+            id="doctor-monitoring-panel"
+            aria-labelledby={tab === "assessment" ? "doctor-monitoring-tab-assessment" : "doctor-monitoring-tab-history"}
+          >
+            {tab === "history" ? (
+              records.length > 0 ? <ReadingTimeline rows={records} /> : <p className="py-8 text-center text-sm text-muted">No readings recorded yet.</p>
+            ) : (
+            <>
             {loadError ? <p className="mb-4 text-sm text-danger">{loadError}</p> : null}
             {loading ? <p className="mb-4 text-sm text-muted">Loading the nursing plan…</p> : null}
             <section>
               <div className="flex flex-wrap items-baseline justify-between gap-2">
                 <h3 className="text-sm font-semibold text-ink">Latest vital signs</h3>
-                <p className="text-xs text-muted">Recorded {agoLabel(latest?.recorded_at ?? null, now)} by {latest?.recorded_by_name?.trim() || "Nurse"}</p>
+                <p className="text-xs text-muted">
+                  Recorded {agoLabel(latest?.recorded_at ?? null, now)} by {latest?.recorded_by_name?.trim() || "Nurse"}
+                  {previous?.recorded_at ? ` · compared with ${formatWhen(previous.recorded_at)}` : ""}
+                </p>
               </div>
-              <dl className="mt-3 grid gap-2 sm:grid-cols-5">
-                <RangeVital label="Temp" unit="°C" range="36.0–37.5" value={latest?.temperature_c == null ? "—" : String(latest.temperature_c)} alert={abnormalVital("temp", latest?.temperature_c ?? null)} high={abnormalVital("temp", latest?.temperature_c ?? null)} />
-                <RangeVital label="Heart rate" unit="bpm" range="60–100" value={latest?.pulse == null ? "—" : String(latest.pulse)} alert={abnormalVital("pulse", latest?.pulse ?? null)} high />
-                <RangeVital label="Blood pressure" unit="mmHg" range="90/60–120/80" value={latest?.blood_pressure?.trim() || "—"} alert={abnormalBloodPressure(latest?.blood_pressure ?? null)} high={!lowSystolic(latest?.blood_pressure ?? null)} />
-                <RangeVital label="Respiratory rate" unit="/min" range="12–20" value={latest?.respiratory_rate == null ? "—" : String(latest.respiratory_rate)} alert={abnormalVital("rr", latest?.respiratory_rate ?? null)} high />
-                <RangeVital label="SpO2" unit="%" range="≥95" value={latest?.spo2 == null ? "—" : String(latest.spo2)} alert={abnormalVital("spo2", latest?.spo2 ?? null)} high={false} />
-              </dl>
-            </section>
-            <section className={`mt-4 rounded-xl border px-4 py-3 ${assessment.review ? "border-warning-line bg-warning-soft" : "border-success/30 bg-success-soft"}`}>
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <h3 className="text-sm font-semibold text-ink">Automatic monitoring assessment</h3>
-                <span className={`rounded-full border px-2.5 py-0.5 text-xs font-semibold ${assessment.review ? "border-warning bg-surface text-warning" : "border-success bg-surface text-success"}`}>{assessment.review ? "Needs Review" : "Within range"}</span>
+              <div className="mt-3 grid gap-2.5 sm:grid-cols-2 lg:grid-cols-5">
+                <ReadVital label="Temperature" unit="°C" range="36.0 – 37.5" value={latest?.temperature_c ?? null} check={checks.temp} previous={previous?.temperature_c ?? null} decimals={1} />
+                <ReadVital label="Heart rate" unit="bpm" range="60 – 100" value={latest?.pulse ?? null} check={checks.pulse} previous={previous?.pulse ?? null} />
+                <VitalShell
+                  label="Blood pressure"
+                  check={checks.bp}
+                  range="90/60 – 120/80"
+                  lastLabel="Previous"
+                  lastText={previousPressure ? `${previousPressure.systolic}/${previousPressure.diastolic}` : null}
+                  trend={trendText(latestPressure?.systolic ?? null, previousPressure?.systolic ?? null)}
+                >
+                  <p className="mt-1 flex items-baseline gap-1.5">
+                    <span className="text-2xl font-bold tracking-tight text-ink">{latestPressure ? `${latestPressure.systolic}/${latestPressure.diastolic}` : "—"}</span>
+                    <span className="text-xs font-semibold text-muted-strong">mmHg</span>
+                  </p>
+                </VitalShell>
+                <ReadVital label="Respiratory rate" unit="/min" range="12 – 20" value={latest?.respiratory_rate ?? null} check={checks.rr} previous={previous?.respiratory_rate ?? null} />
+                <ReadVital label="Oxygen saturation" unit="%" range="95 – 100" value={latest?.spo2 ?? null} check={checks.spo2} previous={previous?.spo2 ?? null} />
               </div>
-              <p className="mt-1 text-sm text-ink">{assessment.text}</p>
-              <p className="mt-1 text-xs text-muted">System-generated</p>
             </section>
-            <section className="mt-4 rounded-xl border border-line bg-surface-2 px-4 py-3">
+            <AutomaticAssessment priority={latest?.case_priority ?? null} flagged={flagged} emptyText="No vital signs recorded yet." />
+            <section className="mt-3 rounded-2xl border border-line-strong bg-surface px-4 py-3">
               <div className="flex flex-wrap items-baseline justify-between gap-2">
-                <h3 className="text-sm font-semibold text-ink">Nursing notes</h3>
+                <h3 className="text-[11px] font-bold uppercase tracking-wide text-muted-strong">Nursing notes</h3>
                 <p className="text-xs text-muted">{latest?.recorded_by_name?.trim() || "Nurse"} · {latest?.recorded_at ? formatWhen(latest.recorded_at) : "—"}</p>
               </div>
-              <p className="mt-1 whitespace-pre-wrap text-sm text-ink">{latest?.notes.trim() ? latest.notes : "No notes recorded."}</p>
+              <p className={`mt-1 whitespace-pre-wrap text-sm ${latest?.notes.trim() ? "text-ink" : "text-muted"}`}>{latest?.notes.trim() ? latest.notes : "No notes recorded."}</p>
+              <DoctorReadingAssessment status={latest?.doctor_assessment} clinical={latest?.clinical_assessment} />
             </section>
-            {showRecords ? (
-              <div className="mt-4">
-                <NursingObservations items={patient.records} loading={false} />
-              </div>
-            ) : null}
+            {monitoringStatus === "in_progress" && !completeConfirmed ? (
             <section className="mt-5">
               <h3 className="text-sm font-semibold text-ink">Doctor assessment</h3>
               <div className="mt-2 grid gap-2 sm:grid-cols-3" role="radiogroup" aria-label="Doctor assessment">
@@ -885,12 +1161,27 @@ function MonitoringAssessmentDialog({
                   className={`${field} min-h-28 resize-y`}
                   maxLength={1000}
                   value={clinical}
-                  onChange={(event) => setClinical(event.target.value)}
+                  onChange={(event) => {
+                    setClinical(event.target.value);
+                    setFormError(null);
+                  }}
                   placeholder="Clinical impression for the nurse"
                 />
               </label>
-              <p className="mt-1 text-right text-xs text-muted">{clinical.length}/1000</p>
+              <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
+                <p className="text-xs text-muted">{clinical.length}/1000</p>
+                <button
+                  type="button"
+                  className={secondary}
+                  disabled={!canSendNote || pending !== null}
+                  title={canSendNote ? undefined : "Choose a doctor assessment and enter a clinical assessment"}
+                  onClick={() => void sendNoteToNurse()}
+                >
+                  {pending === "note" ? "Sending…" : "Send a note to nurse"}
+                </button>
+              </div>
             </section>
+            ) : null}
             {savedPlans.filter(planHasOrders).map((entry) => (
               <section key={entry.position} className="mt-5 rounded-xl border border-line bg-surface-2 px-4 py-3">
                 <div className="flex flex-wrap items-center justify-between gap-2">
@@ -927,6 +1218,7 @@ function MonitoringAssessmentDialog({
                 />
               </section>
             ))}
+            {monitoringStatus === "in_progress" && !completeConfirmed ? (
             <section className="mt-5 rounded-xl border border-panel-strong bg-panel/40 px-4 py-3">
               <h3 className="text-sm font-semibold text-ink">Management plan {nextPlanPosition}</h3>
               <p className="mt-1 text-xs text-muted">Orders added here are sent as a new management plan. Earlier plans stay unchanged.</p>
@@ -975,29 +1267,56 @@ function MonitoringAssessmentDialog({
                 }))}
               />
             </section>
+            ) : null}
+            </>
+            )}
           </div>
           {formError ? <p className="px-5 text-sm text-danger">{formError}</p> : null}
+          {canOfferEnd ? (
+            <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line-soft px-5 py-4">
+              <p className="text-sm text-ink">Monitoring is complete. End this encounter?</p>
+              <div className="flex flex-wrap items-center justify-end gap-2">
+                <button type="button" className={secondary} disabled={pending !== null} onClick={onClose}>Not now</button>
+                <button type="button" className={primary} disabled={pending !== null} onClick={() => void endEncounter()}>
+                  {pending === "end" ? "Ending…" : "End encounter"}
+                </button>
+              </div>
+            </div>
+          ) : tab === "history" ? (
+            <div className="flex flex-wrap items-center justify-end gap-2 border-t border-line-soft px-5 py-4">
+              <button type="button" className={secondary} onClick={onClose}>Close</button>
+              <button type="button" className={primary} onClick={() => setTab("assessment")}>Back to assessment</button>
+            </div>
+          ) : (
           <div className="flex flex-wrap items-center justify-end gap-2 border-t border-line-soft px-5 py-4">
             <button type="button" className={secondary} onClick={onClose}>Close</button>
-            <button
-              type="button"
-              className={secondary}
-              disabled={!canComplete || pending !== null}
-              title={canComplete ? undefined : "Monitoring can be completed while it is in progress and a reading exists"}
-              onClick={() => void completeMonitoring()}
-            >
-              {pending === "complete" ? "Completing…" : "Complete monitoring"}
-            </button>
-            <button
-              type="button"
-              className={primary}
-              disabled={!canSend || pending !== null}
-              title={canSend ? undefined : "Add a medication or procedure to this management plan"}
-              onClick={() => void sendAssessment()}
-            >
-              {pending === "send" ? "Sending…" : "Save Assessment and Send to Nurse"}
-            </button>
+            {monitoringStatus === "in_progress" && !completeConfirmed ? (
+              <>
+                <button
+                  type="button"
+                  className={secondary}
+                  disabled={!canComplete || pending !== null}
+                  title={canComplete ? undefined : "Monitoring can be completed while it is in progress and a reading exists"}
+                  onClick={() => {
+                    setFormError(null);
+                    setConfirmComplete(true);
+                  }}
+                >
+                  Complete monitoring
+                </button>
+                <button
+                  type="button"
+                  className={primary}
+                  disabled={!canSend || pending !== null}
+                  title={canSend ? undefined : "Add a medication or procedure to this management plan"}
+                  onClick={() => void sendAssessment()}
+                >
+                  {pending === "send" ? "Sending…" : "Save Assessment and Send to Nurse"}
+                </button>
+              </>
+            ) : null}
           </div>
+          )}
         </section>
       </div>
       {editor?.kind === "medication" ? (
@@ -1026,6 +1345,19 @@ function MonitoringAssessmentDialog({
           onSave={saveProcedure}
         />
       ) : null}
+      <ConfirmDialog
+        open={confirmComplete}
+        className="z-[80]"
+        eyebrow="Confirm"
+        title="Complete monitoring?"
+        body="This patient will leave active monitoring. Any doctor assessment entered here is saved on the latest nursing record."
+        confirmLabel="Complete monitoring"
+        cancelLabel="Cancel"
+        pendingLabel="Completing…"
+        pending={pending === "complete"}
+        onCancel={() => { if (pending !== "complete") setConfirmComplete(false); }}
+        onConfirm={() => void completeMonitoring()}
+      />
     </>
   );
 }
@@ -1087,30 +1419,37 @@ function OrderTable({
   );
 }
 
-function RangeVital({
-  label: name,
+function ReadVital({
+  label,
   unit,
   range,
   value,
-  alert,
-  high,
+  check,
+  previous,
+  decimals = 0,
 }: {
   label: string;
   unit: string;
   range: string;
-  value: string;
-  alert: boolean;
-  high?: boolean;
+  value: number | null;
+  check: VitalCheck;
+  previous: number | null;
+  decimals?: number;
 }) {
   return (
-    <div className={`rounded-xl px-3 py-2 ${alert ? "bg-danger-soft ring-1 ring-danger-line" : "bg-surface-2"}`}>
-      <dt className="text-xs font-semibold text-muted">{name}</dt>
-      <dd className={`mt-0.5 text-sm font-bold ${alert ? "text-danger" : "text-ink"}`}>
-        {value} <span className="text-xs font-medium">{unit}</span>
-        {alert && value !== "—" ? <span className="ml-1">{high === false ? "↓" : "↑"}</span> : null}
-      </dd>
-      <p className="mt-0.5 text-[11px] text-muted">{range}</p>
-    </div>
+    <VitalShell
+      label={label}
+      check={check}
+      range={range}
+      lastLabel="Previous"
+      lastText={previous == null ? null : `${previous} ${unit}`}
+      trend={trendText(value, previous, decimals)}
+    >
+      <p className="mt-1 flex items-baseline gap-1.5">
+        <span className="text-2xl font-bold tracking-tight text-ink">{value ?? "—"}</span>
+        <span className="text-xs font-semibold text-muted-strong">{unit}</span>
+      </p>
+    </VitalShell>
   );
 }
 
@@ -1126,25 +1465,23 @@ function genderLabel(value: string | null) {
   return "—";
 }
 
-function automaticAssessment(record: MonitoringObservation | undefined) {
-  if (!record) return { review: false, text: "No vital signs recorded yet." };
-  const signs: string[] = [];
-  if (abnormalVital("temp", record.temperature_c)) signs.push("temperature");
-  if (abnormalVital("pulse", record.pulse)) signs.push("heart rate");
-  if (abnormalBloodPressure(record.blood_pressure)) signs.push("blood pressure");
-  if (abnormalVital("rr", record.respiratory_rate)) signs.push("respiratory rate");
-  if (abnormalVital("spo2", record.spo2)) signs.push("oxygen saturation");
-  if (signs.length === 0) return { review: false, text: "Vital signs are within range." };
-  const named = signs.length === 1 ? signs[0] : `${signs.slice(0, -1).join(", ")} and ${signs[signs.length - 1]}`;
-  const verb = signs.length === 1 ? "is" : "are";
-  return { review: true, text: `${named[0]?.toUpperCase() ?? ""}${named.slice(1)} ${verb} outside the reference range.` };
+function canEndEncounter(
+  status: VisitCareStatus | string | null | undefined,
+  monitoring?: MonitoringStatus | null,
+  phase?: InvestigationPhase | null,
+) {
+  if (status !== "under_nursing_care" && status !== "waiting_for_investigation") return false;
+  if (monitoring === "in_progress") return false;
+  if (monitoring === "completed") return true;
+  return (monitoring === "none" || monitoring == null) && phase === "results_ready";
 }
 
-function lowSystolic(value: string | null) {
-  if (!value) return false;
-  const match = value.match(/(\d+)\s*\/\s*(\d+)/);
-  if (!match) return false;
-  return Number(match[1]) < 90;
+function unviewedSince(item: NursePatientRecord) {
+  const sent = item.records
+    .map((row) => row.sent_to_doctor_at && !row.doctor_viewed_at ? row.sent_to_doctor_at : null)
+    .filter((value): value is string => Boolean(value));
+  if (sent.length === 0) return null;
+  return sent.reduce((oldest, value) => new Date(value).getTime() < new Date(oldest).getTime() ? value : oldest);
 }
 
 function agoLabel(value: string | null, now: number) {
@@ -1190,41 +1527,6 @@ function Investigations({ items, loading }: { items: VisitInvestigation[]; loadi
       ) : null}
     </section>
   );
-}
-
-function NursingObservations({ items, loading }: { items: MonitoringObservation[]; loading: boolean }) {
-  return (
-    <section className="rounded-2xl border border-success/30 bg-success-soft/60 p-3">
-      <h3 className="text-xs font-semibold uppercase tracking-wide text-success">Nursing observations</h3>
-      {loading ? <p className="mt-2 text-sm text-muted">Loading observations…</p> : null}
-      {!loading && items.length === 0 ? <p className="mt-2 text-sm text-muted">No nursing observations recorded.</p> : null}
-      {items.length > 0 ? (
-        <ul className="mt-2 grid gap-2">
-          {items.map((item) => (
-            <li key={item.id} className="rounded-xl bg-surface px-3 py-2">
-              <p className="flex flex-wrap items-center gap-1.5 text-xs font-semibold text-ink">
-                <span>{item.recorded_at ? formatWhen(item.recorded_at) : "—"}</span>
-                <span className="font-medium text-muted">· {item.recorded_by_name?.trim() || "Nurse"}</span>
-                {item.case_priority ? <span className={`rounded-full border px-2 py-0.5 text-[11px] font-semibold ${casePriorityClass(item.case_priority)}`}>{casePriorityLabel(item.case_priority)}</span> : null}
-              </p>
-              <dl className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-5">
-                <Vital tone="temp" icon={<TempIcon />} label="Temp" value={reading(item.temperature_c, "°C")} alert={abnormalVital("temp", item.temperature_c)} />
-                <Vital tone="pulse" icon={<PulseIcon />} label="Pulse" value={reading(item.pulse, "/min")} alert={abnormalVital("pulse", item.pulse)} />
-                <Vital tone="bp" icon={<PulseIcon />} label="BP" value={item.blood_pressure?.trim() ? `${item.blood_pressure} mmHg` : "—"} alert={abnormalBloodPressure(item.blood_pressure)} />
-                <Vital tone="rr" icon={<LungsIcon />} label="RR" value={reading(item.respiratory_rate, "/min")} alert={abnormalVital("rr", item.respiratory_rate)} />
-                <Vital tone="spo2" icon={<OxygenIcon />} label="SpO2" value={item.spo2 == null ? "—" : `${item.spo2}%`} alert={abnormalVital("spo2", item.spo2)} />
-              </dl>
-              {item.notes.trim() ? <p className="mt-2 whitespace-pre-wrap text-sm text-muted">{item.notes}</p> : null}
-            </li>
-          ))}
-        </ul>
-      ) : null}
-    </section>
-  );
-}
-
-function reading(value: number | null, unit: string) {
-  return value == null ? "—" : `${value} ${unit}`;
 }
 
 function Section({

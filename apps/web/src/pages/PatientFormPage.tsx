@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router";
-import { api, type Patient, type User } from "../api";
+import { api, isUuid, type Patient, type User } from "../api";
 import { canAct } from "../access";
 import { NationalityLabel, nationalityOption } from "../nationalities";
 import { useToast } from "../toast";
@@ -12,10 +12,11 @@ const genderOptions = [
 ];
 
 export function PatientFormPage({ token, actor }: { token: string; actor: User }) {
-  const { id } = useParams();
+  const { id: routeId } = useParams();
   const navigate = useNavigate();
   const toast = useToast();
   const fields = useFieldErrors();
+  const [recordId, setRecordId] = useState<string | null>(null);
   const [name, setName] = useState("");
   const [mrn, setMrn] = useState("");
   const [birthdate, setBirthdate] = useState("");
@@ -30,15 +31,17 @@ export function PatientFormPage({ token, actor }: { token: string; actor: User }
   const [ownerId, setOwnerId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
-  const canWrite = id ? canAct(actor, "patient", "update", { ownerId }) : canAct(actor, "patient", "create");
+  const canWrite = routeId ? canAct(actor, "patient", "update", { ownerId }) : canAct(actor, "patient", "create");
 
   useEffect(() => {
     api<string[]>("/api/nationalities", {}, token).then(setNationalities).catch((caught) => setError(messageOf(caught)));
   }, [token]);
 
   useEffect(() => {
-    if (!id) return;
-    api<Patient>(`/api/patients/${id}`, {}, token).then((patient) => {
+    if (!routeId) return;
+    const path = isUuid(routeId) ? `/api/patients/${routeId}` : `/api/patients/by-mrn/${encodeURIComponent(routeId)}`;
+    api<Patient>(path, {}, token).then((patient) => {
+      setRecordId(patient.id);
       setName(patient.name);
       setMrn(patient.mrn);
       setBirthdate(patient.birthdate);
@@ -50,15 +53,16 @@ export function PatientFormPage({ token, actor }: { token: string; actor: User }
       setAlternativePhone(patient.alternative_phone_number ?? "");
       setHomeAddress(patient.home_address ?? "");
       setOwnerId(patient.added_by);
+      if (routeId !== patient.mrn) navigate(`/patients/${patient.mrn}/edit`, { replace: true });
     }).catch((caught) => setError(messageOf(caught)));
-  }, [id, token]);
+  }, [routeId, token, navigate]);
 
   return (
     <Page
-      title={id ? "Edit patient" : "New patient"}
-      description={id ? "Update this patient record. The medical record number cannot change." : "Create a patient record. A medical record number is assigned automatically."}
-      crumbs={id
-        ? [{ label: "Patients", to: "/patients" }, { label: name || "Patient", to: `/patients/${id}` }, { label: "Edit" }]
+      title={routeId ? "Edit patient" : "New patient"}
+      description={routeId ? "Update this patient record. The medical record number cannot change." : "Create a patient record. A medical record number is assigned automatically."}
+      crumbs={routeId
+        ? [{ label: "Patients", to: "/patients" }, { label: name || "Patient", to: `/patients/${mrn || routeId}` }, { label: "Edit" }]
         : [{ label: "Patients", to: "/patients" }, { label: "New patient" }]}
     >
       {error ? <p className="mb-4 text-sm text-danger">{error}</p> : null}
@@ -82,14 +86,15 @@ export function PatientFormPage({ token, actor }: { token: string; actor: User }
               home_address: homeAddress,
             };
             try {
-              if (id) {
-                await api(`/api/patients/${id}`, { method: "PATCH", body: JSON.stringify(body) }, token);
+              if (routeId) {
+                if (!recordId) return;
+                await api(`/api/patients/${recordId}`, { method: "PATCH", body: JSON.stringify(body) }, token);
                 toast.success("Patient updated", `${name} was saved.`);
-                navigate(`/patients/${id}`);
+                navigate(`/patients/${mrn}`);
               } else {
-                const created = await api<{ id: string }>("/api/patients", { method: "POST", body: JSON.stringify(body) }, token);
+                const created = await api<{ id: string; mrn: string }>("/api/patients", { method: "POST", body: JSON.stringify(body) }, token);
                 toast.success("Patient created", `${name} was added to the records.`);
-                navigate(`/patients/${created.id}`);
+                navigate(`/patients/${created.mrn}`);
               }
             } catch (caught) {
               const message = messageOf(caught);
@@ -105,7 +110,7 @@ export function PatientFormPage({ token, actor }: { token: string; actor: User }
               <Field label="Full name" error={fields.errorOf("name")}>
                 <input className={field} name="name" value={name} onChange={(event) => { setName(event.target.value); fields.clearField("name"); }} placeholder="Ahmed Hassan" required disabled={!canWrite} />
               </Field>
-              {id ? <Field label="MRN"><input className={field} value={mrn} readOnly disabled /></Field> : <p className="self-end text-sm text-muted">MRN is set automatically when you save.</p>}
+              {routeId ? <Field label="MRN"><input className={field} value={mrn} readOnly disabled /></Field> : <p className="self-end text-sm text-muted">MRN is set automatically when you save.</p>}
               <Field label="Birth date" error={fields.errorOf("birthdate")}>
                 <input className={field} name="birthdate" type="date" value={birthdate} onChange={(event) => { setBirthdate(event.target.value); fields.clearField("birthdate"); }} required disabled={!canWrite} />
               </Field>
@@ -143,12 +148,12 @@ export function PatientFormPage({ token, actor }: { token: string; actor: User }
               </Field>
             </div>
             <div className="mt-6 flex justify-end gap-2">
-              <Link className={secondary} to={id ? `/patients/${id}` : "/patients"}>{id ? "Cancel" : "Back"}</Link>
-              <button className={primary} disabled={pending || !canWrite}>{pending ? "Saving" : id ? "Save patient" : <><PlusIcon />Create patient</>}</button>
+              <Link className={secondary} to={routeId ? `/patients/${mrn || routeId}` : "/patients"}>{routeId ? "Cancel" : "Back"}</Link>
+              <button className={primary} disabled={pending || !canWrite}>{pending ? "Saving" : routeId ? "Save patient" : <><PlusIcon />Create patient</>}</button>
             </div>
           </form>
         </Card>
-        <Summary title={name || "New patient"} lines={[id ? mrn || "MRN" : "MRN on save", identity || "Passport / National ID", nationality ? <NationalityLabel nationality={nationality} /> : "Nationality", gender === "female" ? "Female" : "Male"]} />
+        <Summary title={name || "New patient"} lines={[routeId ? mrn || "MRN" : "MRN on save", identity || "Passport / National ID", nationality ? <NationalityLabel nationality={nationality} /> : "Nationality", gender === "female" ? "Female" : "Male"]} />
       </div>
     </Page>
   );

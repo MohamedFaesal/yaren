@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router";
-import { api, type User, type VisitCareStatus, type VisitPageResult, type VisitType, visitStatusLabel, visitTypeLabel } from "../api";
+import { api, type InvestigationPhase, type MedicalService, type User, type VisitCareStatus, type VisitPageResult, type VisitType, visitStatusChips, visitStatusText } from "../api";
 import { canAct } from "../access";
 import { useActiveClinic } from "../ClinicWorkspace";
 import { DataTable, Filters, IconAction, Page, PlusIcon, SearchSelect, field, label, messageOf, primary, secondary, th } from "./ui";
@@ -15,6 +15,8 @@ export function VisitsPage({ token, actor }: { token: string; actor: User }) {
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState<"" | VisitCareStatus>("");
   const [visitType, setVisitType] = useState<"" | VisitType>("");
+  const [serviceId, setServiceId] = useState("");
+  const [services, setServices] = useState<MedicalService[]>([]);
   const [sort, setSort] = useState<"created_at" | "updated_at">("updated_at");
   const [dir, setDir] = useState<"asc" | "desc">("desc");
   const [page, setPage] = useState(1);
@@ -40,11 +42,30 @@ export function VisitsPage({ token, actor }: { token: string; actor: User }) {
   }, [clinicId]);
 
   useEffect(() => {
+    let cancelled = false;
+    const params = new URLSearchParams({ service_type: "Professional Services" });
+    if (clinicId) params.set("clinic_id", clinicId);
+    api<{ items: MedicalService[] }>(`/api/services?${params}`, {}, token)
+      .then((data) => {
+        if (cancelled) return;
+        setServices(data.items);
+        setServiceId((current) => current && !data.items.some((service) => service.id === current) ? "" : current);
+      })
+      .catch(() => {
+        if (!cancelled) setServices([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [clinicId, token]);
+
+  useEffect(() => {
     const id = ++requestId.current;
     const params = new URLSearchParams({ page: String(page), page_size: String(pageSize) });
     if (search) params.set("q", search);
     if (status) params.set("status", status);
     if (visitType) params.set("visit_type", visitType);
+    if (serviceId) params.set("professional_service_id", serviceId);
     params.set("sort", sort);
     params.set("dir", dir);
     if (clinicId) params.set("clinic_id", clinicId);
@@ -62,7 +83,7 @@ export function VisitsPage({ token, actor }: { token: string; actor: User }) {
       .finally(() => {
         if (id === requestId.current) setLoading(false);
       });
-  }, [token, page, search, status, visitType, sort, dir, clinicId]);
+  }, [token, page, search, status, visitType, serviceId, sort, dir, clinicId]);
 
   return (
     <Page
@@ -81,10 +102,14 @@ export function VisitsPage({ token, actor }: { token: string; actor: User }) {
             options={[
               { value: "", label: "Any status" },
               { value: "waiting_for_triage", label: "Waiting for triage" },
-              { value: "to_doctor", label: "To see the doctor" },
+              { value: "to_doctor", label: "Waiting for doctor" },
+              { value: "consultation_in_progress", label: "Consultation In Progress" },
+              { value: "patient_left", label: "Patient Left" },
               { value: "seen", label: "Seen by the doctor" },
-              { value: "waiting_for_investigation", label: "Waiting for investigation" },
-              { value: "diagnosed", label: "Diagnosed" },
+              { value: "waiting_for_investigation", label: "Waiting for Investigation" },
+              { value: "under_nursing_care", label: "Under Nursing Care" },
+              { value: "encounter_complete", label: "Encounter Complete" },
+              { value: "referred", label: "Referred" },
               { value: "pending_payment", label: "Pending payment" },
             ]}
             placeholder="Any status"
@@ -100,6 +125,17 @@ export function VisitsPage({ token, actor }: { token: string; actor: User }) {
               { value: "follow-up", label: "Follow-up" },
             ]}
             placeholder="Any type"
+          />
+        </label>
+        <label className={label}>Clinic service
+          <SearchSelect
+            value={serviceId}
+            onChange={(value) => { setServiceId(value); setPage(1); }}
+            options={[
+              { value: "", label: "Any clinic service" },
+              ...services.map((service) => ({ value: service.id, label: service.name, hint: service.code })),
+            ]}
+            placeholder="Any clinic service"
           />
         </label>
         <label className={label}>Sort
@@ -128,10 +164,9 @@ export function VisitsPage({ token, actor }: { token: string; actor: User }) {
         <thead className="bg-surface-2">
           <tr>
             <th className={th}>Patient</th>
-            <th className={th}>Type</th>
+            <th className={th}>Clinic service</th>
             <th className={th}>Status</th>
             <th className={th}>Age at visit</th>
-            <th className={th}>MRN</th>
             <th className={th}>Clinic</th>
             <th className={th}>Created</th>
             <th className={th}>Actions</th>
@@ -139,25 +174,34 @@ export function VisitsPage({ token, actor }: { token: string; actor: User }) {
         </thead>
         <tbody>
           {result.items.length === 0 ? (
-            <tr><td className="px-4 py-10 text-center text-sm text-muted" colSpan={8}>{search || status || visitType ? "No visits match these filters." : "No visits yet."}</td></tr>
+            <tr><td className="px-4 py-10 text-center text-sm text-muted" colSpan={7}>{search || status || visitType || serviceId ? "No visits match these filters." : "No visits yet."}</td></tr>
           ) : result.items.map((row) => (
             <tr
               key={row.id}
               className="cursor-pointer border-t border-line-soft hover:bg-surface-2"
-              onClick={() => navigate(`/patients/${row.patient_id}/visits/${row.id}`)}
+              onClick={() => navigate(`/visits/${row.visit_number}`)}
             >
-              <td className="px-4 py-3 font-semibold">{row.patient_name}</td>
-              <td className="px-4 py-3"><VisitTypeBadge type={row.visit_type} /></td>
-              <td className="px-4 py-3"><VisitStatus status={row.status} /></td>
+              <td className="px-4 py-3">
+                <span className="font-semibold">{row.patient_name}</span>
+                <span className="block font-mono text-xs text-muted">{row.patient_mrn}</span>
+              </td>
+              <td className="px-4 py-3">
+                {row.professional_service_name ? (
+                  <>
+                    {row.professional_service_name}
+                    {row.professional_service_code ? <span className="block font-mono text-xs text-muted">{row.professional_service_code}</span> : null}
+                  </>
+                ) : <span className="text-muted">—</span>}
+              </td>
+              <td className="px-4 py-3"><VisitStatuses status={row.status} monitoring={row.monitoring_status} phase={row.investigation_phase} /></td>
               <td className="px-4 py-3 tabular-nums">{row.patient_age_at_visit != null ? `${row.patient_age_at_visit} yrs` : "—"}</td>
-              <td className="px-4 py-3 font-mono text-sm">{row.patient_mrn}</td>
               <td className="px-4 py-3">{row.clinic_name}<span className="block text-xs text-muted">{row.hotel_name}</span></td>
               <td className="whitespace-nowrap px-4 py-3 text-sm text-muted-strong" title={formatWhen(row.created_at)}>{createdAgo(row.created_at)}</td>
               <td className="px-4 py-3">
                 <div className="flex gap-2" onClick={(event) => event.stopPropagation()}>
-                  <IconAction kind="view" to={`/patients/${row.patient_id}/visits/${row.id}`} />
+                  <IconAction kind="view" to={`/visits/${row.visit_number}`} />
                   {canAct(actor, "visit", "update", { ownerId: row.patient_added_by, clinicId: row.clinic_id })
-                    ? <IconAction kind="edit" to={`/patients/${row.patient_id}/visits/${row.id}/edit`} />
+                    ? <IconAction kind="edit" to={`/visits/${row.visit_number}/edit`} />
                     : null}
                 </div>
               </td>
@@ -195,18 +239,24 @@ function formatWhen(value: string) {
   return new Date(value).toLocaleString("en-GB", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
-function VisitTypeBadge({ type }: { type?: VisitType }) {
-  if (type === "follow-up") return <span className="inline-flex rounded-full bg-panel px-2.5 py-1 text-xs font-semibold text-blue">Follow-up</span>;
-  if (type === "new") return <span className="inline-flex rounded-full bg-surface-2 px-2.5 py-1 text-xs font-semibold text-ink">New</span>;
-  return <span className="text-muted">{visitTypeLabel(type)}</span>;
+function VisitStatuses({ status, monitoring, phase }: { status?: VisitCareStatus; monitoring?: "none" | "in_progress" | "completed" | null; phase?: InvestigationPhase | null }) {
+  const chips = visitStatusChips({ status, monitoring_status: monitoring });
+  if (chips.length === 0) return <span className="text-muted">—</span>;
+  return <span className="inline-flex flex-wrap gap-1">{chips.map((item) => <VisitStatus key={item} status={item} phase={item === "waiting_for_investigation" ? phase : null} />)}</span>;
 }
 
-function VisitStatus({ status }: { status?: VisitCareStatus }) {
+function VisitStatus({ status, phase }: { status?: VisitCareStatus; phase?: InvestigationPhase | null }) {
   if (!status) return <span className="text-muted">—</span>;
-  const tone = status === "seen" || status === "diagnosed"
-    ? "bg-success-soft text-success"
-    : status === "pending_payment" || status === "waiting_for_triage"
+  const tone = status === "patient_left"
+    ? "bg-surface-3 text-muted-strong"
+    : status === "consultation_in_progress" || (status === "waiting_for_investigation" && phase !== "results_ready")
       ? "bg-warning-soft text-warning"
-      : "bg-panel text-blue";
-  return <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${tone}`}>{visitStatusLabel(status)}</span>;
+      : status === "seen" || status === "encounter_complete" || status === "under_nursing_care" || (status === "waiting_for_investigation" && phase === "results_ready")
+        ? "bg-success-soft text-success"
+        : status === "referred"
+          ? "bg-panel text-blue"
+          : status === "pending_payment" || status === "waiting_for_triage"
+            ? "bg-warning-soft text-warning"
+            : "bg-panel text-blue";
+  return <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${tone}`}>{visitStatusText({ status, investigation_phase: phase })}</span>;
 }

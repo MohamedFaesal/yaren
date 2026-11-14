@@ -13,6 +13,7 @@ import {
   workspaceClinicOptionsWhere,
 } from "../permissions.js";
 import { changed, noteActivity } from "./activity.js";
+import { investigationPhaseSql } from "../investigation-helpers.js";
 
 const visitStatuses = ["waiting_for_triage", "waiting_for_investigation", "to_doctor"] as const;
 const triageCategories = ["emergency", "urgent", "normal"] as const;
@@ -73,10 +74,12 @@ const triageCompleteSchema = z.object({
   assigned_doctor_id: z.string().uuid({ error: "Assign a doctor" }),
 });
 
-const visitQueueColumns = `v.id, v.patient_id, v.status, v.visit_type, v.status_changed_at, v.assigned_doctor_id, v.assigned_nurse_id,
+const triageRecordSchema = triageCompleteSchema.omit({ assigned_doctor_id: true });
+
+const visitQueueColumns = `v.id, v.visit_number, v.patient_id, v.status, v.visit_type, v.status_changed_at, v.assigned_doctor_id, v.assigned_nurse_id,
   v.hotel_room_no, v.clinic_id, c.name AS clinic_name, h.name AS hotel_name,
   p.name AS patient_name, p.mrn AS patient_mrn, p.added_by AS patient_added_by,
-  v.created_at, v.updated_at,
+  v.created_at, v.updated_at, ${investigationPhaseSql("v")} AS investigation_phase,
   t.id AS triage_id, t.triage_category, t.completed_at AS triage_completed_at,
   d.name AS assigned_doctor_name, nurse.name AS assigned_nurse_name`;
 
@@ -147,9 +150,7 @@ export function registerTriage(app: FastifyInstance, pool: pg.Pool) {
     const result = await pool.query(
       `SELECT ${visitQueueColumns}
        ${from}
-       ORDER BY
-         CASE v.status WHEN 'waiting_for_triage' THEN 0 ELSE 1 END,
-         v.created_at ASC
+       ORDER BY v.created_at DESC
        LIMIT $${values.length + 1} OFFSET $${values.length + 2}`,
       [...values, query.pageSize, (page - 1) * query.pageSize],
     );
@@ -173,7 +174,7 @@ export function registerTriage(app: FastifyInstance, pool: pg.Pool) {
     const clauses = [
       "v.deleted_at IS NULL",
       "p.deleted_at IS NULL",
-      "v.status IN ('to_doctor', 'diagnosed', 'waiting_for_investigation')",
+      "v.status IN ('to_doctor', 'consultation_in_progress', 'waiting_for_investigation', 'under_nursing_care', 'encounter_complete', 'referred')",
       "v.assigned_doctor_id IS NOT NULL",
       "t.completed_at IS NOT NULL",
     ];
@@ -199,6 +200,7 @@ export function registerTriage(app: FastifyInstance, pool: pg.Pool) {
     const monitoringClauses = [...clauses];
     const monitoringValues = [...values];
     const focus = readCaseFocus(request.query);
+    const phaseExpr = investigationPhaseSql("v");
     const summaryFrom = `
       FROM patient_visits v
       JOIN clinics c ON c.id = v.clinic_id
@@ -214,8 +216,12 @@ export function registerTriage(app: FastifyInstance, pool: pg.Pool) {
       emergency: number;
       urgent: number;
       normal: number;
-      diagnosed: number;
       waiting_for_investigation: number;
+      awaiting_collection: number;
+      collected: number;
+      at_lab: number;
+      results_ready: number;
+      closed: number;
       average_wait_minutes: number;
     }>(
       `SELECT count(*) FILTER (WHERE v.status = 'to_doctor')::int AS waiting,
@@ -224,14 +230,20 @@ export function registerTriage(app: FastifyInstance, pool: pg.Pool) {
               count(*) FILTER (WHERE v.status = 'to_doctor' AND t.triage_category = 'emergency')::int AS emergency,
               count(*) FILTER (WHERE v.status = 'to_doctor' AND t.triage_category = 'urgent')::int AS urgent,
               count(*) FILTER (WHERE v.status = 'to_doctor' AND t.triage_category = 'normal')::int AS normal,
-              count(*) FILTER (WHERE v.status = 'diagnosed')::int AS diagnosed,
               count(*) FILTER (WHERE v.status = 'waiting_for_investigation')::int AS waiting_for_investigation,
+              count(*) FILTER (WHERE ${phaseExpr} = 'awaiting_collection')::int AS awaiting_collection,
+              count(*) FILTER (WHERE ${phaseExpr} = 'collected')::int AS collected,
+              count(*) FILTER (WHERE ${phaseExpr} = 'at_lab')::int AS at_lab,
+              count(*) FILTER (WHERE ${phaseExpr} = 'results_ready')::int AS results_ready,
+              count(*) FILTER (WHERE v.status IN ('encounter_complete', 'referred', 'under_nursing_care'))::int AS closed,
               COALESCE(ROUND(AVG(EXTRACT(EPOCH FROM (now() - t.completed_at)) / 60) FILTER (WHERE v.status = 'to_doctor'))::int, 0) AS average_wait_minutes
        ${summaryFrom}`,
       values,
     );
-    if (focus === "diagnosed") clauses.push("v.status = 'diagnosed'");
     if (focus === "waiting_for_investigation") clauses.push("v.status = 'waiting_for_investigation'");
+    if (focus === "awaiting_collection" || focus === "collected" || focus === "at_lab" || focus === "results_ready") {
+      clauses.push(`${phaseExpr} = '${focus}'`);
+    }
     if (focus === "today") clauses.push("v.status = 'to_doctor' AND t.completed_at >= date_trunc('day', now())");
     if (focus === "now") clauses.push("v.status = 'to_doctor' AND t.triage_category IN ('emergency', 'urgent')");
     if (focus === "emergency" || focus === "urgent" || focus === "normal") {
@@ -265,14 +277,14 @@ export function registerTriage(app: FastifyInstance, pool: pg.Pool) {
     const pages = Math.max(1, Math.ceil(total / query.pageSize));
     const page = Math.min(query.page, pages);
     const result = await pool.query(
-      `SELECT v.id, v.patient_id, v.status, v.visit_type, v.status_changed_at, v.assigned_doctor_id,
-              v.monitoring_status,
+      `SELECT v.id, v.visit_number, v.patient_id, v.status, v.visit_type, v.status_changed_at, v.assigned_doctor_id,
+              v.monitoring_status, ${phaseExpr} AS investigation_phase,
               d.name AS assigned_doctor_name, v.hotel_room_no, v.clinic_id, c.name AS clinic_name,
               h.name AS hotel_name, p.name AS patient_name, p.mrn AS patient_mrn,
               t.triage_category, t.chief_complaint, t.completed_at AS triage_completed_at
        ${from}
-       ORDER BY CASE WHEN v.status = 'to_doctor' THEN 0 ELSE 1 END,
-                CASE WHEN v.status = 'to_doctor' THEN t.completed_at ELSE v.status_changed_at END DESC
+       ORDER BY CASE WHEN v.status IN ('to_doctor', 'consultation_in_progress') THEN 0 ELSE 1 END,
+                CASE WHEN v.status IN ('to_doctor', 'consultation_in_progress') THEN t.completed_at ELSE v.status_changed_at END DESC
        LIMIT $${values.length + 1} OFFSET $${values.length + 2}`,
       [...values, query.pageSize, (page - 1) * query.pageSize],
     );
@@ -283,13 +295,18 @@ export function registerTriage(app: FastifyInstance, pool: pg.Pool) {
       emergency: 0,
       urgent: 0,
       normal: 0,
-      diagnosed: 0,
       waiting_for_investigation: 0,
+      awaiting_collection: 0,
+      collected: 0,
+      at_lab: 0,
+      results_ready: 0,
+      closed: 0,
       average_wait_minutes: 0,
     };
     const monitoring = await pool.query(
       `SELECT o.id, o.visit_id, o.temperature_c, o.pulse, o.respiratory_rate, o.spo2, o.blood_pressure, o.notes,
-              o.case_priority, o.recorded_by, o.recorded_at, o.sent_to_doctor_at, u.name AS recorded_by_name,
+              o.doctor_assessment, o.clinical_assessment,
+              o.case_priority, o.recorded_by, o.recorded_at, o.sent_to_doctor_at, o.doctor_viewed_at, u.name AS recorded_by_name,
               v.patient_id, v.monitoring_status, v.status AS visit_status, v.hotel_room_no,
               h.name AS hotel_name, p.name AS patient_name, p.mrn AS patient_mrn
        FROM patient_visit_nurse_observations o
@@ -321,7 +338,7 @@ export function registerTriage(app: FastifyInstance, pool: pg.Pool) {
     const { id } = request.params as { id: string };
     if (!isUuid(id)) throw new ApplicationError(404, "not_found", "Case was not found");
     const found = await pool.query(
-      `SELECT v.id, v.patient_id, v.status, v.visit_type, v.status_changed_at, v.hotel_room_no, v.clinic_id, v.assigned_doctor_id,
+      `SELECT v.id, v.visit_number, v.patient_id, v.status, v.visit_type, v.monitoring_status, ${investigationPhaseSql("v")} AS investigation_phase, v.status_changed_at, v.hotel_room_no, v.clinic_id, v.assigned_doctor_id,
               c.name AS clinic_name, h.name AS hotel_name,
               p.name AS patient_name, p.mrn AS patient_mrn, p.gender AS patient_gender,
               p.nationality AS patient_nationality,
@@ -340,7 +357,7 @@ export function registerTriage(app: FastifyInstance, pool: pg.Pool) {
        WHERE v.id = $1
          AND v.deleted_at IS NULL
          AND p.deleted_at IS NULL
-         AND v.status IN ('to_doctor', 'diagnosed', 'waiting_for_investigation')
+         AND v.status IN ('to_doctor', 'consultation_in_progress', 'waiting_for_investigation', 'under_nursing_care', 'encounter_complete', 'referred')
          AND v.assigned_doctor_id IS NOT NULL
          AND t.completed_at IS NOT NULL`,
       [id],
@@ -545,7 +562,7 @@ export function registerTriage(app: FastifyInstance, pool: pg.Pool) {
       noteActivity(request, {
         summary: `Sent ${visit.patient_name} to doctor after triage`,
         changes: [
-          changed("Status", "Waiting for triage", "To see the doctor"),
+          changed("Status", "Waiting for triage", "Waiting for doctor"),
           changed("Triage category", null, body.triage_category),
         ].filter((item) => item !== null),
       });
@@ -561,9 +578,80 @@ export function registerTriage(app: FastifyInstance, pool: pg.Pool) {
       client.release();
     }
   });
+
+  app.post("/api/patients/:patientId/visits/:id/triage/left", { preHandler: authenticate }, async (request) => {
+    const { patientId, id } = request.params as { patientId: string; id: string };
+    const body = parse(triageRecordSchema, request.body ?? {});
+    const visit = await findVisitCore(pool, patientId, id);
+    if (!visit) throw new ApplicationError(404, "not_found", "Visit was not found");
+    if (visit.status !== "waiting_for_triage") {
+      throw new ApplicationError(422, "invalid_status", "Only a visit waiting for triage can be marked as patient left");
+    }
+    const access = await loadAccess(pool, request.user);
+    await assertClinicScoped(access, request.user.sub, "triage", ["update"], visit.clinic_id, visit.patient_added_by);
+
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      const triage = await upsertTriage(client, id, { ...body, assigned_doctor_id: null }, request.user.sub, false);
+      await client.query(
+        `UPDATE patient_visits
+         SET status = 'patient_left',
+             status_changed_at = now(),
+             assigned_doctor_id = NULL,
+             updated_at = now()
+         WHERE id = $1 AND deleted_at IS NULL AND status = 'waiting_for_triage'`,
+        [id],
+      );
+      await client.query(
+        `INSERT INTO patient_visit_status_history (visit_id, from_status, to_status, changed_by)
+         VALUES ($1, 'waiting_for_triage', 'patient_left', $2)`,
+        [id, request.user.sub],
+      );
+      await client.query("COMMIT");
+      noteActivity(request, {
+        summary: `Recorded that ${visit.patient_name} left`,
+        changes: [changed("Status", "Waiting for triage", "Patient Left")].filter((item) => item !== null),
+      });
+      return {
+        visit: await findVisitCore(pool, patientId, id),
+        triage,
+        history: await listStatusHistory(pool, id),
+      };
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  });
+
+  app.post("/api/doctor-cases/:id/monitoring/viewed", { preHandler: authenticate }, async (request) => {
+    const seesAll = request.user.type === "super-admin" || request.user.type === "admin";
+    if (!seesAll && request.user.role !== "Doctor") {
+      throw new ApplicationError(403, "forbidden", "You cannot view doctor cases");
+    }
+    const { id } = request.params as { id: string };
+    if (!isUuid(id)) throw new ApplicationError(404, "not_found", "Case was not found");
+    const visit = await pool.query<{ assigned_doctor_id: string | null }>(
+      "SELECT assigned_doctor_id FROM patient_visits WHERE id = $1 AND deleted_at IS NULL",
+      [id],
+    );
+    if (!visit.rows[0]) throw new ApplicationError(404, "not_found", "Case was not found");
+    if (!seesAll && visit.rows[0].assigned_doctor_id !== request.user.sub) {
+      throw new ApplicationError(403, "forbidden", "You cannot view this case");
+    }
+    const updated = await pool.query(
+      `UPDATE patient_visit_nurse_observations
+       SET doctor_viewed_at = now(), updated_at = now()
+       WHERE visit_id = $1 AND sent_to_doctor_at IS NOT NULL AND doctor_viewed_at IS NULL`,
+      [id],
+    );
+    return { viewed: updated.rowCount ?? 0 };
+  });
 }
 
-const caseFocuses = ["today", "now", "emergency", "urgent", "normal", "diagnosed", "waiting_for_investigation"] as const;
+const caseFocuses = ["today", "now", "emergency", "urgent", "normal", "waiting_for_investigation", "awaiting_collection", "collected", "at_lab", "results_ready"] as const;
 
 function presentDoctorMonitoring(row: Record<string, unknown>) {
   return {
@@ -582,11 +670,14 @@ function presentDoctorMonitoring(row: Record<string, unknown>) {
     spo2: row.spo2 == null ? null : Number(row.spo2),
     blood_pressure: typeof row.blood_pressure === "string" ? row.blood_pressure : null,
     notes: typeof row.notes === "string" ? row.notes : "",
+    doctor_assessment: row.doctor_assessment === "stable" || row.doctor_assessment === "needs_review" || row.doctor_assessment === "deteriorating" ? row.doctor_assessment : null,
+    clinical_assessment: typeof row.clinical_assessment === "string" ? row.clinical_assessment : "",
     case_priority: row.case_priority === "stable" || row.case_priority === "urgent" || row.case_priority === "emergency" ? row.case_priority : null,
     recorded_by: typeof row.recorded_by === "string" ? row.recorded_by : null,
     recorded_by_name: typeof row.recorded_by_name === "string" ? row.recorded_by_name : null,
     recorded_at: row.recorded_at ? new Date(String(row.recorded_at)).toISOString() : null,
     sent_to_doctor_at: row.sent_to_doctor_at ? new Date(String(row.sent_to_doctor_at)).toISOString() : null,
+    doctor_viewed_at: row.doctor_viewed_at ? new Date(String(row.doctor_viewed_at)).toISOString() : null,
   };
 }
 
@@ -628,8 +719,8 @@ function readQueueQuery(query: unknown) {
 
 async function findVisitCore(pool: pg.Pool, patientId: string, id: string) {
   const result = await pool.query(
-    `SELECT v.id, v.patient_id, v.status, v.status_changed_at, v.assigned_doctor_id,
-            v.hotel_room_no, v.clinic_id, c.name AS clinic_name, h.name AS hotel_name,
+    `SELECT v.id, v.visit_number, v.patient_id, v.status, v.visit_type, v.status_changed_at, v.assigned_doctor_id,
+            v.passport_number, v.hotel_room_no, v.clinic_id, c.name AS clinic_name, h.name AS hotel_name,
             p.name AS patient_name, p.mrn AS patient_mrn, p.added_by AS patient_added_by,
             p.gender AS patient_gender, p.birthdate::text AS patient_birthdate,
             p.nationality AS patient_nationality,

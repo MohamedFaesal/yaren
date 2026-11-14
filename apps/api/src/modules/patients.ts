@@ -12,14 +12,16 @@ import {
   loadAccess,
   patientViewWhere,
   visitViewWhere,
+  workspaceClinicOptionsWhere,
   type Access,
 } from "../permissions.js";
 import { changed, noteActivity } from "./activity.js";
 import { nationalities } from "./nationalities.js";
+import { investigationPhaseSql } from "../investigation-helpers.js";
 import { fileUrl, removeUpload, saveVisitDocument } from "../uploads.js";
 
 const genders = ["male", "female"] as const;
-const visitStatuses = ["waiting_for_triage", "to_doctor", "seen", "waiting_for_investigation", "diagnosed", "pending_payment"] as const;
+const visitStatuses = ["waiting_for_triage", "to_doctor", "consultation_in_progress", "seen", "waiting_for_investigation", "under_nursing_care", "encounter_complete", "referred", "pending_payment", "patient_left"] as const;
 const visitTypes = ["new", "follow-up"] as const;
 const visitSorts = ["created_at", "updated_at"] as const;
 const contactMethods = ["phone", "email", "whatsapp"] as const;
@@ -90,13 +92,13 @@ const patientColumns = `p.id, p.name, p.mrn, p.birthdate::text AS birthdate, p.n
   p.added_by, u.name AS added_by_name, p.identity_number, p.email, p.phone_number, p.alternative_phone_number, p.home_address,
   p.created_at, p.updated_at, p.deleted_at`;
 
-const visitColumns = `v.id, v.patient_id, v.passport_number, v.preferred_contact_method,
+const visitColumns = `v.id, v.visit_number, v.patient_id, v.passport_number, v.preferred_contact_method,
   v.emergency_contact_name, v.emergency_contact_phone, v.emergency_contact_relationship,
   v.hotel_checkin_date::text AS hotel_checkin_date, v.hotel_checkout_date::text AS hotel_checkout_date,
   v.hotel_room_no, v.visit_type, v.currency, v.professional_service_id, ps.name AS professional_service_name, ps.code AS professional_service_code,
   p.nationality AS patient_nationality,
   v.clinic_id, c.name AS clinic_name, h.name AS hotel_name,
-  v.status, v.status_changed_at, v.assigned_doctor_id, d.name AS assigned_doctor_name,
+  v.status, v.monitoring_status, ${investigationPhaseSql("v")} AS investigation_phase, v.status_changed_at, v.assigned_doctor_id, d.name AS assigned_doctor_name,
   EXTRACT(YEAR FROM age((v.created_at AT TIME ZONE 'UTC')::date, p.birthdate))::int AS patient_age_at_visit,
   v.created_at, v.updated_at, v.deleted_at`;
 
@@ -132,6 +134,19 @@ export function registerPatients(app: FastifyInstance, pool: pg.Pool) {
     };
   });
 
+  app.get("/api/visits/by-number/:visitNumber", { preHandler: authenticate }, async (request) => {
+    const { visitNumber } = request.params as { visitNumber: string };
+    const visit = await findVisitByNumber(pool, visitNumber);
+    if (!visit) throw new ApplicationError(404, "not_found", "Visit was not found");
+    await assertCan(pool, request, {
+      resource: "visit",
+      action: "view",
+      ownerId: visit.patient_added_by,
+      clinicId: visit.clinic_id,
+    });
+    return visit;
+  });
+
   app.get("/api/visits", { preHandler: authenticate }, async (request) => {
     const access = await loadAccess(pool, request.user);
     if (!canList(access, "visit")) throw new ApplicationError(403, "forbidden", "You cannot view visits");
@@ -143,13 +158,19 @@ export function registerPatients(app: FastifyInstance, pool: pg.Pool) {
       values.push(query.clinicId);
       clauses.push(`v.clinic_id = $${values.length}`);
     }
-    if (query.status) {
+    if (query.status === "under_nursing_care") {
+      clauses.push(`(v.status = 'under_nursing_care' OR (v.status = 'waiting_for_investigation' AND v.monitoring_status = 'in_progress'))`);
+    } else if (query.status) {
       values.push(query.status);
       clauses.push(`v.status = $${values.length}`);
     }
     if (query.visitType) {
       values.push(query.visitType);
       clauses.push(`v.visit_type = $${values.length}`);
+    }
+    if (query.professionalServiceId) {
+      values.push(query.professionalServiceId);
+      clauses.push(`v.professional_service_id = $${values.length}`);
     }
     if (query.q) {
       const pattern = `%${query.q.replace(/[\\%_]/g, (char) => `\\${char}`)}%`;
@@ -182,6 +203,76 @@ export function registerPatients(app: FastifyInstance, pool: pg.Pool) {
       `SELECT ${visitColumns}, p.name AS patient_name, p.mrn AS patient_mrn, p.added_by AS patient_added_by
        ${from}
        ORDER BY v.${query.sort} ${query.dir}
+       LIMIT $${values.length + 1} OFFSET $${values.length + 2}`,
+      [...values, query.pageSize, (page - 1) * query.pageSize],
+    );
+    return { items: result.rows, total, page, page_size: query.pageSize };
+  });
+
+  app.get("/api/registrar/left", { preHandler: authenticate }, async (request) => {
+    if (!canSeeRegistrarDashboard(request.user)) {
+      throw new ApplicationError(403, "forbidden", "You cannot view the registrar dashboard");
+    }
+    const access = await loadAccess(pool, request.user);
+    const query = readRegistrarLeftQuery(request.query);
+    const workspace = workspaceClinicOptionsWhere(access);
+    if (!access.bypass && (!workspace || !workspace.allClinics && workspace.sql === "FALSE")) {
+      return { items: [], total: 0, page: 1, page_size: query.pageSize };
+    }
+    const values: unknown[] = [];
+    const clauses = [`v.deleted_at IS NULL`, `p.deleted_at IS NULL`, `v.status IN ('patient_left', 'encounter_complete')`];
+    if (!access.bypass && workspace && !workspace.allClinics) {
+      const clinicIds = workspace.params[0];
+      const allowed = Array.isArray(clinicIds) ? clinicIds.map(String) : [];
+      if (query.clinicId && !allowed.includes(query.clinicId)) {
+        throw new ApplicationError(403, "forbidden", "You cannot view that clinic");
+      }
+      if (!query.clinicId) {
+        values.push(allowed);
+        clauses.push(`v.clinic_id = ANY($${values.length}::uuid[])`);
+      }
+    }
+    if (query.clinicId) {
+      values.push(query.clinicId);
+      clauses.push(`v.clinic_id = $${values.length}`);
+    }
+    if (query.q) {
+      const pattern = `%${query.q.replace(/[\\%_]/g, (char) => `\\${char}`)}%`;
+      values.push(pattern, pattern, pattern, pattern, pattern, pattern);
+      const start = values.length - 5;
+      clauses.push(`(
+        p.name ILIKE $${start} ESCAPE '\\'
+        OR p.mrn ILIKE $${start + 1} ESCAPE '\\'
+        OR v.passport_number ILIKE $${start + 2} ESCAPE '\\'
+        OR c.name ILIKE $${start + 3} ESCAPE '\\'
+        OR h.name ILIKE $${start + 4} ESCAPE '\\'
+        OR v.hotel_room_no ILIKE $${start + 5} ESCAPE '\\'
+      )`);
+    }
+    const where = `WHERE ${clauses.join(" AND ")}`;
+    const from = `
+      FROM patient_visits v
+      JOIN clinics c ON c.id = v.clinic_id
+      JOIN hotels h ON h.id = c.hotel_id
+      JOIN patients p ON p.id = v.patient_id
+      LEFT JOIN LATERAL (
+        SELECT hst.created_at
+        FROM patient_visit_status_history hst
+        WHERE hst.visit_id = v.id AND hst.to_status = v.status
+        ORDER BY hst.created_at DESC
+        LIMIT 1
+      ) status_event ON true
+      ${where}`;
+    const counted = await pool.query<{ total: number }>(`SELECT count(*)::int AS total ${from}`, values);
+    const total = counted.rows[0]?.total ?? 0;
+    const pages = Math.max(1, Math.ceil(total / query.pageSize));
+    const page = Math.min(query.page, pages);
+    const result = await pool.query(
+      `SELECT v.id, v.visit_number, v.patient_id, p.name AS patient_name, p.mrn AS patient_mrn,
+              v.status, v.visit_type, v.hotel_room_no, c.name AS clinic_name, h.name AS hotel_name,
+              COALESCE(status_event.created_at, v.status_changed_at) AS recorded_at
+       ${from}
+       ORDER BY COALESCE(status_event.created_at, v.status_changed_at) DESC, v.created_at DESC
        LIMIT $${values.length + 1} OFFSET $${values.length + 2}`,
       [...values, query.pageSize, (page - 1) * query.pageSize],
     );
@@ -305,6 +396,16 @@ export function registerPatients(app: FastifyInstance, pool: pg.Pool) {
       [...values, query.pageSize, (page - 1) * query.pageSize],
     );
     return { items: result.rows, total, page, page_size: query.pageSize };
+  });
+
+  app.get("/api/patients/by-mrn/:mrn", { preHandler: authenticate }, async (request) => {
+    const { mrn } = request.params as { mrn: string };
+    const patient = await findPatientByMrn(pool, mrn);
+    if (!patient) throw new ApplicationError(404, "not_found", "Patient was not found");
+    await assertPatientCan(pool, request, { action: "view", ownerId: patient.added_by, patientId: patient.id });
+    const access = await loadAccess(pool, request.user);
+    const visits = canList(access, "visit") ? await listVisits(pool, patient.id, visitViewWhere(access, request.user.sub)) : [];
+    return { ...patient, visits };
   });
 
   app.get("/api/patients/:id", { preHandler: authenticate }, async (request) => {
@@ -581,25 +682,25 @@ export function registerPatients(app: FastifyInstance, pool: pg.Pool) {
       ownerId: visit.patient_added_by,
       clinicId: visit.clinic_id,
     });
-    if (visit.status !== "diagnosed") {
-      throw new ApplicationError(422, "invalid_status", "Only a diagnosed visit can move to pending payment");
+    if (visit.status !== "encounter_complete") {
+      throw new ApplicationError(422, "invalid_status", "Only an encounter-complete visit can move to pending payment");
     }
     await pool.query(
       `UPDATE patient_visits
        SET status = 'pending_payment', status_changed_at = now(), updated_at = now()
-       WHERE id = $1 AND patient_id = $2 AND deleted_at IS NULL AND status = 'diagnosed'`,
+       WHERE id = $1 AND patient_id = $2 AND deleted_at IS NULL AND status = 'encounter_complete'`,
       [id, patientId],
     );
     await pool.query(
       `INSERT INTO patient_visit_status_history (visit_id, from_status, to_status, changed_by)
-       VALUES ($1, 'diagnosed', 'pending_payment', $2)`,
+       VALUES ($1, 'encounter_complete', 'pending_payment', $2)`,
       [id, request.user.sub],
     );
     noteActivity(request, {
       entity: "patient",
       entityId: patientId,
       summary: `Marked the visit for ${visit.patient_name} as pending payment`,
-      changes: [changed("Status", "Diagnosed", "Pending payment")].filter((item) => item !== null),
+      changes: [changed("Status", "Encounter Complete", "Pending payment")].filter((item) => item !== null),
     });
     const next = await findVisit(pool, patientId, id);
     if (!next) throw new ApplicationError(404, "not_found", "Visit was not found");
@@ -628,7 +729,16 @@ async function findPatient(pool: Db, id: string) {
     `SELECT ${patientColumns} FROM patients p JOIN users u ON u.id = p.added_by WHERE p.id = $1 AND p.deleted_at IS NULL`,
     [id],
   );
-  return result.rows[0] as { id: string; added_by: string; name: string; identity_number: string | null } | undefined;
+  return result.rows[0] as { id: string; added_by: string; name: string; identity_number: string | null; mrn: string } | undefined;
+}
+
+async function findPatientByMrn(pool: Db, mrn: string) {
+  const result = await pool.query(
+    `SELECT ${patientColumns} FROM patients p JOIN users u ON u.id = p.added_by
+     WHERE p.deleted_at IS NULL AND upper(p.mrn) = upper($1)`,
+    [mrn.trim()],
+  );
+  return result.rows[0] as { id: string; added_by: string; name: string; identity_number: string | null; mrn: string } | undefined;
 }
 
 async function findPatientByIdentity(pool: Db, identity: string) {
@@ -917,15 +1027,16 @@ async function insertVisit(
   await assertProfessionalService(db, visit.professional_service_id);
   const patient = await db.query<{ nationality: string }>("SELECT nationality FROM patients WHERE id = $1", [patientId]);
   const currency = patient.rows[0]?.nationality === "Egyptian" ? "EGP" : "EUR";
+  const visitNumber = await nextVisitNumber(db);
   const result = await db.query(
     `INSERT INTO patient_visits (
-       patient_id, passport_number, preferred_contact_method, emergency_contact_name, emergency_contact_phone,
+       patient_id, visit_number, passport_number, preferred_contact_method, emergency_contact_name, emergency_contact_phone,
        emergency_contact_relationship, hotel_checkin_date, hotel_checkout_date, hotel_room_no, clinic_id,
        visit_type, currency, professional_service_id, status, status_changed_at
-     ) VALUES ($1, $2, $3, $4, $5, $6, $7::date, $8::date, $9, $10, $11, $12, $13, 'waiting_for_triage', now())
+     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::date, $9::date, $10, $11, $12, $13, $14, 'waiting_for_triage', now())
      RETURNING id`,
     [
-      patientId, passportNumber, visit.preferred_contact_method, visit.emergency_contact_name, visit.emergency_contact_phone,
+      patientId, visitNumber, passportNumber, visit.preferred_contact_method, visit.emergency_contact_name, visit.emergency_contact_phone,
       visit.emergency_contact_relationship, visit.hotel_checkin_date, visit.hotel_checkout_date, visit.hotel_room_no, visit.clinic_id,
       visit.visit_type ?? "new",
       currency,
@@ -961,6 +1072,19 @@ async function listVisits(pool: Db, patientId: string, where?: { sql: string; pa
     [patientId, ...filter.params],
   );
   return result.rows;
+}
+
+async function findVisitByNumber(pool: pg.Pool, visitNumber: string) {
+  const found = await pool.query<{ id: string; patient_id: string }>(
+    `SELECT v.id, v.patient_id
+     FROM patient_visits v
+     JOIN patients p ON p.id = v.patient_id
+     WHERE upper(v.visit_number) = upper($1) AND v.deleted_at IS NULL AND p.deleted_at IS NULL`,
+    [visitNumber.trim()],
+  );
+  const row = found.rows[0];
+  if (!row) return undefined;
+  return findVisit(pool, row.patient_id, row.id);
 }
 
 async function findVisit(pool: pg.Pool, patientId: string, id: string) {
@@ -1039,6 +1163,19 @@ async function listVisitDocuments(pool: Db, visitId: string) {
   }));
 }
 
+async function nextVisitNumber(db: Db) {
+  const year = new Date().getUTCFullYear();
+  const result = await db.query<{ last_number: number }>(
+    `INSERT INTO visit_number_years (year, last_number) VALUES ($1, 1)
+     ON CONFLICT (year) DO UPDATE SET last_number = visit_number_years.last_number + 1
+     RETURNING last_number`,
+    [year],
+  );
+  const number = result.rows[0]?.last_number;
+  if (!number) throw new ApplicationError(500, "visit_number_failed", "The visit number could not be created");
+  return `YV-${year}-${String(number).padStart(6, "0")}`;
+}
+
 async function nextMrn(client: pg.PoolClient) {
   const year = new Date().getUTCFullYear();
   const result = await client.query<{ last_number: number }>(
@@ -1082,6 +1219,26 @@ function readPatientListQuery(query: unknown) {
   return { page, pageSize, q, gender, nationality, clinicId: clinicId || null };
 }
 
+function canSeeRegistrarDashboard(user: { type: string; role: string }) {
+  return user.type === "super-admin" || user.type === "admin" || user.role === "Receptionist";
+}
+
+function readRegistrarLeftQuery(query: unknown) {
+  const source = query !== null && typeof query === "object" ? query as Record<string, unknown> : {};
+  const text = (key: string) => (typeof source[key] === "string" ? source[key].trim() : "");
+  const page = Number(text("page") || "1");
+  const pageSize = Number(text("page_size") || "20");
+  const q = text("q");
+  const clinicId = text("clinic_id");
+  if (!Number.isInteger(page) || page < 1) throw new ApplicationError(422, "invalid_query", "Page must be 1 or greater");
+  if (!Number.isInteger(pageSize) || pageSize < 1 || pageSize > 100) throw new ApplicationError(422, "invalid_query", "Page size must be between 1 and 100");
+  if (q.length > 200) throw new ApplicationError(422, "invalid_query", "Search is too long");
+  if (clinicId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(clinicId)) {
+    throw new ApplicationError(422, "invalid_query", "Unknown clinic");
+  }
+  return { page, pageSize, q, clinicId: clinicId || null };
+}
+
 function readVisitListQuery(query: unknown) {
   const source = query !== null && typeof query === "object" ? query as Record<string, unknown> : {};
   const text = (key: string) => (typeof source[key] === "string" ? source[key].trim() : "");
@@ -1091,6 +1248,7 @@ function readVisitListQuery(query: unknown) {
   const clinicId = text("clinic_id");
   const status = text("status");
   const visitType = text("visit_type");
+  const professionalServiceId = text("professional_service_id");
   const sort = text("sort") || "updated_at";
   const dir = (text("dir") || "desc").toLowerCase();
   if (!Number.isInteger(page) || page < 1) throw new ApplicationError(422, "invalid_query", "Page must be 1 or greater");
@@ -1105,6 +1263,9 @@ function readVisitListQuery(query: unknown) {
   if (visitType && !visitTypes.includes(visitType as (typeof visitTypes)[number])) {
     throw new ApplicationError(422, "invalid_query", "Unknown visit type");
   }
+  if (professionalServiceId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(professionalServiceId)) {
+    throw new ApplicationError(422, "invalid_query", "Unknown clinic service");
+  }
   if (!visitSorts.includes(sort as (typeof visitSorts)[number])) {
     throw new ApplicationError(422, "invalid_query", "Unknown sort");
   }
@@ -1116,6 +1277,7 @@ function readVisitListQuery(query: unknown) {
     clinicId: clinicId || null,
     status: (status || null) as (typeof visitStatuses)[number] | null,
     visitType: (visitType || null) as (typeof visitTypes)[number] | null,
+    professionalServiceId: professionalServiceId || null,
     sort: sort as (typeof visitSorts)[number],
     dir: dir === "asc" ? "ASC" : "DESC",
   };
