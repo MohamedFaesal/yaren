@@ -1,4 +1,5 @@
 import { Children, cloneElement, useEffect, useId, useRef, useState, type ReactElement, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { Link } from "react-router";
 
 export const field = "mt-1 w-full rounded-lg border border-line-strong bg-surface px-3 py-2.5 text-sm text-ink outline-none transition focus:border-blue focus:ring-2 focus:ring-blue/15 disabled:bg-surface-3";
@@ -490,6 +491,7 @@ export function ConfirmDialog({
   cancelLabel = "Keep",
   pendingLabel = "Deleting",
   className = "z-50",
+  reason,
 }: {
   open: boolean;
   title: string;
@@ -503,7 +505,16 @@ export function ConfirmDialog({
   cancelLabel?: string;
   pendingLabel?: string;
   className?: string;
+  reason?: {
+    label: string;
+    value: string;
+    onChange: (value: string) => void;
+    placeholder?: string;
+    required?: boolean;
+    maxLength?: number;
+  };
 }) {
+  const reasonMissing = Boolean(reason?.required && !reason.value.trim());
   useEffect(() => {
     if (!open) return;
     function onKey(event: KeyboardEvent) {
@@ -515,7 +526,7 @@ export function ConfirmDialog({
 
   if (!open) return null;
 
-  return (
+  return createPortal(
     <div className={`triage-dialog-backdrop fixed inset-0 grid place-items-center bg-shell/50 px-4 backdrop-blur-[2px] ${className}`} role="presentation" onMouseDown={() => {
         if (!pending) onCancel();
       }}>
@@ -532,13 +543,35 @@ export function ConfirmDialog({
         <p className="mt-4 text-xs font-semibold uppercase tracking-wide text-danger">{eyebrow}</p>
         <h2 id="confirm-title" className="mt-1 text-xl font-bold text-ink">{title}</h2>
         <p className="mt-2 text-sm leading-6 text-muted-strong">{body}</p>
+        {reason ? (
+          <label className="mt-4 block">
+            <span className="text-xs font-semibold uppercase tracking-wide text-muted-strong">
+              {reason.label}
+              {reason.required ? <span className="text-danger"> *</span> : null}
+            </span>
+            <textarea
+              className={`${field} mt-1.5 min-h-24 resize-y`}
+              value={reason.value}
+              maxLength={reason.maxLength ?? 500}
+              placeholder={reason.placeholder}
+              disabled={pending}
+              autoFocus
+              onChange={(event) => reason.onChange(event.target.value)}
+            />
+            <span className="mt-1 flex justify-between gap-2 text-[11px] text-muted">
+              <span>{reason.required && reasonMissing ? "Required before cancelling" : "\u00a0"}</span>
+              <span>{reason.value.length}/{reason.maxLength ?? 500}</span>
+            </span>
+          </label>
+        ) : null}
         {error ? <p className="mt-3 text-sm text-danger">{error}</p> : null}
         <div className="mt-6 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
           <button type="button" className={`${secondary} w-full sm:w-auto`} onClick={onCancel} disabled={pending}>{cancelLabel}</button>
-          <button type="button" className={`${danger} w-full sm:w-auto`} onClick={onConfirm} disabled={pending}>{pending ? pendingLabel : confirmLabel}</button>
+          <button type="button" className={`${danger} w-full sm:w-auto`} onClick={onConfirm} disabled={pending || reasonMissing}>{pending ? pendingLabel : confirmLabel}</button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 

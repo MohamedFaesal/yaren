@@ -239,7 +239,7 @@ function formatWhen(value: string) {
   return new Date(value).toLocaleString("en-GB", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
-function VisitStatuses({ status, monitoring, phase }: { status?: VisitCareStatus; monitoring?: "none" | "in_progress" | "completed" | null; phase?: InvestigationPhase | null }) {
+function VisitStatuses({ status, monitoring, phase }: { status?: VisitCareStatus; monitoring?: "none" | "in_progress" | "completed" | "cancelled" | null; phase?: InvestigationPhase | null }) {
   const chips = visitStatusChips({ status, monitoring_status: monitoring });
   if (chips.length === 0) return <span className="text-muted">—</span>;
   return <span className="inline-flex flex-wrap gap-1">{chips.map((item) => <VisitStatus key={item} status={item} phase={item === "waiting_for_investigation" ? phase : null} />)}</span>;

@@ -209,18 +209,25 @@ export function registerPatients(app: FastifyInstance, pool: pg.Pool) {
     return { items: result.rows, total, page, page_size: query.pageSize };
   });
 
-  app.get("/api/registrar/left", { preHandler: authenticate }, async (request) => {
+  app.get("/api/registrar/dashboard", { preHandler: authenticate }, async (request) => {
     if (!canSeeRegistrarDashboard(request.user)) {
       throw new ApplicationError(403, "forbidden", "You cannot view the registrar dashboard");
     }
     const access = await loadAccess(pool, request.user);
-    const query = readRegistrarLeftQuery(request.query);
+    const query = readRegistrarDashboardQuery(request.query);
+    const today = utcCalendarDay();
+    const from = query.from ?? today;
+    const to = query.to ?? today;
     const workspace = workspaceClinicOptionsWhere(access);
     if (!access.bypass && (!workspace || !workspace.allClinics && workspace.sql === "FALSE")) {
-      return { items: [], total: 0, page: 1, page_size: query.pageSize };
+      return emptyRegistrarDashboard(from, to);
     }
-    const values: unknown[] = [];
-    const clauses = [`v.deleted_at IS NULL`, `p.deleted_at IS NULL`, `v.status IN ('patient_left', 'encounter_complete')`];
+    const values: unknown[] = [from, to];
+    const clauses = [
+      `v.deleted_at IS NULL`,
+      `p.deleted_at IS NULL`,
+      `(v.created_at AT TIME ZONE 'UTC')::date BETWEEN $1::date AND $2::date`,
+    ];
     if (!access.bypass && workspace && !workspace.allClinics) {
       const clinicIds = workspace.params[0];
       const allowed = Array.isArray(clinicIds) ? clinicIds.map(String) : [];
@@ -236,47 +243,28 @@ export function registerPatients(app: FastifyInstance, pool: pg.Pool) {
       values.push(query.clinicId);
       clauses.push(`v.clinic_id = $${values.length}`);
     }
-    if (query.q) {
-      const pattern = `%${query.q.replace(/[\\%_]/g, (char) => `\\${char}`)}%`;
-      values.push(pattern, pattern, pattern, pattern, pattern, pattern);
-      const start = values.length - 5;
-      clauses.push(`(
-        p.name ILIKE $${start} ESCAPE '\\'
-        OR p.mrn ILIKE $${start + 1} ESCAPE '\\'
-        OR v.passport_number ILIKE $${start + 2} ESCAPE '\\'
-        OR c.name ILIKE $${start + 3} ESCAPE '\\'
-        OR h.name ILIKE $${start + 4} ESCAPE '\\'
-        OR v.hotel_room_no ILIKE $${start + 5} ESCAPE '\\'
-      )`);
-    }
-    const where = `WHERE ${clauses.join(" AND ")}`;
-    const from = `
-      FROM patient_visits v
-      JOIN clinics c ON c.id = v.clinic_id
-      JOIN hotels h ON h.id = c.hotel_id
-      JOIN patients p ON p.id = v.patient_id
-      LEFT JOIN LATERAL (
-        SELECT hst.created_at
-        FROM patient_visit_status_history hst
-        WHERE hst.visit_id = v.id AND hst.to_status = v.status
-        ORDER BY hst.created_at DESC
-        LIMIT 1
-      ) status_event ON true
-      ${where}`;
-    const counted = await pool.query<{ total: number }>(`SELECT count(*)::int AS total ${from}`, values);
-    const total = counted.rows[0]?.total ?? 0;
-    const pages = Math.max(1, Math.ceil(total / query.pageSize));
-    const page = Math.min(query.page, pages);
-    const result = await pool.query(
-      `SELECT v.id, v.visit_number, v.patient_id, p.name AS patient_name, p.mrn AS patient_mrn,
-              v.status, v.visit_type, v.hotel_room_no, c.name AS clinic_name, h.name AS hotel_name,
-              COALESCE(status_event.created_at, v.status_changed_at) AS recorded_at
-       ${from}
-       ORDER BY COALESCE(status_event.created_at, v.status_changed_at) DESC, v.created_at DESC
-       LIMIT $${values.length + 1} OFFSET $${values.length + 2}`,
-      [...values, query.pageSize, (page - 1) * query.pageSize],
+    const result = await pool.query<RegistrarDashboardRow>(
+      `SELECT v.id, v.visit_number, v.patient_id, v.status, v.visit_type, v.created_at, v.status_changed_at,
+              v.passport_number, p.name AS patient_name, p.mrn AS patient_mrn, p.gender AS patient_gender,
+              EXTRACT(YEAR FROM age((v.created_at AT TIME ZONE 'UTC')::date, p.birthdate))::int AS patient_age,
+              d.name AS assigned_doctor_name,
+              ${investigationPhaseSql("v")} AS investigation_phase,
+              hist.was_complete, hist.was_referred, hist.completed_at
+       FROM patient_visits v
+       JOIN patients p ON p.id = v.patient_id
+       LEFT JOIN users d ON d.id = v.assigned_doctor_id
+       LEFT JOIN LATERAL (
+         SELECT bool_or(h.to_status IN ('encounter_complete', 'referred')) AS was_complete,
+                bool_or(h.to_status = 'referred') AS was_referred,
+                min(h.created_at) FILTER (WHERE h.to_status IN ('encounter_complete', 'referred')) AS completed_at
+         FROM patient_visit_status_history h
+         WHERE h.visit_id = v.id
+       ) hist ON true
+       WHERE ${clauses.join(" AND ")}
+       ORDER BY v.created_at ASC`,
+      values,
     );
-    return { items: result.rows, total, page, page_size: query.pageSize };
+    return presentRegistrarDashboard(from, to, result.rows, query);
   });
 
   app.post("/api/patients/register", { preHandler: authenticate }, async (request, reply) => {
@@ -1223,20 +1211,214 @@ function canSeeRegistrarDashboard(user: { type: string; role: string }) {
   return user.type === "super-admin" || user.type === "admin" || user.role === "Receptionist";
 }
 
-function readRegistrarLeftQuery(query: unknown) {
+const registrarQueueStages = ["waiting", "with_doctor", "investigations", "monitoring"] as const;
+const registrarFlowStages = [
+  "waiting_for_triage",
+  "to_doctor",
+  "with_the_doctor",
+  "waiting_for_investigations",
+  "waiting_for_doctor_review",
+  "under_monitoring",
+  "pending_payment",
+  "encounter_complete",
+  "referred",
+] as const;
+
+type RegistrarDashboardRow = {
+  id: string;
+  visit_number: string;
+  patient_id: string;
+  status: string;
+  visit_type: string;
+  created_at: Date | string;
+  status_changed_at: Date | string | null;
+  passport_number: string | null;
+  patient_name: string;
+  patient_mrn: string;
+  patient_gender: string;
+  patient_age: number | null;
+  assigned_doctor_name: string | null;
+  investigation_phase: string | null;
+  was_complete: boolean | null;
+  was_referred: boolean | null;
+  completed_at: Date | string | null;
+};
+
+function readRegistrarDashboardQuery(query: unknown) {
   const source = query !== null && typeof query === "object" ? query as Record<string, unknown> : {};
   const text = (key: string) => (typeof source[key] === "string" ? source[key].trim() : "");
-  const page = Number(text("page") || "1");
-  const pageSize = Number(text("page_size") || "20");
   const q = text("q");
   const clinicId = text("clinic_id");
-  if (!Number.isInteger(page) || page < 1) throw new ApplicationError(422, "invalid_query", "Page must be 1 or greater");
-  if (!Number.isInteger(pageSize) || pageSize < 1 || pageSize > 100) throw new ApplicationError(422, "invalid_query", "Page size must be between 1 and 100");
+  const single = text("date");
+  const from = text("from") || single;
+  const to = text("to") || single;
+  const stage = text("stage");
   if (q.length > 200) throw new ApplicationError(422, "invalid_query", "Search is too long");
+  if (from && !isCalendarDay(from)) throw new ApplicationError(422, "invalid_query", "Choose a valid start date");
+  if (to && !isCalendarDay(to)) throw new ApplicationError(422, "invalid_query", "Choose a valid end date");
+  if (from && to && from > to) throw new ApplicationError(422, "invalid_query", "The start date must be on or before the end date");
+  if (stage && !registrarQueueStages.includes(stage as (typeof registrarQueueStages)[number])) {
+    throw new ApplicationError(422, "invalid_query", "Unknown queue stage");
+  }
   if (clinicId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(clinicId)) {
     throw new ApplicationError(422, "invalid_query", "Unknown clinic");
   }
-  return { page, pageSize, q, clinicId: clinicId || null };
+  return {
+    q,
+    from: from || null,
+    to: to || null,
+    stage: (stage || null) as (typeof registrarQueueStages)[number] | null,
+    clinicId: clinicId || null,
+  };
+}
+
+function isCalendarDay(value: string) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const parsed = new Date(`${value}T00:00:00.000Z`);
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
+}
+
+function utcCalendarDay() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function emptyRegistrarDashboard(from: string, to: string) {
+  return {
+    from,
+    to,
+    kpis: {
+      registered_today: 0,
+      active_in_clinic: 0,
+      encounter_complete: 0,
+      referred: 0,
+      left_encounter_complete: 0,
+      left_encounter_incomplete: 0,
+    },
+    flow: registrarFlowStages.map((stage) => ({ stage, count: 0 })),
+    queue: [],
+    completed: [],
+  };
+}
+
+function registrarFlowStage(status: string, phase: string | null) {
+  if (status === "waiting_for_triage") return "waiting_for_triage";
+  if (status === "to_doctor") return "to_doctor";
+  if (status === "consultation_in_progress" || status === "seen") return "with_the_doctor";
+  if (status === "waiting_for_investigation") {
+    return phase === "results_ready" ? "waiting_for_doctor_review" : "waiting_for_investigations";
+  }
+  if (status === "under_nursing_care") return "under_monitoring";
+  if (status === "pending_payment") return "pending_payment";
+  if (status === "encounter_complete") return "encounter_complete";
+  if (status === "referred") return "referred";
+  return status;
+}
+
+function registrarQueueMatch(stage: (typeof registrarQueueStages)[number] | null, flow: string) {
+  if (!stage) return true;
+  if (stage === "waiting") return flow === "waiting_for_triage";
+  if (stage === "with_doctor") return flow === "to_doctor" || flow === "with_the_doctor";
+  if (stage === "investigations") return flow === "waiting_for_investigations" || flow === "waiting_for_doctor_review";
+  return flow === "under_monitoring";
+}
+
+function registrarOutcome(status: string): "in_clinic" | "left" | "referred" {
+  if (status === "referred") return "referred";
+  if (status === "patient_left") return "left";
+  return "in_clinic";
+}
+
+function isoTimestamp(value: Date | string | null | undefined) {
+  if (!value) return null;
+  const date = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
+}
+
+function presentRegistrarDashboard(from: string, to: string, rows: RegistrarDashboardRow[], query: ReturnType<typeof readRegistrarDashboardQuery>) {
+  const needle = query.q.toLowerCase();
+  const counts = new Map<string, number>();
+  const kpis = emptyRegistrarDashboard(from, to).kpis;
+  const queue: {
+    id: string;
+    visit_number: string;
+    patient_id: string;
+    patient_name: string;
+    patient_mrn: string;
+    patient_gender: string;
+    patient_age: number | null;
+    visit_type: string;
+    stage: string;
+    created_at: string;
+    assigned_doctor_name: string | null;
+  }[] = [];
+  const completed: {
+    id: string;
+    visit_number: string;
+    patient_id: string;
+    patient_name: string;
+    patient_mrn: string;
+    visit_type: string;
+    registered_at: string;
+    completed_at: string | null;
+    outcome: "in_clinic" | "left" | "referred";
+  }[] = [];
+
+  for (const row of rows) {
+    const clinicallyComplete = row.status === "encounter_complete" || row.status === "referred" || row.was_complete === true;
+    const referred = row.status === "referred" || row.was_referred === true;
+    const left = row.status === "patient_left";
+    kpis.registered_today += 1;
+    if (left && clinicallyComplete) kpis.left_encounter_complete += 1;
+    else if (left) kpis.left_encounter_incomplete += 1;
+    else kpis.active_in_clinic += 1;
+    if (clinicallyComplete) kpis.encounter_complete += 1;
+    if (referred) kpis.referred += 1;
+
+    const flow = registrarFlowStage(row.status, row.investigation_phase);
+    if (!left) counts.set(flow, (counts.get(flow) ?? 0) + 1);
+
+    const createdAt = isoTimestamp(row.created_at) ?? new Date(0).toISOString();
+    const searchable = `${row.patient_name} ${row.patient_mrn} ${row.passport_number ?? ""}`.toLowerCase();
+    if (!left && registrarQueueMatch(query.stage, flow) && (!needle || searchable.includes(needle))) {
+      queue.push({
+        id: row.id,
+        visit_number: row.visit_number,
+        patient_id: row.patient_id,
+        patient_name: row.patient_name,
+        patient_mrn: row.patient_mrn,
+        patient_gender: row.patient_gender,
+        patient_age: row.patient_age,
+        visit_type: row.visit_type,
+        stage: flow,
+        created_at: createdAt,
+        assigned_doctor_name: row.assigned_doctor_name,
+      });
+    }
+
+    if (clinicallyComplete) {
+      const completedAt = isoTimestamp(row.completed_at)
+        ?? ((row.status === "encounter_complete" || row.status === "referred") ? isoTimestamp(row.status_changed_at) : null);
+      completed.push({
+        id: row.id,
+        visit_number: row.visit_number,
+        patient_id: row.patient_id,
+        patient_name: row.patient_name,
+        patient_mrn: row.patient_mrn,
+        visit_type: row.visit_type,
+        registered_at: createdAt,
+        completed_at: completedAt,
+        outcome: registrarOutcome(row.status),
+      });
+    }
+  }
+
+  completed.sort((a, b) => (b.completed_at ?? b.registered_at).localeCompare(a.completed_at ?? a.registered_at));
+  const known = new Set<string>(registrarFlowStages);
+  const flow: { stage: string; count: number }[] = registrarFlowStages.map((stage) => ({ stage, count: counts.get(stage) ?? 0 }));
+  for (const [stage, count] of counts) {
+    if (!known.has(stage) && count > 0) flow.push({ stage, count });
+  }
+  return { from, to, kpis, flow, queue, completed };
 }
 
 function readVisitListQuery(query: unknown) {

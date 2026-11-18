@@ -13,16 +13,20 @@ import {
   nursingPlanStatusLabel,
   visitTypeLabel,
   type CasePriority,
+  type CatalogMedication,
   type EncounterInvestigation,
   type InvestigationPriority,
   type ManagementPlanRecord,
+  type MedicationOrder,
   type MonitoringItem,
   type MonitoringObservation,
   type NurseDashboardSummary,
   type NursingCareItem,
   type NursingPlanDetail,
+  type ProcedureOrder,
   type SampleCollectionItem,
 } from "../api";
+import { procedureServiceCharges, type ProcedureDetails } from "@yaren/shared-kernel";
 import { useToast } from "../toast";
 import { field, messageOf, primary, secondary } from "./ui";
 
@@ -65,47 +69,106 @@ export function NursingTasksPanel({
   busyId: string | null;
   onViewPlan: (item: NursingCareItem) => void;
 }) {
-  const openItems = items.filter((item) => item.nursing_plan_status === "ordered" || item.nursing_plan_status === "in_progress");
+  const visibleItems = items.filter((item) => (
+    item.nursing_plan_status === "ordered"
+    || item.nursing_plan_status === "in_progress"
+    || item.nursing_plan_status === "cancelled"
+  ));
+  const groups = groupNursingCareByVisit(visibleItems);
+  const activeGroups = groups.filter((group) => group.plans.some((plan) => plan.nursing_plan_status === "ordered" || plan.nursing_plan_status === "in_progress")).length;
   return (
     <section className="rounded-2xl border border-line bg-surface p-3 shadow-card sm:p-4">
       <div className="mb-3 flex items-center gap-2">
         <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-panel text-blue"><CareIcon /></span>
         <div className="min-w-0">
           <h2 className="text-sm font-semibold text-ink">Nursing Tasks & Ongoing Care</h2>
-          <p className="text-xs text-muted">{loading ? "Loading" : `${openItems.length} plan${openItems.length === 1 ? "" : "s"}`}</p>
+          <p className="text-xs text-muted">
+            {loading
+              ? "Loading"
+              : `${groups.length} patient${groups.length === 1 ? "" : "s"}${activeGroups < groups.length ? ` · ${activeGroups} active` : ""}`}
+          </p>
         </div>
       </div>
-      {openItems.length === 0 ? (
+      {groups.length === 0 ? (
         <p className="px-2 py-8 text-center text-sm text-muted">{loading ? "Loading nursing tasks…" : "No management plans waiting."}</p>
       ) : (
         <div className="space-y-2">
-          {openItems.map((item) => {
-            const elapsed = item.order_time ? Math.max(0, now - new Date(item.order_time).getTime()) : 0;
+          {groups.map((group) => {
+            const item = group.primary;
+            const elapsed = group.latestOrderTime ? Math.max(0, now - new Date(group.latestOrderTime).getTime()) : 0;
+            const orderedCount = group.plans.filter((plan) => plan.nursing_plan_status === "ordered").length;
+            const inProgressCount = group.plans.filter((plan) => plan.nursing_plan_status === "in_progress").length;
+            const cancelledCount = group.plans.filter((plan) => plan.nursing_plan_status === "cancelled").length;
+            const onlyCancelled = orderedCount + inProgressCount === 0 && cancelledCount > 0;
+            const busy = group.plans.some((plan) => busyId === `${plan.visit_id}:${plan.plan_position}`);
             return (
-              <article key={`${item.visit_id}:${item.plan_position}`} className="rounded-xl border border-line-soft bg-surface-2/40 p-3">
+              <article
+                key={item.visit_id}
+                className={onlyCancelled ? "rounded-xl border border-line bg-surface-3/40 p-3" : "rounded-xl border border-line-soft bg-surface-2/40 p-3"}
+              >
                 <div className="flex flex-wrap items-start justify-between gap-2">
                   <div className="min-w-0">
                     <p className="font-semibold text-ink">{item.patient_name}</p>
-                    <p className="text-xs text-muted">{item.patient_mrn} · Management plan {item.plan_position}</p>
+                    <p className="text-xs text-muted">
+                      {item.patient_mrn}
+                      {" · "}
+                      {group.plans.length === 1
+                        ? `Management plan ${group.plans[0].plan_position}`
+                        : `${group.plans.length} management plans`}
+                      {onlyCancelled ? " · View only" : ""}
+                    </p>
                   </div>
                   <div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5">
-                    {item.nursing_plan_status === "in_progress" && item.monitoring_status === "in_progress" ? <OnMonitoringChip /> : null}
-                    <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${nursingPlanStatusClass(item.nursing_plan_status)}`}>
-                      {nursingPlanStatusLabel(item.nursing_plan_status)}
-                    </span>
+                    {inProgressCount > 0 && item.monitoring_status === "in_progress" ? <OnMonitoringChip /> : null}
+                    {orderedCount > 0 ? (
+                      <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${nursingPlanStatusClass("ordered")}`}>
+                        {orderedCount === 1 ? "Ordered" : `${orderedCount} ordered`}
+                      </span>
+                    ) : null}
+                    {inProgressCount > 0 ? (
+                      <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${nursingPlanStatusClass("in_progress")}`}>
+                        {inProgressCount === 1 ? "In Progress" : `${inProgressCount} in progress`}
+                      </span>
+                    ) : null}
+                    {cancelledCount > 0 ? (
+                      <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${nursingPlanStatusClass("cancelled")}`}>
+                        {cancelledCount === 1 ? "Cancelled" : `${cancelledCount} cancelled`}
+                      </span>
+                    ) : null}
                   </div>
                 </div>
+                {group.plans.length > 1 ? (
+                  <ul className="mt-2 flex flex-wrap gap-1.5">
+                    {group.plans.map((plan) => (
+                      <li
+                        key={`${plan.visit_id}:${plan.plan_position}`}
+                        className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-semibold ${
+                          plan.nursing_plan_status === "ordered"
+                            ? "border-warning-line bg-warning-soft text-warning"
+                            : plan.nursing_plan_status === "cancelled"
+                              ? "border-line bg-surface-3 text-muted-strong"
+                              : "border-panel-strong bg-panel text-blue"
+                        }`}
+                      >
+                        Plan {plan.plan_position}
+                        <span className="font-medium opacity-80">{nursingPlanStatusLabel(plan.nursing_plan_status)}</span>
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
                 <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-strong">
-                  <span>Ordered {item.order_time ? formatClock(item.order_time) : "—"}</span>
+                  <span>Latest order {group.latestOrderTime ? formatClock(group.latestOrderTime) : "—"}</span>
                   <span className="font-mono tabular-nums text-ink">{clockLabel(elapsed)}</span>
                 </div>
                 <button
                   type="button"
                   className={`${secondary} mt-3 h-9 w-full px-3 text-xs sm:w-auto`}
-                  disabled={busyId === `${item.visit_id}:${item.plan_position}`}
+                  disabled={busy}
                   onClick={() => onViewPlan(item)}
                 >
-                  View management plan
+                  {onlyCancelled
+                    ? (group.plans.length === 1 ? "View cancelled plan" : "View cancelled plans")
+                    : (group.plans.length === 1 ? "View management plan" : "View management plans")}
                 </button>
               </article>
             );
@@ -114,6 +177,44 @@ export function NursingTasksPanel({
       )}
     </section>
   );
+}
+
+function groupNursingCareByVisit(items: NursingCareItem[]) {
+  const byVisit = new Map<string, NursingCareItem[]>();
+  for (const item of items) {
+    const list = byVisit.get(item.visit_id) ?? [];
+    list.push(item);
+    byVisit.set(item.visit_id, list);
+  }
+  return [...byVisit.values()].map((plans) => {
+    const sorted = [...plans].sort((left, right) => {
+      const statusRank = (status: NursingCareItem["nursing_plan_status"]) => {
+        if (status === "ordered") return 0;
+        if (status === "in_progress") return 1;
+        if (status === "cancelled") return 2;
+        return 3;
+      };
+      const byStatus = statusRank(left.nursing_plan_status) - statusRank(right.nursing_plan_status);
+      if (byStatus !== 0) return byStatus;
+      return left.plan_position - right.plan_position;
+    });
+    const latestOrderTime = sorted
+      .map((plan) => plan.order_time)
+      .filter((value): value is string => Boolean(value))
+      .sort((left, right) => new Date(right).getTime() - new Date(left).getTime())[0] ?? null;
+    const hasActive = sorted.some((plan) => plan.nursing_plan_status === "ordered" || plan.nursing_plan_status === "in_progress");
+    return {
+      primary: sorted[0],
+      plans: sorted,
+      latestOrderTime,
+      hasActive,
+    };
+  }).sort((left, right) => {
+    if (left.hasActive !== right.hasActive) return left.hasActive ? -1 : 1;
+    const leftTime = left.latestOrderTime ? new Date(left.latestOrderTime).getTime() : 0;
+    const rightTime = right.latestOrderTime ? new Date(right.latestOrderTime).getTime() : 0;
+    return rightTime - leftTime;
+  });
 }
 
 export function SampleCollectionCard({
@@ -192,14 +293,35 @@ export function MonitoringPanel({
   items,
   loading,
   now,
+  token,
   onRecord,
+  onChanged,
 }: {
   items: MonitoringItem[];
   loading?: boolean;
   now: number;
+  token: string;
   onRecord: (item: MonitoringItem) => void;
+  onChanged: () => void;
 }) {
-  const [viewing, setViewing] = useState<MonitoringItem | null>(null);
+  const [viewing, setViewing] = useState<{ item: MonitoringItem; tab: "readings" | "plan" } | null>(null);
+  const sorted = [...items].sort((left, right) => {
+    const leftWaiting = doctorNoteUnviewedSince(left);
+    const rightWaiting = doctorNoteUnviewedSince(right);
+    if (leftWaiting && !rightWaiting) return -1;
+    if (!leftWaiting && rightWaiting) return 1;
+    if (leftWaiting && rightWaiting) return new Date(leftWaiting).getTime() - new Date(rightWaiting).getTime();
+    return new Date(right.monitoring_started_at ?? 0).getTime() - new Date(left.monitoring_started_at ?? 0).getTime();
+  });
+
+  function openRecords(item: MonitoringItem, tab: "readings" | "plan" = "readings") {
+    setViewing({ item, tab });
+    if (tab !== "readings" || !doctorNoteUnviewedSince(item)) return;
+    void api(`/api/patients/${item.patient_id}/visits/${item.visit_id}/monitoring/doctor-notes/viewed`, { method: "POST" }, token)
+      .then(() => onChanged())
+      .catch(() => undefined);
+  }
+
   return (
     <section className="rounded-2xl border border-line bg-surface p-3 shadow-card sm:p-4">
       <div className="mb-3 flex items-center gap-2">
@@ -213,10 +335,21 @@ export function MonitoringPanel({
         <p className="px-2 py-8 text-center text-sm text-muted">{loading ? "Loading monitoring…" : "No patients in monitoring."}</p>
       ) : (
         <div className="space-y-2">
-          {items.map((item) => {
+          {sorted.map((item) => {
             const serviceCount = item.ordered_services.length;
+            const waitingSince = doctorNoteUnviewedSince(item);
+            const age = waitingSince ? Math.max(0, now - new Date(waitingSince).getTime()) : 0;
+            const activePlans = (item.plans ?? []).filter((plan) => plan.status === "in_progress");
+            const planSummary = activePlans.length > 0
+              ? activePlans.map((plan) => `Plan ${plan.position}`).join(", ")
+              : (item.plans ?? []).length > 1
+                ? `${item.plans!.length} management plans`
+                : null;
             return (
-              <article key={item.visit_id} className="rounded-xl border border-line-soft bg-surface-2/40 p-3">
+              <article
+                key={item.visit_id}
+                className={waitingSince ? "rounded-xl border border-warning-line bg-warning-soft p-3" : "rounded-xl border border-line-soft bg-surface-2/40 p-3"}
+              >
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0 flex-1">
                     <p className="truncate font-semibold text-ink">{item.patient_name}</p>
@@ -224,12 +357,23 @@ export function MonitoringPanel({
                       {item.patient_mrn}
                       {serviceCount > 0 ? ` · ${serviceCount} service${serviceCount === 1 ? "" : "s"}` : " · No services"}
                     </p>
+                    {planSummary ? (
+                      <p className="mt-1 truncate text-xs font-medium text-blue-strong">
+                        {activePlans.length > 0 ? `In progress: ${planSummary}` : planSummary}
+                      </p>
+                    ) : null}
                     <p className="mt-1 flex flex-wrap gap-x-3 text-xs text-muted-strong">
                       <span>Started {item.monitoring_started_at ? formatClock(item.monitoring_started_at) : "—"}</span>
                       <span className="font-mono font-semibold tabular-nums text-ink">
                         {clockLabel(item.monitoring_started_at ? Math.max(0, now - new Date(item.monitoring_started_at).getTime()) : 0)}
                       </span>
                     </p>
+                    {waitingSince ? (
+                      <p className="mt-1.5 inline-flex items-center gap-1.5 rounded-full bg-warning px-2.5 py-1 text-xs font-semibold text-white">
+                        <span className="h-1.5 w-1.5 rounded-full bg-white" aria-hidden="true" />
+                        Doctor note · {clockLabel(age)}
+                      </p>
+                    ) : null}
                   </div>
                   <div className="flex shrink-0 flex-col items-end gap-1.5">
                     <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${monitoringStatusClass(item.monitoring_status)}`}>
@@ -240,18 +384,28 @@ export function MonitoringPanel({
                 </div>
                 {item.monitoring_status === "in_progress" ? (
                   <div className="mt-2.5 grid gap-2">
-                    <button type="button" className={`${secondary} h-9 w-full px-3 text-xs`} onClick={() => setViewing(item)}>
-                      {recordLabel(item.observations?.length ?? 0)}
+                    <button type="button" className={`${waitingSince ? primary : secondary} h-9 w-full px-3 text-xs`} onClick={() => openRecords(item)}>
+                      {waitingSince ? "View doctor note" : recordLabel(item.observations?.length ?? 0)}
                     </button>
+                    {(item.plans?.length ?? 0) > 0 ? (
+                      <button type="button" className={`${secondary} h-9 w-full px-3 text-xs`} onClick={() => openRecords(item, "plan")}>
+                        {(item.plans?.length ?? 0) === 1 ? "View management plan" : "View management plans"}
+                      </button>
+                    ) : null}
                     <button type="button" className={`${primary} h-9 w-full px-3 text-xs`} onClick={() => onRecord(item)}>
                       Record
                     </button>
                   </div>
                 ) : (
                   <div className="mt-2.5 grid gap-2">
-                    <button type="button" className={`${secondary} h-9 w-full px-3 text-xs`} onClick={() => setViewing(item)}>
-                      {recordLabel(item.observations?.length ?? 0)}
+                    <button type="button" className={`${waitingSince ? primary : secondary} h-9 w-full px-3 text-xs`} onClick={() => openRecords(item)}>
+                      {waitingSince ? "View doctor note" : recordLabel(item.observations?.length ?? 0)}
                     </button>
+                    {(item.plans?.length ?? 0) > 0 ? (
+                      <button type="button" className={`${secondary} h-9 w-full px-3 text-xs`} onClick={() => openRecords(item, "plan")}>
+                        {(item.plans?.length ?? 0) === 1 ? "View management plan" : "View management plans"}
+                      </button>
+                    ) : null}
                     <p className="text-center text-xs text-muted">Done</p>
                   </div>
                 )}
@@ -260,9 +414,26 @@ export function MonitoringPanel({
           })}
         </div>
       )}
-      {viewing ? <MonitoringRecordsModal item={viewing} now={now} onClose={() => setViewing(null)} /> : null}
+      {viewing ? (
+        <MonitoringRecordsModal
+          token={token}
+          item={viewing.item}
+          now={now}
+          initialTab={viewing.tab}
+          onClose={() => setViewing(null)}
+        />
+      ) : null}
     </section>
   );
+}
+
+function doctorNoteUnviewedSince(item: MonitoringItem) {
+  const waiting = (item.observations ?? [])
+    .filter((row) => Boolean(row.doctor_noted_at) && !row.nurse_viewed_at && (row.doctor_assessment || (row.clinical_assessment ?? "").trim()))
+    .map((row) => row.doctor_noted_at)
+    .filter((value): value is string => Boolean(value))
+    .sort((left, right) => new Date(left).getTime() - new Date(right).getTime());
+  return waiting[0] ?? null;
 }
 
 function OnMonitoringChip() {
@@ -279,10 +450,43 @@ function recordLabel(count: number) {
   return count === 1 ? "View 1 record" : `View ${count} records`;
 }
 
-export function MonitoringRecordsModal({ item, now, onClose }: { item: MonitoringItem; now: number; onClose: () => void }) {
+export function MonitoringRecordsModal({
+  token,
+  item,
+  now,
+  initialTab = "readings",
+  onClose,
+}: {
+  token?: string;
+  item: MonitoringItem;
+  now: number;
+  initialTab?: "readings" | "plan";
+  onClose: () => void;
+}) {
   const records = item.observations ?? [];
-  const plans = item.plans ?? [];
-  const [tab, setTab] = useState<"readings" | "plan">("readings");
+  const plans = sortMonitoringPlans(item.plans ?? []);
+  const [tab, setTab] = useState<"readings" | "plan">(initialTab);
+  const [catalog, setCatalog] = useState<CatalogMedication[]>([]);
+
+  useEffect(() => {
+    setTab(initialTab);
+  }, [initialTab, item.visit_id]);
+
+  useEffect(() => {
+    if (!token) return;
+    let cancelled = false;
+    api<{ items: CatalogMedication[] }>("/api/medications", {}, token)
+      .then((data) => {
+        if (!cancelled) setCatalog(data.items);
+      })
+      .catch(() => {
+        if (!cancelled) setCatalog([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [token]);
+
   return (
     <ModalShell
       title="Monitoring records"
@@ -332,7 +536,7 @@ export function MonitoringRecordsModal({ item, now, onClose }: { item: Monitorin
           className={`inline-flex items-center gap-2 border-b-2 px-3 py-2 text-sm font-semibold ${tab === "plan" ? "border-blue text-blue" : "border-transparent text-muted-strong"}`}
           onClick={() => setTab("plan")}
         >
-          Management plan
+          {plans.length === 1 ? "Management plan" : "Management plans"}
           <span className={`rounded-full px-2 py-0.5 text-xs ${tab === "plan" ? "bg-panel text-blue" : "bg-surface-3 text-muted"}`}>{plans.length}</span>
         </button>
       </div>
@@ -348,34 +552,187 @@ export function MonitoringRecordsModal({ item, now, onClose }: { item: Monitorin
             ))}
           </ul>
         )
-      ) : plans.length === 0 ? (
-        <p id="history-records-panel-plan" role="tabpanel" aria-labelledby="history-records-tab-plan" className="mt-4 text-sm text-muted">
-          No management plan recorded for this monitoring.
-        </p>
       ) : (
-        <div id="history-records-panel-plan" role="tabpanel" aria-labelledby="history-records-tab-plan" className="mt-4 space-y-3">
-          {plans.map((entry) => (
-            <ImplementedPlanCard key={`${entry.position}:${entry.id ?? "encounter"}`} plan={entry} />
-          ))}
+        <div id="history-records-panel-plan" role="tabpanel" aria-labelledby="history-records-tab-plan" className="mt-4">
+          <MonitoringPlansDetail plans={plans} catalog={catalog} />
         </div>
       )}
     </ModalShell>
   );
 }
 
+function sortMonitoringPlans(plans: ManagementPlanRecord[]) {
+  const rank = (status: ManagementPlanRecord["status"]) => {
+    if (status === "in_progress") return 0;
+    if (status === "ordered") return 1;
+    if (status === "completed") return 2;
+    if (status === "cancelled") return 3;
+    return 4;
+  };
+  return [...plans].sort((left, right) => {
+    const byStatus = rank(left.status) - rank(right.status);
+    if (byStatus !== 0) return byStatus;
+    return left.position - right.position;
+  });
+}
+
+function MonitoringPlansDetail({
+  plans,
+  catalog,
+}: {
+  plans: ManagementPlanRecord[];
+  catalog: CatalogMedication[];
+}) {
+  if (plans.length === 0) {
+    return <p className="text-sm text-muted">No management plan recorded for this monitoring.</p>;
+  }
+  return (
+    <div className="space-y-4">
+      {plans.map((plan) => (
+        <MonitoringPlanDetailCard key={`${plan.position}:${plan.id ?? "encounter"}`} plan={plan} catalog={catalog} />
+      ))}
+    </div>
+  );
+}
+
+function MonitoringPlanDetailCard({
+  plan,
+  catalog,
+}: {
+  plan: ManagementPlanRecord;
+  catalog: CatalogMedication[];
+}) {
+  const medicationOrders = plan.medication_orders;
+  const standaloneProcedures = plan.procedure_orders.filter((order) => !order.linked_medication_order_id && order.billing_scope !== "plan");
+  const planScopedServices = plan.procedure_orders.filter((order) => order.billing_scope === "plan");
+  const adviceCount = plan.patient_advices.length + (plan.management_plan.trim() ? 1 : 0);
+  const cancelled = plan.status === "cancelled";
+
+  return (
+    <section className={`space-y-3 rounded-2xl border px-4 py-4 ${cancelled ? "border-line bg-surface-3/40 opacity-90" : "border-line bg-surface-2/50"}`}>
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div>
+          <p className="text-[11px] font-bold uppercase tracking-wide text-muted-strong">Management plan</p>
+          <h4 className="mt-0.5 text-base font-bold text-ink">Plan {plan.position}</h4>
+          {plan.created_at ? <p className="mt-1 text-xs text-muted">Ordered {formatWhen(plan.created_at)}</p> : null}
+        </div>
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${nursingPlanStatusClass(plan.status)}`}>
+            {nursingPlanStatusLabel(plan.status)}
+          </span>
+          {plan.assessment_status ? <PlanAssessmentStatus status={plan.assessment_status} /> : null}
+        </div>
+      </div>
+
+      <dl className="grid grid-cols-3 gap-2">
+        <PlanStat label="Medications" value={medicationOrders.length} />
+        <PlanStat label="Procedures" value={standaloneProcedures.length} />
+        <PlanStat label="Advice" value={adviceCount} />
+      </dl>
+
+      {cancelled ? (
+        <div className="rounded-xl border border-line bg-surface-3 px-3 py-2 text-sm text-muted-strong">
+          <p>This management plan was cancelled. Details below are view only.</p>
+          {plan.cancellation_reason?.trim() ? (
+            <p className="mt-2 whitespace-pre-wrap text-ink">
+              <span className="font-semibold text-muted-strong">Reason: </span>
+              {plan.cancellation_reason}
+            </p>
+          ) : null}
+        </div>
+      ) : null}
+
+      {plan.clinical_assessment.trim() ? (
+        <div className="rounded-xl border border-line bg-surface px-3 py-3">
+          <p className="text-[11px] font-bold uppercase tracking-wide text-muted-strong">Clinical assessment</p>
+          <p className="mt-1.5 whitespace-pre-wrap text-sm leading-6 text-ink">{plan.clinical_assessment}</p>
+        </div>
+      ) : null}
+
+      <div>
+        <div className="mb-2 flex items-baseline justify-between gap-2">
+          <h5 className="text-sm font-bold text-ink">Medication orders</h5>
+          <span className="text-xs font-semibold text-muted-strong">{medicationOrders.length}</span>
+        </div>
+        {medicationOrders.length === 0 ? (
+          <p className="rounded-2xl border border-dashed border-line px-4 py-5 text-center text-sm text-muted">No medications ordered.</p>
+        ) : (
+          <ol className="space-y-3">
+            {medicationOrders.map((order, index) => (
+              <NurseMedicationCard
+                key={order.id}
+                index={index}
+                order={order}
+                catalog={catalog}
+                linked={plan.procedure_orders.filter((procedure) => procedure.linked_medication_order_id === order.id)}
+                planServices={planScopedServices.filter((service) => firstMedicationForPlanService(medicationOrders, catalog, service.procedure_id) === order.id)}
+              />
+            ))}
+          </ol>
+        )}
+      </div>
+
+      <div>
+        <div className="mb-2 flex items-baseline justify-between gap-2">
+          <h5 className="text-sm font-bold text-ink">Procedures & interventions</h5>
+          <span className="text-xs font-semibold text-muted-strong">{standaloneProcedures.length}</span>
+        </div>
+        {standaloneProcedures.length === 0 ? (
+          <p className="rounded-2xl border border-dashed border-line px-4 py-5 text-center text-sm text-muted">No standalone procedures ordered.</p>
+        ) : (
+          <ol className="space-y-3">
+            {standaloneProcedures.map((order, index) => (
+              <NurseProcedureCard key={order.id} index={index} order={order} />
+            ))}
+          </ol>
+        )}
+      </div>
+
+      {(plan.patient_advices.length > 0 || plan.management_plan.trim()) ? (
+        <div className="rounded-2xl border border-panel-strong bg-panel-strong/40 px-4 py-3">
+          <h5 className="text-sm font-bold text-blue-strong">Advice & nursing plan notes</h5>
+          <div className="mt-3 space-y-3">
+            {plan.patient_advices.length > 0 ? (
+              <ul className="space-y-2">
+                {plan.patient_advices.map((advice) => (
+                  <li key={advice.id} className="rounded-xl border border-panel-strong/50 bg-surface px-3 py-2.5 text-sm leading-6 text-ink">
+                    {advice.text}
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+            {plan.management_plan.trim() ? (
+              <div className="rounded-xl border border-panel-strong/50 bg-surface px-3 py-2.5">
+                <p className="text-[11px] font-bold uppercase tracking-wide text-muted-strong">Management plan notes</p>
+                <p className="mt-1.5 whitespace-pre-wrap text-sm leading-6 text-ink">{plan.management_plan}</p>
+              </div>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
 export function ImplementedPlanCard({ plan }: { plan: ManagementPlanRecord }) {
   const procedures = plan.procedure_orders.filter((item) => !item.linked_medication_order_id);
   return (
-    <section className="rounded-xl border border-line bg-surface-2 px-3 py-3">
+    <section className={`rounded-xl border px-3 py-3 ${plan.status === "cancelled" ? "border-line bg-surface-3/50 opacity-80" : "border-line bg-surface-2"}`}>
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h4 className="text-sm font-semibold text-ink">Management plan {plan.position}</h4>
-        <span className="inline-flex rounded-full bg-surface px-2.5 py-0.5 text-xs font-semibold text-muted-strong">
-          {plan.status === "completed" ? "Completed" : plan.status === "in_progress" ? "In progress" : plan.status === "ordered" ? "Ordered" : "—"}
+        <span className={`inline-flex rounded-full px-2.5 py-0.5 text-xs font-semibold ${nursingPlanStatusClass(plan.status)}`}>
+          {nursingPlanStatusLabel(plan.status)}
         </span>
       </div>
       {plan.assessment_status ? (
         <p className="mt-2 text-xs text-muted-strong">
           Assessment: {plan.assessment_status === "needs_review" ? "Needs Review" : plan.assessment_status === "deteriorating" ? "Deteriorating" : "Stable"}
+        </p>
+      ) : null}
+      {plan.status === "cancelled" && plan.cancellation_reason?.trim() ? (
+        <p className="mt-2 whitespace-pre-wrap text-sm text-ink">
+          <span className="font-semibold text-muted-strong">Cancellation reason: </span>
+          {plan.cancellation_reason}
         </p>
       ) : null}
       {plan.clinical_assessment.trim() ? <p className="mt-2 whitespace-pre-wrap text-sm text-ink">{plan.clinical_assessment}</p> : null}
@@ -447,12 +804,14 @@ export function DoctorReadingAssessment({
 
 function ReadingCard({ row, latest = false, compact = false, now }: { row: MonitoringObservation; latest?: boolean; compact?: boolean; now?: number }) {
   const elapsed = row.recorded_at && now != null ? Math.max(0, now - new Date(row.recorded_at).getTime()) : null;
+  const doctorNoteNew = Boolean(row.doctor_noted_at) && !row.nurse_viewed_at && (Boolean(row.doctor_assessment) || Boolean(row.clinical_assessment?.trim()));
   return (
-    <li className="rounded-2xl border border-line bg-canvas p-3">
+    <li className={doctorNoteNew ? "rounded-2xl border border-warning-line bg-warning-soft p-3" : "rounded-2xl border border-line bg-canvas p-3"}>
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex flex-wrap items-center gap-x-3">
           <p className="text-sm font-bold text-ink">{row.recorded_at ? formatWhen(row.recorded_at) : "—"}</p>
           {elapsed != null ? <span className="font-mono text-xs font-semibold tabular-nums text-ink">{clockLabel(elapsed)}</span> : null}
+          {doctorNoteNew ? <span className="rounded-full bg-warning px-2 py-0.5 text-[11px] font-semibold text-white">New doctor note</span> : null}
         </div>
         <span className="flex flex-wrap items-center justify-end gap-1.5">
           {row.case_priority ? <span className={`rounded-full border px-2 py-0.5 text-[11px] font-semibold ${casePriorityClass(row.case_priority)}`}>{casePriorityLabel(row.case_priority)}</span> : null}
@@ -772,16 +1131,36 @@ export function ManagementPlanModal({
 }) {
   const toast = useToast();
   const [detail, setDetail] = useState<NursingPlanDetail | null>(null);
+  const [catalog, setCatalog] = useState<CatalogMedication[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
+  const [selectedPosition, setSelectedPosition] = useState(item.plan_position);
+
+  useEffect(() => {
+    setSelectedPosition(item.plan_position);
+  }, [item.plan_position, item.visit_id]);
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    api<NursingPlanDetail>(`/api/patients/${item.patient_id}/visits/${item.visit_id}/nursing-plan`, {}, token)
-      .then((data) => {
-        if (!cancelled) setDetail(data);
+    Promise.all([
+      api<NursingPlanDetail>(`/api/patients/${item.patient_id}/visits/${item.visit_id}/nursing-plan`, {}, token),
+      api<{ items: CatalogMedication[] }>("/api/medications", {}, token).catch(() => ({ items: [] as CatalogMedication[] })),
+    ])
+      .then(([data, medications]) => {
+        if (cancelled) return;
+        setDetail(data);
+        setCatalog(medications.items);
+        const visiblePlans = data.plans.filter((plan) => (
+          plan.status === "ordered" || plan.status === "in_progress" || plan.status === "cancelled"
+        ));
+        if (visiblePlans.length > 0 && !visiblePlans.some((plan) => plan.position === selectedPosition)) {
+          const preferred = visiblePlans.find((plan) => plan.status === "ordered")
+            ?? visiblePlans.find((plan) => plan.status === "in_progress")
+            ?? visiblePlans[0];
+          setSelectedPosition(preferred.position);
+        }
       })
       .catch((caught) => {
         if (!cancelled) setError(messageOf(caught));
@@ -795,13 +1174,14 @@ export function ManagementPlanModal({
   }, [token, item.patient_id, item.visit_id]);
 
   async function startPlan() {
+    if (selectedPlan?.status !== "ordered") return;
     setPending(true);
     try {
       await api(`/api/patients/${item.patient_id}/visits/${item.visit_id}/nursing-plan/start`, {
         method: "POST",
-        body: JSON.stringify({ position: item.plan_position }),
+        body: JSON.stringify({ position: selectedPosition }),
       }, token);
-      toast.success("Management plan started", `Management plan ${item.plan_position} for ${item.patient_name} is now in progress.`);
+      toast.success("Management plan started", `Management plan ${selectedPosition} for ${item.patient_name} is now in progress.`);
       onChanged();
       onClose();
     } catch (caught) {
@@ -825,23 +1205,30 @@ export function ManagementPlanModal({
     }
   }
 
-  const selectedPlan = detail?.plans.find((entry) => entry.position === item.plan_position) ?? null;
+  const visiblePlans = (detail?.plans ?? []).filter((plan) => (
+    plan.status === "ordered" || plan.status === "in_progress" || plan.status === "cancelled"
+  ));
+  const selectedPlan = detail?.plans.find((entry) => entry.position === selectedPosition)
+    ?? visiblePlans[0]
+    ?? null;
+  const activePosition = selectedPlan?.position ?? selectedPosition;
+  const viewOnly = selectedPlan?.status === "cancelled" || selectedPlan?.status === "completed";
   const casePriority = detail?.visit.case_priority ?? null;
-  const priorityTone = casePriority === "emergency"
-    ? "bg-danger-soft border-danger-line text-danger"
-    : casePriority === "urgent"
-      ? "bg-warning-soft border-warning-line text-warning"
-      : casePriority === "stable"
-        ? "bg-success-soft border-success/20 text-success"
-        : "bg-surface-2 border-line text-muted-strong";
-
   const planStarted = selectedPlan?.status === "in_progress";
   const onMonitoring = detail?.visit.monitoring_status === "in_progress";
   const showMonitoringMessage = planStarted && onMonitoring;
+  const medicationOrders = selectedPlan?.medication_orders ?? [];
+  const standaloneProcedures = selectedPlan?.procedure_orders.filter((order) => !order.linked_medication_order_id && order.billing_scope !== "plan") ?? [];
+  const planScopedServices = selectedPlan?.procedure_orders.filter((order) => order.billing_scope === "plan") ?? [];
+  const medicationCount = medicationOrders.length;
+  const procedureCount = standaloneProcedures.length;
+  const adviceCount = selectedPlan
+    ? selectedPlan.patient_advices.length + (selectedPlan.management_plan.trim() ? 1 : 0)
+    : 0;
 
   return (
     <ModalShell
-      title={`Management plan ${item.plan_position}`}
+      title={visiblePlans.length > 1 ? "Management plans" : `Management plan ${activePosition}`}
       onClose={onClose}
       wide
       footer={detail ? (
@@ -849,30 +1236,34 @@ export function ManagementPlanModal({
           <button type="button" className={`${secondary} w-full sm:w-auto`} disabled={pending} onClick={onClose}>
             Close
           </button>
-          {detail.visit.monitoring_status === "none" ? (
+          {(detail.visit.monitoring_status === "none" || detail.visit.monitoring_status === "completed") && !viewOnly ? (
             <button
               type="button"
               className={`${secondary} w-full sm:w-auto`}
               disabled={pending}
               onClick={() => void sendMonitoring()}
             >
-              Send to Monitoring
+              {detail.visit.monitoring_status === "completed" ? "Resume Monitoring" : "Send to Monitoring"}
             </button>
           ) : null}
-          <button
-            type="button"
-            className={`${primary} w-full sm:w-auto`}
-            disabled={pending || selectedPlan?.status !== "ordered"}
-            onClick={() => void startPlan()}
-          >
-            {pending
-              ? "Saving…"
-              : selectedPlan?.status === "in_progress"
-                ? "Plan In Progress"
-                : selectedPlan?.status === "completed"
-                  ? "Plan Completed"
-                  : "Start Management Plan"}
-          </button>
+          {viewOnly ? (
+            <span className={`inline-flex items-center rounded-lg px-3 py-2.5 text-sm font-semibold ${nursingPlanStatusClass(selectedPlan?.status)}`}>
+              {selectedPlan?.status === "cancelled" ? "Cancelled · View only" : "Completed · View only"}
+            </span>
+          ) : (
+            <button
+              type="button"
+              className={`${primary} w-full sm:w-auto`}
+              disabled={pending || selectedPlan?.status !== "ordered"}
+              onClick={() => void startPlan()}
+            >
+              {pending
+                ? "Saving…"
+                : selectedPlan?.status === "in_progress"
+                  ? "Plan In Progress"
+                  : `Start Management Plan ${activePosition}`}
+            </button>
+          )}
         </>
       ) : (
         <button type="button" className={`${secondary} w-full sm:w-auto`} onClick={onClose}>Close</button>
@@ -881,95 +1272,448 @@ export function ManagementPlanModal({
       {loading ? <p className="text-sm text-muted">Loading plan…</p> : null}
       {error ? <p className="text-sm text-danger">{error}</p> : null}
       {detail ? (
-        <>
+        <div className="space-y-4">
           <PatientHero
             name={detail.visit.patient_name}
             mrn={detail.visit.patient_mrn}
             age={detail.visit.patient_age_at_visit}
             gender={detail.visit.patient_gender}
             nationality={detail.visit.patient_nationality}
-            room={detail.visit.hotel_room_no}
+            room={[
+              detail.visit.hotel_room_no ? `Room ${detail.visit.hotel_room_no}` : null,
+              detail.visit.hotel_name || null,
+              detail.visit.clinic_name || null,
+            ].filter(Boolean).join(" · ") || null}
             clinicName={detail.visit.clinic_name}
             visitType={visitTypeLabel(detail.visit.visit_type)}
-            casePriority={casePriority}
           />
-          <div className="mt-4 space-y-3">
-            <PlanSection title="Diagnosis" tone="bg-panel border-panel-strong text-blue">
-              {detail.plan.provisional_diagnoses.length === 0 ? (
-                <p className="text-sm text-muted">No diagnoses recorded.</p>
-              ) : (
-                <ul className="list-disc space-y-1 pl-5 text-sm text-ink">
-                  {detail.plan.provisional_diagnoses.map((row) => (
-                    <li key={row.id || `${row.code}:${row.title}`}>
-                      {row.source === "icd11" && row.code ? <span className="font-mono text-xs text-blue">{row.code} </span> : null}
-                      {row.title}
-                      {row.source === "free_text" ? <span className="text-xs text-muted"> (Free Diagnose)</span> : null}
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </PlanSection>
-            <PlanSection title="Patient Priority" tone={priorityTone}>
-              <span className={`inline-flex rounded-full border px-2.5 py-1 text-xs font-semibold ${casePriorityClass(casePriority)}`}>
-                {casePriorityLabel(casePriority)}
-              </span>
-            </PlanSection>
-            {(selectedPlan ? [selectedPlan] : []).map((entry) => (
-              <div key={`${entry.position}:${entry.id ?? "encounter"}`} className="space-y-3 rounded-2xl border border-line bg-surface p-3">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <h3 className="text-sm font-semibold text-ink">Management plan {entry.position}</h3>
-                  <div className="flex flex-wrap items-center gap-1.5">
-                    {showMonitoringMessage ? <OnMonitoringChip /> : null}
-                    {entry.assessment_status ? <PlanAssessmentStatus status={entry.assessment_status} /> : null}
-                  </div>
-                </div>
-                {entry.clinical_assessment.trim() ? <p className="whitespace-pre-wrap text-sm text-ink">{entry.clinical_assessment}</p> : null}
-                <PlanSection title="Medication Orders" tone="bg-warning-soft border-warning-line text-warning">
-                  {entry.medication_orders.length === 0 ? (
-                    <p className="text-sm text-muted">No medications ordered.</p>
-                  ) : (
-                    <ul className="space-y-2 text-sm text-ink">
-                      {entry.medication_orders.map((order) => (
-                        <li key={order.id}>
-                          <p className="font-semibold">{order.medication}{order.strength ? ` ${order.strength}` : ""}{order.dosage_form ? ` ${order.dosage_form}` : ""}</p>
-                          <p className="text-xs text-muted-strong">
-                            {[order.dose, order.route, order.frequency, order.duration].filter(Boolean).join(" · ") || "As prescribed"}
-                          </p>
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                </PlanSection>
-                <PlanSection title="Procedures & Interventions" tone="bg-success-soft border-success/20 text-success">
-                  {entry.procedure_orders.length === 0 ? (
-                    <p className="text-sm text-muted">No procedures ordered.</p>
-                  ) : (
-                    <ul className="list-disc space-y-1 pl-5 text-sm text-ink">
-                      {entry.procedure_orders.map((order) => (
-                        <li key={order.id}>{order.name}{order.notes ? ` — ${order.notes}` : ""}</li>
-                      ))}
-                    </ul>
-                  )}
-                </PlanSection>
-                {entry.position === 1 ? (
-                  <PlanSection title="Advices" tone="bg-panel-strong border-panel-strong text-blue-strong">
-                    {entry.patient_advices.length === 0 && !entry.management_plan.trim() ? (
-                      <p className="text-sm text-muted">No advice recorded.</p>
-                    ) : (
-                      <ul className="list-disc space-y-1 pl-5 text-sm text-ink">
-                        {entry.patient_advices.map((advice) => <li key={advice.id}>{advice.text}</li>)}
-                        {entry.management_plan.trim() ? <li>{entry.management_plan}</li> : null}
-                      </ul>
-                    )}
-                  </PlanSection>
-                ) : null}
+
+          <PatientPriorityBanner priority={casePriority} />
+
+          {visiblePlans.length > 1 ? (
+            <div className="flex flex-wrap gap-2">
+              {visiblePlans.map((plan) => {
+                const active = plan.position === activePosition;
+                return (
+                  <button
+                    key={plan.position}
+                    type="button"
+                    className={`inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-sm font-semibold ${
+                      active
+                        ? plan.status === "cancelled"
+                          ? "border-muted-strong bg-surface-3 text-ink"
+                          : "border-blue bg-blue text-white"
+                        : plan.status === "cancelled"
+                          ? "border-line bg-surface-3/60 text-muted-strong hover:bg-surface-3"
+                          : "border-line bg-surface text-ink hover:bg-surface-2"
+                    }`}
+                    onClick={() => setSelectedPosition(plan.position)}
+                  >
+                    Plan {plan.position}
+                    <span className={`rounded-md px-1.5 py-0.5 text-[11px] font-bold ${active && plan.status !== "cancelled" ? "bg-white/20 text-white" : nursingPlanStatusClass(plan.status)}`}>
+                      {nursingPlanStatusLabel(plan.status)}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          ) : null}
+
+          {selectedPlan?.status === "cancelled" ? (
+            <div className="rounded-xl border border-line bg-surface-3 px-3 py-2 text-sm text-muted-strong">
+              <p>This management plan was cancelled. You can review the orders below, but it cannot be started.</p>
+              {selectedPlan.cancellation_reason?.trim() ? (
+                <p className="mt-2 whitespace-pre-wrap text-ink">
+                  <span className="font-semibold text-muted-strong">Reason: </span>
+                  {selectedPlan.cancellation_reason}
+                </p>
+              ) : null}
+            </div>
+          ) : null}
+
+          <section className={`rounded-2xl border px-4 py-3 ${selectedPlan?.status === "cancelled" ? "border-line bg-surface-3/50" : "border-line bg-surface-2"}`}>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <p className="text-[11px] font-bold uppercase tracking-wide text-muted-strong">This plan</p>
+                <h3 className="mt-0.5 text-base font-bold text-ink">Management plan {activePosition}</h3>
               </div>
-            ))}
-          </div>
-        </>
+              <div className="flex flex-wrap items-center gap-1.5">
+                {selectedPlan ? (
+                  <span className={`inline-flex rounded-full border px-2.5 py-1 text-xs font-semibold ${nursingPlanStatusClass(selectedPlan.status)}`}>
+                    {nursingPlanStatusLabel(selectedPlan.status)}
+                  </span>
+                ) : null}
+                <span className={`inline-flex rounded-full border px-2.5 py-1 text-xs font-semibold ${monitoringStatusClass(detail.visit.monitoring_status)}`}>
+                  Monitoring: {monitoringStatusLabel(detail.visit.monitoring_status)}
+                </span>
+                {showMonitoringMessage ? <OnMonitoringChip /> : null}
+                {selectedPlan?.assessment_status ? <PlanAssessmentStatus status={selectedPlan.assessment_status} /> : null}
+              </div>
+            </div>
+            <dl className="mt-3 grid grid-cols-3 gap-2">
+              <PlanStat label="Medications" value={medicationCount} />
+              <PlanStat label="Procedures" value={procedureCount} />
+              <PlanStat label="Advice" value={adviceCount} />
+            </dl>
+            {selectedPlan?.created_at ? (
+              <p className="mt-2 text-xs text-muted">Ordered {formatWhen(selectedPlan.created_at)}</p>
+            ) : null}
+          </section>
+
+          <section className="rounded-2xl border border-panel-strong bg-panel px-4 py-3">
+            <h3 className="text-sm font-bold text-blue">Diagnosis</h3>
+            {detail.plan.provisional_diagnoses.length === 0 ? (
+              <p className="mt-2 text-sm text-muted">No diagnoses recorded.</p>
+            ) : (
+              <ul className="mt-2 space-y-2">
+                {detail.plan.provisional_diagnoses.map((row) => (
+                  <li key={row.id || `${row.code}:${row.title}`} className="rounded-xl border border-panel-strong/60 bg-surface px-3 py-2.5">
+                    <p className="text-sm font-semibold text-ink">{row.title}</p>
+                    <p className="mt-0.5 text-xs text-muted-strong">
+                      {row.source === "icd11" && row.code ? <span className="font-mono text-blue">{row.code}</span> : null}
+                      {row.source === "icd11" && row.code ? " · " : null}
+                      {row.source === "free_text" ? "Free-text diagnosis" : "ICD-11"}
+                    </p>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+
+          {selectedPlan?.clinical_assessment.trim() ? (
+            <section className="rounded-2xl border border-line bg-surface px-4 py-3">
+              <h3 className="text-sm font-bold text-ink">Clinical assessment</h3>
+              <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-ink">{selectedPlan.clinical_assessment}</p>
+            </section>
+          ) : null}
+
+          {selectedPlan ? (
+            <>
+              <section>
+                <div className="mb-2 flex items-baseline justify-between gap-2">
+                  <h3 className="text-sm font-bold text-ink">Medication orders</h3>
+                  <span className="text-xs font-semibold text-muted-strong">{medicationCount}</span>
+                </div>
+                {medicationCount === 0 ? (
+                  <p className="rounded-2xl border border-dashed border-line px-4 py-6 text-center text-sm text-muted">No medications ordered.</p>
+                ) : (
+                  <ol className="space-y-3">
+                    {medicationOrders.map((order, index) => (
+                      <NurseMedicationCard
+                        key={order.id}
+                        index={index}
+                        order={order}
+                        catalog={catalog}
+                        linked={selectedPlan.procedure_orders.filter((procedure) => procedure.linked_medication_order_id === order.id)}
+                        planServices={planScopedServices.filter((service) => firstMedicationForPlanService(medicationOrders, catalog, service.procedure_id) === order.id)}
+                      />
+                    ))}
+                  </ol>
+                )}
+              </section>
+
+              <section>
+                <div className="mb-2 flex items-baseline justify-between gap-2">
+                  <h3 className="text-sm font-bold text-ink">Procedures & interventions</h3>
+                  <span className="text-xs font-semibold text-muted-strong">{procedureCount}</span>
+                </div>
+                {procedureCount === 0 ? (
+                  <p className="rounded-2xl border border-dashed border-line px-4 py-6 text-center text-sm text-muted">No standalone procedures ordered.</p>
+                ) : (
+                  <ol className="space-y-3">
+                    {standaloneProcedures.map((order, index) => (
+                      <NurseProcedureCard key={order.id} index={index} order={order} />
+                    ))}
+                  </ol>
+                )}
+              </section>
+
+              {(selectedPlan.position === 1 || selectedPlan.patient_advices.length > 0 || selectedPlan.management_plan.trim()) ? (
+                <section className="rounded-2xl border border-panel-strong bg-panel-strong/40 px-4 py-3">
+                  <h3 className="text-sm font-bold text-blue-strong">Advice & nursing plan notes</h3>
+                  {selectedPlan.patient_advices.length === 0 && !selectedPlan.management_plan.trim() ? (
+                    <p className="mt-2 text-sm text-muted">No advice recorded.</p>
+                  ) : (
+                    <div className="mt-3 space-y-3">
+                      {selectedPlan.patient_advices.length > 0 ? (
+                        <ul className="space-y-2">
+                          {selectedPlan.patient_advices.map((advice) => (
+                            <li key={advice.id} className="rounded-xl border border-panel-strong/50 bg-surface px-3 py-2.5 text-sm leading-6 text-ink">
+                              {advice.text}
+                            </li>
+                          ))}
+                        </ul>
+                      ) : null}
+                      {selectedPlan.management_plan.trim() ? (
+                        <div className="rounded-xl border border-panel-strong/50 bg-surface px-3 py-2.5">
+                          <p className="text-[11px] font-bold uppercase tracking-wide text-muted-strong">Management plan notes</p>
+                          <p className="mt-1.5 whitespace-pre-wrap text-sm leading-6 text-ink">{selectedPlan.management_plan}</p>
+                        </div>
+                      ) : null}
+                    </div>
+                  )}
+                </section>
+              ) : null}
+            </>
+          ) : (
+            <p className="rounded-2xl border border-dashed border-line px-4 py-8 text-center text-sm text-muted">This management plan was not found on the visit.</p>
+          )}
+        </div>
       ) : null}
     </ModalShell>
   );
+}
+
+function PlanStat({ label, value }: { label: string; value: number }) {
+  return (
+    <div className="rounded-xl border border-line bg-surface px-3 py-2 text-center">
+      <p className="text-lg font-bold tabular-nums text-ink">{value}</p>
+      <p className="text-[11px] font-semibold text-muted-strong">{label}</p>
+    </div>
+  );
+}
+
+function NurseMedicationCard({
+  index,
+  order,
+  catalog,
+  linked,
+  planServices,
+}: {
+  index: number;
+  order: MedicationOrder;
+  catalog: CatalogMedication[];
+  linked: ProcedureOrder[];
+  planServices: ProcedureOrder[];
+}) {
+  const identity = [order.strength, order.dosage_form].filter((part) => part.trim()).join(" · ");
+  const dose = order.dose.trim()
+    || (order.dose_value != null && order.dose_unit ? `${order.dose_value} ${order.dose_unit}` : null);
+  const duration = order.duration.trim()
+    || (order.duration_value != null && order.duration_unit ? `${order.duration_value} ${order.duration_unit}` : null);
+  const diluent = catalog.find((entry) => entry.id === order.diluent_medication_id) ?? null;
+  const diluentName = diluent
+    ? [diluent.name, diluent.strength, diluent.dosage_form].filter((part) => part.trim()).join(" · ")
+    : null;
+  const details = [
+    { label: "Dose", value: dose },
+    { label: "Route", value: order.route.trim() || null },
+    { label: "Frequency", value: order.frequency.trim() || null },
+    { label: "Duration", value: duration },
+  ];
+  const administration = [
+    { label: "Flow rate", value: order.flow_rate.trim() || (order.flow_rate_value != null && order.flow_rate_unit ? `${order.flow_rate_value} ${order.flow_rate_unit}` : null) },
+    { label: "Infusion duration", value: order.infusion_duration_value != null ? `${order.infusion_duration_value} h` : null },
+    { label: "Diluent", value: diluentName },
+    { label: "Diluent volume", value: order.diluent_volume_value != null ? `${order.diluent_volume_value} mL` : null },
+    {
+      label: "Monitoring duration",
+      value: order.monitoring_duration_value != null
+        ? `${order.monitoring_duration_value} ${order.monitoring_duration_unit || "hours"}`
+        : null,
+    },
+  ].filter((item) => item.value);
+  const attached = [
+    ...linked.filter((item) => !item.id.startsWith("diluent:") && !item.id.startsWith("medication:")),
+    ...planServices,
+  ];
+
+  return (
+    <li className="rounded-2xl border border-warning-line bg-warning-soft/40 px-4 py-3.5">
+      <div className="flex items-start gap-3">
+        <span className="mt-0.5 inline-flex size-7 shrink-0 items-center justify-center rounded-full bg-warning text-xs font-bold text-white">{index + 1}</span>
+        <div className="min-w-0 flex-1">
+          <p className="text-base font-bold text-ink">
+            {order.medication || "Medication"}
+            {identity ? <span className="ml-2 text-sm font-medium text-muted-strong">{identity}</span> : null}
+          </p>
+          <dl className="mt-3 grid gap-2 sm:grid-cols-2">
+            {details.map((item) => (
+              <div key={item.label} className="rounded-xl border border-line bg-surface px-3 py-2">
+                <dt className="text-[10px] font-bold uppercase tracking-wide text-muted-strong">{item.label}</dt>
+                <dd className="mt-0.5 text-sm font-semibold text-ink">{item.value || "—"}</dd>
+              </div>
+            ))}
+          </dl>
+          {administration.length > 0 ? (
+            <div className="mt-3 rounded-xl border border-line bg-surface px-3 py-2.5">
+              <p className="text-[10px] font-bold uppercase tracking-wide text-muted-strong">Administration details</p>
+              <dl className="mt-2 grid gap-2 sm:grid-cols-2">
+                {administration.map((item) => (
+                  <div key={item.label} className="rounded-lg bg-surface-2 px-3 py-2">
+                    <dt className="text-[10px] font-bold uppercase tracking-wide text-muted-strong">{item.label}</dt>
+                    <dd className="mt-0.5 text-sm font-semibold text-ink">{item.value}</dd>
+                  </div>
+                ))}
+              </dl>
+            </div>
+          ) : null}
+          {order.instructions.trim() ? (
+            <div className="mt-3 rounded-xl border border-blue/20 bg-panel px-3 py-2.5">
+              <p className="text-[10px] font-bold uppercase tracking-wide text-blue">Nursing instructions</p>
+              <p className="mt-1 whitespace-pre-wrap text-sm leading-6 text-ink">{order.instructions}</p>
+            </div>
+          ) : null}
+          {attached.length > 0 ? (
+            <div className="mt-3 rounded-xl border border-line bg-surface px-3 py-2.5">
+              <p className="text-[10px] font-bold uppercase tracking-wide text-muted-strong">Attached to this order</p>
+              <ul className="mt-2 space-y-2">
+                {attached.map((item) => (
+                  <li key={item.id} className="rounded-lg border border-line-soft bg-surface-2 px-3 py-2">
+                    <div className="flex flex-wrap items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <p className="text-sm font-semibold text-ink">{item.name}</p>
+                        <p className="mt-0.5 text-xs text-muted-strong">
+                          {[
+                            item.code || null,
+                            item.unit || null,
+                            item.quantity > 0 ? `Qty ${item.quantity}` : null,
+                            item.billing_scope === "plan" ? "Once for this plan" : null,
+                          ].filter(Boolean).join(" · ") || "Service attached to this medication"}
+                        </p>
+                      </div>
+                    </div>
+                    {item.notes.trim() ? <p className="mt-1.5 whitespace-pre-wrap text-sm text-ink">{item.notes}</p> : null}
+                    <ProcedureDetailBlocks details={item.details} />
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+        </div>
+      </div>
+    </li>
+  );
+}
+
+function firstMedicationForPlanService(orders: MedicationOrder[], catalog: CatalogMedication[], procedureId: string | null) {
+  if (!procedureId) return null;
+  for (const order of orders) {
+    if (!order.medication_id || !order.route) continue;
+    const item = catalog.find((entry) => entry.id === order.medication_id);
+    const services = item?.routes?.find((entry) => entry.route === order.route)?.services ?? [];
+    if (services.some((service) => service.charge_once_per_plan && service.id === procedureId)) return order.id;
+  }
+  return orders[0]?.id ?? null;
+}
+
+function NurseProcedureCard({ index, order }: { index: number; order: ProcedureOrder }) {
+  const meta = [
+    order.code ? `Code ${order.code}` : null,
+    order.unit || null,
+    order.quantity > 0 ? `Qty ${order.quantity}` : null,
+    order.billing_scope === "plan" ? "Charged once for this plan" : null,
+  ].filter(Boolean);
+  const associated = procedureServiceCharges(order.details);
+
+  return (
+    <li className="rounded-2xl border border-success/20 bg-success-soft/30 px-4 py-3.5">
+      <div className="flex items-start gap-3">
+        <span className="mt-0.5 inline-flex size-7 shrink-0 items-center justify-center rounded-full bg-success text-xs font-bold text-white">{index + 1}</span>
+        <div className="min-w-0 flex-1">
+          <p className="text-base font-bold text-ink">{order.name || "Procedure"}</p>
+          {meta.length > 0 ? <p className="mt-0.5 text-xs text-muted-strong">{meta.join(" · ")}</p> : null}
+          <ProcedureDetailBlocks details={order.details} />
+          {associated.length > 0 ? (
+            <div className="mt-3 rounded-xl border border-line bg-surface px-3 py-2.5">
+              <p className="text-[10px] font-bold uppercase tracking-wide text-muted-strong">Associated services</p>
+              <ul className="mt-2 space-y-1 text-sm text-ink">
+                {associated.map((service) => (
+                  <li key={service.service_id}>
+                    <span className="font-semibold">{service.name}</span>
+                    {service.code ? <span className="text-xs text-muted"> · {service.code}</span> : null}
+                    {service.quantity > 1 ? <span className="text-xs text-muted"> · Qty {service.quantity}</span> : null}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+          {order.notes.trim() ? (
+            <div className="mt-3 rounded-xl border border-line bg-surface px-3 py-2.5">
+              <p className="text-[10px] font-bold uppercase tracking-wide text-muted-strong">Order notes</p>
+              <p className="mt-1 whitespace-pre-wrap text-sm leading-6 text-ink">{order.notes}</p>
+            </div>
+          ) : null}
+        </div>
+      </div>
+    </li>
+  );
+}
+
+const procedureDetailLabels: Record<string, string> = {
+  performed_by: "Performed by",
+  assistant: "Assistant",
+  anatomical_site: "Anatomical site",
+  steps: "Steps",
+  findings: "Findings / Outcome",
+  outcome: "Outcome",
+  complications: "Complications",
+  notes: "Clinical note",
+  catheter_type: "Catheter type",
+  catheter_material: "Catheter material",
+  route: "Route",
+  size_fr: "Size (Fr)",
+  sample_collection: "Sample collection",
+  delivery_method: "Delivery method",
+  flow_rate: "Flow rate (L/min)",
+  oxygen_hours: "Oxygen duration (hours)",
+  monitoring_hours: "Monitoring duration (hours)",
+  quantity: "Quantity",
+};
+
+const longProcedureDetailIds = new Set(["steps", "findings", "outcome", "complications", "notes"]);
+
+function ProcedureDetailBlocks({ details }: { details?: ProcedureDetails }) {
+  const rows = procedureDetailRows(details);
+  if (rows.length === 0) return null;
+  const shortRows = rows.filter((row) => !row.long);
+  const longRows = rows.filter((row) => row.long);
+  return (
+    <div className="mt-3 space-y-2">
+      {shortRows.length > 0 ? (
+        <dl className="grid gap-2 sm:grid-cols-2">
+          {shortRows.map((row) => (
+            <div key={row.id} className="rounded-xl border border-line bg-surface px-3 py-2">
+              <dt className="text-[10px] font-bold uppercase tracking-wide text-muted-strong">{row.label}</dt>
+              <dd className="mt-0.5 text-sm font-semibold text-ink">{row.value}</dd>
+            </div>
+          ))}
+        </dl>
+      ) : null}
+      {longRows.map((row) => (
+        <div key={row.id} className="rounded-xl border border-line bg-surface px-3 py-2.5">
+          <p className="text-[10px] font-bold uppercase tracking-wide text-muted-strong">{row.label}</p>
+          <p className="mt-1 whitespace-pre-wrap text-sm leading-6 text-ink">{row.value}</p>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function procedureDetailRows(details?: ProcedureDetails) {
+  if (!details) return [] as { id: string; label: string; value: string; long: boolean }[];
+  return Object.entries(details).flatMap(([id, value]) => {
+    if (id === "associated_services") return [];
+    if (value == null) return [];
+    if (typeof value === "string") {
+      const text = value.trim();
+      if (!text) return [];
+      return [{ id, label: procedureDetailLabels[id] ?? humanizeDetailId(id), value: text, long: longProcedureDetailIds.has(id) || text.length > 80 }];
+    }
+    if (typeof value === "number") {
+      return [{ id, label: procedureDetailLabels[id] ?? humanizeDetailId(id), value: String(value), long: false }];
+    }
+    if (typeof value === "object" && !Array.isArray(value) && "name" in value) {
+      const name = typeof value.name === "string" ? value.name.trim() : "";
+      if (!name) return [];
+      return [{ id, label: procedureDetailLabels[id] ?? humanizeDetailId(id), value: name, long: false }];
+    }
+    return [];
+  });
+}
+
+function humanizeDetailId(id: string) {
+  return id.replace(/_/g, " ").replace(/\b\w/g, (char) => char.toUpperCase());
 }
 
 export function RecordMonitoringModal({
@@ -994,7 +1738,9 @@ export function RecordMonitoringModal({
   const [pending, setPending] = useState(false);
   const [history, setHistory] = useState<MonitoringObservation[]>([]);
   const [historyLoading, setHistoryLoading] = useState(true);
-  const [tab, setTab] = useState<"record" | "history">("record");
+  const [tab, setTab] = useState<"record" | "history" | "plan">("record");
+  const [catalog, setCatalog] = useState<CatalogMedication[]>([]);
+  const plans = sortMonitoringPlans(item.plans ?? []);
 
   async function loadHistory() {
     setHistoryLoading(true);
@@ -1015,6 +1761,20 @@ export function RecordMonitoringModal({
   useEffect(() => {
     void loadHistory();
   }, [token, item.patient_id, item.visit_id]);
+
+  useEffect(() => {
+    let cancelled = false;
+    api<{ items: CatalogMedication[] }>("/api/medications", {}, token)
+      .then((data) => {
+        if (!cancelled) setCatalog(data.items);
+      })
+      .catch(() => {
+        if (!cancelled) setCatalog([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [token]);
 
   function clearForm() {
     setTemperature("");
@@ -1118,7 +1878,7 @@ export function RecordMonitoringModal({
         clinicName={item.clinic_name}
         casePriority={last?.case_priority ?? item.case_priority}
       />
-      <div className="mt-4 flex gap-2 border-b border-line-soft" role="tablist" aria-label="Monitoring record">
+      <div className="mt-4 flex flex-wrap gap-2 border-b border-line-soft" role="tablist" aria-label="Monitoring record">
         <button
           type="button"
           role="tab"
@@ -1141,6 +1901,18 @@ export function RecordMonitoringModal({
         >
           Previous readings
           <span className={`rounded-full px-2 py-0.5 text-xs ${tab === "history" ? "bg-panel text-blue" : "bg-surface-3 text-muted"}`}>{history.length}</span>
+        </button>
+        <button
+          type="button"
+          role="tab"
+          id="monitoring-tab-plan"
+          aria-selected={tab === "plan"}
+          aria-controls="monitoring-panel-plan"
+          className={`inline-flex items-center gap-2 border-b-2 px-3 py-2 text-sm font-semibold ${tab === "plan" ? "border-blue text-blue" : "border-transparent text-muted-strong"}`}
+          onClick={() => setTab("plan")}
+        >
+          {plans.length === 1 ? "Management plan" : "Management plans"}
+          <span className={`rounded-full px-2 py-0.5 text-xs ${tab === "plan" ? "bg-panel text-blue" : "bg-surface-3 text-muted"}`}>{plans.length}</span>
         </button>
       </div>
       {tab === "record" ? (
@@ -1229,7 +2001,7 @@ export function RecordMonitoringModal({
             />
           </label>
         </form>
-      ) : (
+      ) : tab === "history" ? (
         <section
           className="mt-4"
           role="tabpanel"
@@ -1244,6 +2016,15 @@ export function RecordMonitoringModal({
             </div>
           ) : null}
           {history.length > 0 ? <ReadingTimeline rows={history} /> : null}
+        </section>
+      ) : (
+        <section
+          className="mt-4"
+          role="tabpanel"
+          id="monitoring-panel-plan"
+          aria-labelledby="monitoring-tab-plan"
+        >
+          <MonitoringPlansDetail plans={plans} catalog={catalog} />
         </section>
       )}
     </ModalShell>
@@ -1277,7 +2058,7 @@ function ModalShell({
       onMouseDown={onClose}
     >
       <div
-        className={`triage-dialog-panel flex h-[100dvh] max-h-[100dvh] w-full flex-col overflow-hidden rounded-none bg-surface shadow-dialog sm:h-auto sm:max-h-[calc(100dvh-3rem)] sm:rounded-2xl ${wide ? "sm:max-w-3xl" : "sm:max-w-xl"}`}
+        className={`triage-dialog-panel flex h-[100dvh] max-h-[100dvh] w-full flex-col overflow-hidden rounded-none bg-surface shadow-dialog sm:h-auto sm:max-h-[calc(100dvh-3rem)] sm:rounded-2xl ${wide ? "sm:max-w-4xl" : "sm:max-w-xl"}`}
         role="dialog"
         aria-modal="true"
         onMouseDown={(event) => event.stopPropagation()}
@@ -1332,7 +2113,7 @@ function PatientHero({
           <p className="text-sm text-muted-strong">
             {[age != null ? `${age} years` : null, gender === "male" ? "Male" : gender === "female" ? "Female" : gender, nationality].filter(Boolean).join(" | ")}
           </p>
-          <p className="text-xs text-muted">{[visitType, `Room: ${room || clinicName || "—"}`].filter(Boolean).join(" | ")}</p>
+          <p className="text-xs text-muted">{[visitType, room || clinicName || null].filter(Boolean).join(" · ") || "—"}</p>
         </div>
       </div>
       {casePriority ? (
@@ -1794,13 +2575,16 @@ export function ReadingTimeline({ rows }: { rows: MonitoringObservation[] }) {
             const previousPressure = parsePressure(previous?.blood_pressure ?? null);
             const notes = row.notes.trim();
             const clinical = row.clinical_assessment?.trim() ?? "";
+            const doctorNoteNew = Boolean(row.doctor_noted_at) && !row.nurse_viewed_at && (Boolean(row.doctor_assessment) || Boolean(clinical));
+            const rowTone = doctorNoteNew ? "bg-warning-soft" : index === 0 ? "bg-panel/40" : "";
             return (
               <Fragment key={row.id}>
-                <tr className={`border-t border-line-soft align-top ${index === 0 ? "bg-panel/40" : ""}`}>
+                <tr className={`border-t border-line-soft align-top ${rowTone}`}>
                   <td className="px-3 py-2.5">
-                    <span className="flex items-center gap-1.5 font-semibold text-ink">
+                    <span className="flex flex-wrap items-center gap-1.5 font-semibold text-ink">
                       {row.recorded_at ? formatWhen(row.recorded_at) : "—"}
                       {index === 0 ? <span className="rounded-full bg-blue px-2 py-0.5 text-[10px] font-semibold text-white">Latest</span> : null}
+                      {doctorNoteNew ? <span className="rounded-full bg-warning px-2 py-0.5 text-[10px] font-semibold text-white">New doctor note</span> : null}
                     </span>
                     <span className="block text-xs text-muted">{row.recorded_by_name?.trim() || "Nurse"}</span>
                   </td>
@@ -1818,7 +2602,7 @@ export function ReadingTimeline({ rows }: { rows: MonitoringObservation[] }) {
                   </td>
                 </tr>
                 {notes || row.doctor_assessment || clinical ? (
-                  <tr className={index === 0 ? "bg-panel/40" : ""}>
+                  <tr className={rowTone}>
                     <td colSpan={7} className="px-3 pb-2.5">
                       {notes ? <p className="whitespace-pre-wrap rounded-lg bg-surface-2 px-3 py-1.5 text-sm text-ink"><span className="font-semibold text-muted-strong">Note: </span>{notes}</p> : null}
                       <DoctorReadingAssessment status={row.doctor_assessment} clinical={clinical} />

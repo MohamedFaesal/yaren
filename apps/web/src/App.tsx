@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Navigate, NavLink, Route, Routes, useLocation, useNavigate } from "react-router";
-import { api, loadSession, saveSession, type DoctorCasePage, type RegistrarLeftPage, type Session, type TriageQueueResult, type User } from "./api";
+import { api, loadSession, saveSession, type DoctorCasePage, type RegistrarDashboard, type Session, type TriageQueueResult, type User } from "./api";
 import { canAct, canManageSettings, canSeeDoctorCases, canSeeMonitoringHistory, canSeeRegistrarDashboard } from "./access";
 import { RoleIcon, typeLabel } from "./pages/ui";
 import { ClinicFormPage } from "./pages/ClinicFormPage";
@@ -487,21 +487,28 @@ function TriageNavLink({ token, pathname }: { token: string; pathname: string })
   );
 }
 
+function localCalendarDay(date = new Date()) {
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${date.getFullYear()}-${month}-${day}`;
+}
+
 function RegistrarNavLink({ token, pathname }: { token: string; pathname: string }) {
   const { clinicId } = useActiveClinic();
-  const [left, setLeft] = useState(0);
+  const [active, setActive] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
     function load() {
-      const params = new URLSearchParams({ page: "1", page_size: "1" });
+      const today = localCalendarDay();
+      const params = new URLSearchParams({ from: today, to: today });
       if (clinicId) params.set("clinic_id", clinicId);
-      api<RegistrarLeftPage>(`/api/registrar/left?${params}`, {}, token)
+      api<RegistrarDashboard>(`/api/registrar/dashboard?${params}`, {}, token)
         .then((data) => {
-          if (!cancelled) setLeft(data.total);
+          if (!cancelled) setActive(data.kpis.active_in_clinic);
         })
         .catch(() => {
-          if (!cancelled) setLeft(0);
+          if (!cancelled) setActive(0);
         });
     }
     load();
@@ -526,12 +533,12 @@ function RegistrarNavLink({ token, pathname }: { token: string; pathname: string
         <RegistrarIcon />
         <span className="leading-snug">Registrar Dashboard</span>
       </span>
-      {left > 0 ? (
+      {active > 0 ? (
         <span
           className="shrink-0 rounded-full bg-gold px-2 py-0.5 text-[11px] font-bold tabular-nums text-shell"
-          aria-label={`${left} registrar visits`}
+          aria-label={`${active} in clinic`}
         >
-          {left > 99 ? "99+" : left}
+          {active > 99 ? "99+" : active}
         </span>
       ) : null}
     </NavLink>

@@ -14,6 +14,11 @@ const startPlanSchema = z.object({
   position: z.number().int().min(1).optional().transform((value) => value ?? 1),
 });
 
+const cancelPlanSchema = z.object({
+  position: z.number().int().min(1).optional().transform((value) => value ?? 1),
+  reason: z.string().trim().min(1, "Enter a cancellation reason").max(500),
+});
+
 const doctorAssessmentStatus = z.enum(["stable", "needs_review", "deteriorating"]);
 
 const assessmentSchema = z.object({
@@ -27,6 +32,27 @@ const assessmentSchema = z.object({
 const completeMonitoringSchema = z.object({
   doctor_assessment: doctorAssessmentStatus.nullable().optional().transform((value) => value ?? null),
   clinical_assessment: z.string().trim().max(1000).optional().transform((value) => value ?? ""),
+});
+
+const closeResolutionAction = z.enum(["complete", "cancel"]);
+
+const closeEncounterSchema = z.object({
+  outcome: z.enum(["complete", "refer"]),
+  referral_note: z.string().trim().max(1000).optional().transform((value) => value ?? ""),
+  plan_resolutions: z.array(z.object({
+    position: z.number().int().min(1),
+    action: closeResolutionAction,
+    reason: z.string().trim().max(500).optional().transform((value) => value ?? ""),
+  })).max(40).optional().transform((value) => value ?? []),
+  monitoring_resolution: z.object({
+    action: closeResolutionAction,
+    reason: z.string().trim().max(500).optional().transform((value) => value ?? ""),
+  }).nullable().optional().transform((value) => value ?? null),
+  investigation_resolutions: z.array(z.object({
+    id: z.string().uuid(),
+    action: closeResolutionAction,
+  })).max(80).optional().transform((value) => value ?? []),
+  investigation_cancellation_reason: z.string().trim().max(500).optional().transform((value) => value ?? ""),
 });
 
 const doctorNoteSchema = z.object({
@@ -156,7 +182,7 @@ export function registerNurseCare(app: FastifyInstance, pool: pg.Pool) {
          JOIN patients p ON p.id = v.patient_id
          JOIN patient_visit_encounters e ON e.visit_id = v.id
          LEFT JOIN patient_visit_triages t ON t.visit_id = v.id
-         WHERE ${where} AND e.nursing_status IN ('ordered', 'in_progress')
+         WHERE ${where} AND e.nursing_status IN ('ordered', 'in_progress', 'cancelled')
          UNION ALL
          SELECT v.id AS visit_id, v.patient_id, v.clinic_id, v.hotel_room_no, v.status,
                 mp.status AS nursing_plan_status, v.monitoring_status, v.status_changed_at,
@@ -175,7 +201,7 @@ export function registerNurseCare(app: FastifyInstance, pool: pg.Pool) {
          JOIN patients p ON p.id = v.patient_id
          JOIN patient_visit_management_plans mp ON mp.visit_id = v.id
          LEFT JOIN patient_visit_triages t ON t.visit_id = v.id
-         WHERE ${where} AND mp.status IN ('ordered', 'in_progress')
+         WHERE ${where} AND mp.status IN ('ordered', 'in_progress', 'cancelled')
        ) plans
        ORDER BY order_time DESC NULLS LAST`,
       values,
@@ -196,6 +222,9 @@ export function registerNurseCare(app: FastifyInstance, pool: pg.Pool) {
       `v.deleted_at IS NULL`,
       `p.deleted_at IS NULL`,
       `v.monitoring_status = 'in_progress'`,
+      // Hide only when nursing care is still purely ordered (never started).
+      // Keep patients visible once any plan has been started/completed/cancelled,
+      // even if a later management plan is still waiting to be started.
       `NOT (
          (
            e.nursing_status = 'ordered'
@@ -204,10 +233,10 @@ export function registerNurseCare(app: FastifyInstance, pool: pg.Pool) {
              WHERE p.visit_id = v.id AND p.status = 'ordered'
            )
          )
-         AND e.nursing_status IS DISTINCT FROM 'in_progress'
+         AND COALESCE(e.nursing_status, 'none') NOT IN ('in_progress', 'completed', 'cancelled')
          AND NOT EXISTS (
            SELECT 1 FROM patient_visit_management_plans p
-           WHERE p.visit_id = v.id AND p.status = 'in_progress'
+           WHERE p.visit_id = v.id AND p.status IN ('in_progress', 'completed', 'cancelled')
          )
        )`,
     ];
@@ -231,7 +260,8 @@ export function registerNurseCare(app: FastifyInstance, pool: pg.Pool) {
               c.name AS clinic_name, h.name AS hotel_name,
               p.name AS patient_name, p.mrn AS patient_mrn, p.gender AS patient_gender, p.nationality AS patient_nationality,
               EXTRACT(YEAR FROM age((v.created_at AT TIME ZONE 'UTC')::date, p.birthdate))::int AS patient_age_at_visit,
-              e.case_priority, e.medication_orders, e.procedure_orders
+              e.case_priority, e.medication_orders, e.procedure_orders, e.patient_advices, e.management_plan,
+              e.nursing_status, e.cancellation_reason, e.finished_at
        FROM patient_visits v
        JOIN clinics c ON c.id = v.clinic_id
        JOIN hotels h ON h.id = c.hotel_id
@@ -248,45 +278,56 @@ export function registerNurseCare(app: FastifyInstance, pool: pg.Pool) {
     const extraPlans = visitIdsForPlans.length === 0
       ? []
       : (await pool.query(
-        `SELECT visit_id, medication_orders, procedure_orders
+        `SELECT id, visit_id, position, medication_orders, procedure_orders, clinical_assessment, assessment_status, status, cancellation_reason, created_at
          FROM patient_visit_management_plans
          WHERE visit_id = ANY($1::uuid[])
          ORDER BY position`,
         [visitIdsForPlans],
       )).rows;
-    const extrasByVisit = new Map<string, { medications: unknown[]; procedures: unknown[] }>();
+    const plansByVisit = new Map<string, ReturnType<typeof presentManagementPlan>[]>();
+    for (const row of result.rows) {
+      const source = row as Record<string, unknown>;
+      const visitId = String(source.visit_id);
+      plansByVisit.set(visitId, [
+        presentManagementPlan({
+          medication_orders: source.medication_orders,
+          procedure_orders: source.procedure_orders,
+          patient_advices: source.patient_advices,
+          management_plan: source.management_plan,
+          status: source.nursing_status,
+          cancellation_reason: source.cancellation_reason,
+          created_at: source.finished_at,
+        }, 1),
+      ]);
+    }
     for (const plan of extraPlans) {
       const visitId = String((plan as { visit_id: string }).visit_id);
-      const current = extrasByVisit.get(visitId) ?? { medications: [], procedures: [] };
-      if (Array.isArray((plan as { medication_orders?: unknown }).medication_orders)) {
-        current.medications.push(...(plan as { medication_orders: unknown[] }).medication_orders);
-      }
-      if (Array.isArray((plan as { procedure_orders?: unknown }).procedure_orders)) {
-        current.procedures.push(...(plan as { procedure_orders: unknown[] }).procedure_orders);
-      }
-      extrasByVisit.set(visitId, current);
+      const position = Number((plan as { position: number }).position);
+      const list = plansByVisit.get(visitId) ?? [];
+      list.push(presentManagementPlan(plan as Record<string, unknown>, position));
+      plansByVisit.set(visitId, list);
     }
     const items = result.rows.map((row) => {
       const source = row as Record<string, unknown>;
-      const extra = extrasByVisit.get(String(source.visit_id));
-      return presentMonitoring({
-        ...source,
-        medication_orders: [
-          ...(Array.isArray(source.medication_orders) ? source.medication_orders : []),
-          ...(extra?.medications ?? []),
-        ],
-        procedure_orders: [
-          ...(Array.isArray(source.procedure_orders) ? source.procedure_orders : []),
-          ...(extra?.procedures ?? []),
-        ],
-      });
+      const visitId = String(source.visit_id);
+      const plans = plansByVisit.get(visitId) ?? [];
+      const servicePlans = monitoringServicePlans(plans);
+      return {
+        ...presentMonitoring({
+          ...source,
+          medication_orders: servicePlans.flatMap((plan) => plan.medication_orders),
+          procedure_orders: servicePlans.flatMap((plan) => plan.procedure_orders),
+        }),
+        plans: plans.filter(planHasOrders),
+      };
     });
     const visitIds = items.map((item) => item.visit_id);
     const observations = visitIds.length === 0
       ? []
       : (await pool.query(
         `SELECT o.id, o.visit_id, o.temperature_c, o.pulse, o.respiratory_rate, o.spo2, o.blood_pressure, o.notes,
-                o.doctor_assessment, o.clinical_assessment, o.case_priority, o.recorded_by, o.recorded_at, o.sent_to_doctor_at, u.name AS recorded_by_name
+                o.doctor_assessment, o.clinical_assessment, o.case_priority, o.recorded_by, o.recorded_at, o.sent_to_doctor_at,
+                o.doctor_noted_at, o.nurse_viewed_at, u.name AS recorded_by_name
          FROM patient_visit_nurse_observations o
          LEFT JOIN users u ON u.id = o.recorded_by
          WHERE o.visit_id = ANY($1::uuid[])
@@ -370,7 +411,7 @@ export function registerNurseCare(app: FastifyInstance, pool: pg.Pool) {
               p.name AS patient_name, p.mrn AS patient_mrn, p.gender AS patient_gender, p.nationality AS patient_nationality,
               EXTRACT(YEAR FROM age((v.created_at AT TIME ZONE 'UTC')::date, p.birthdate))::int AS patient_age_at_visit,
               e.case_priority, e.medication_orders, e.procedure_orders, e.patient_advices, e.management_plan,
-              e.nursing_status, e.finished_at
+              e.nursing_status, e.cancellation_reason, e.finished_at
        ${from}
        ORDER BY COALESCE(
          (SELECT MAX(o.updated_at) FROM patient_visit_nurse_observations o WHERE o.visit_id = v.id),
@@ -383,7 +424,7 @@ export function registerNurseCare(app: FastifyInstance, pool: pg.Pool) {
     const extraPlans = visitIdsForPlans.length === 0
       ? []
       : (await pool.query(
-        `SELECT id, visit_id, position, medication_orders, procedure_orders, clinical_assessment, assessment_status, status, created_at
+        `SELECT id, visit_id, position, medication_orders, procedure_orders, clinical_assessment, assessment_status, status, cancellation_reason, created_at
          FROM patient_visit_management_plans
          WHERE visit_id = ANY($1::uuid[])
          ORDER BY position`,
@@ -401,6 +442,7 @@ export function registerNurseCare(app: FastifyInstance, pool: pg.Pool) {
           patient_advices: source.patient_advices,
           management_plan: source.management_plan,
           status: source.nursing_status,
+          cancellation_reason: source.cancellation_reason,
           created_at: source.finished_at,
         }, 1),
       ]);
@@ -444,7 +486,8 @@ export function registerNurseCare(app: FastifyInstance, pool: pg.Pool) {
       ? []
       : (await pool.query(
         `SELECT o.id, o.visit_id, o.temperature_c, o.pulse, o.respiratory_rate, o.spo2, o.blood_pressure, o.notes,
-                o.doctor_assessment, o.clinical_assessment, o.case_priority, o.recorded_by, o.recorded_at, o.sent_to_doctor_at, u.name AS recorded_by_name
+                o.doctor_assessment, o.clinical_assessment, o.case_priority, o.recorded_by, o.recorded_at, o.sent_to_doctor_at,
+                o.doctor_noted_at, o.nurse_viewed_at, u.name AS recorded_by_name
          FROM patient_visit_nurse_observations o
          LEFT JOIN users u ON u.id = o.recorded_by
          WHERE o.visit_id = ANY($1::uuid[])
@@ -470,7 +513,7 @@ export function registerNurseCare(app: FastifyInstance, pool: pg.Pool) {
     const { patientId, visitId } = request.params as { patientId: string; visitId: string };
     const visit = await findVisit(pool, patientId, visitId);
     await assertNurseView(pool, request, visit);
-    const [triageResult, encounter, observationsResult, extras, investigations] = await Promise.all([
+    const [triageResult, encounter, observationsResult, extras, encounterNursingResult, investigations] = await Promise.all([
       pool.query(
         `SELECT t.*, d.name AS assigned_doctor_name,
                 s.name AS started_by_name, c.name AS completed_by_name
@@ -484,7 +527,8 @@ export function registerNurseCare(app: FastifyInstance, pool: pg.Pool) {
       loadSavedEncounter(pool, { id: visitId, status: visit.status }),
       pool.query(
         `SELECT o.id, o.temperature_c, o.pulse, o.respiratory_rate, o.spo2, o.blood_pressure, o.notes,
-                o.doctor_assessment, o.clinical_assessment, o.case_priority, o.recorded_by, o.recorded_at, o.sent_to_doctor_at, u.name AS recorded_by_name
+                o.doctor_assessment, o.clinical_assessment, o.case_priority, o.recorded_by, o.recorded_at, o.sent_to_doctor_at,
+                o.doctor_noted_at, o.nurse_viewed_at, u.name AS recorded_by_name
          FROM patient_visit_nurse_observations o
          LEFT JOIN users u ON u.id = o.recorded_by
          WHERE o.visit_id = $1
@@ -492,16 +536,23 @@ export function registerNurseCare(app: FastifyInstance, pool: pg.Pool) {
         [visitId],
       ),
       pool.query(
-        `SELECT id, position, medication_orders, procedure_orders, clinical_assessment, assessment_status, status, created_at
+        `SELECT id, position, medication_orders, procedure_orders, clinical_assessment, assessment_status, status, cancellation_reason, created_at
          FROM patient_visit_management_plans
          WHERE visit_id = $1
          ORDER BY position`,
+        [visitId],
+      ),
+      pool.query(
+        `SELECT nursing_status, cancellation_reason
+         FROM patient_visit_encounters
+         WHERE visit_id = $1`,
         [visitId],
       ),
       listVisitInvestigations(pool, visitId),
     ]);
     const triage = triageResult.rows[0] ?? null;
     const observations = observationsResult.rows.map((row) => presentObservation(row as Record<string, unknown>));
+    const encounterNursing = encounterNursingResult.rows[0] as { nursing_status?: string; cancellation_reason?: string } | undefined;
     const encounterPlans = encounter
       ? [
           presentManagementPlan({
@@ -509,7 +560,8 @@ export function registerNurseCare(app: FastifyInstance, pool: pg.Pool) {
             procedure_orders: encounter.encounter.procedure_orders,
             patient_advices: encounter.encounter.patient_advices,
             management_plan: encounter.encounter.management_plan,
-            status: visit.nursing_plan_status,
+            status: encounterNursing?.nursing_status ?? visit.nursing_plan_status,
+            cancellation_reason: encounterNursing?.cancellation_reason,
             created_at: null,
           }, 1),
           ...extras.rows.map((item) => presentManagementPlan(item as Record<string, unknown>, Number((item as { position: number }).position))),
@@ -539,7 +591,7 @@ export function registerNurseCare(app: FastifyInstance, pool: pg.Pool) {
     const visit = await findVisit(pool, patientId, visitId);
     await assertNurseView(pool, request, visit);
     const encounter = await pool.query(
-      `SELECT provisional_diagnoses, medication_orders, procedure_orders, patient_advices, management_plan, case_priority, finished_at, nursing_status
+      `SELECT provisional_diagnoses, medication_orders, procedure_orders, patient_advices, management_plan, case_priority, finished_at, nursing_status, cancellation_reason
        FROM patient_visit_encounters WHERE visit_id = $1`,
       [visitId],
     );
@@ -548,7 +600,7 @@ export function registerNurseCare(app: FastifyInstance, pool: pg.Pool) {
       ? row.case_priority
       : null;
     const extras = await pool.query(
-      `SELECT id, position, medication_orders, procedure_orders, clinical_assessment, assessment_status, status, created_at
+      `SELECT id, position, medication_orders, procedure_orders, clinical_assessment, assessment_status, status, cancellation_reason, created_at
        FROM patient_visit_management_plans
        WHERE visit_id = $1
        ORDER BY position`,
@@ -561,6 +613,7 @@ export function registerNurseCare(app: FastifyInstance, pool: pg.Pool) {
         patient_advices: row?.patient_advices,
         management_plan: row?.management_plan,
         status: row?.nursing_status,
+        cancellation_reason: row?.cancellation_reason,
         created_at: row?.finished_at,
       }, 1),
       ...extras.rows.map((item) => presentManagementPlan(item as Record<string, unknown>, Number((item as { position: number }).position))),
@@ -629,14 +682,65 @@ export function registerNurseCare(app: FastifyInstance, pool: pg.Pool) {
     return { ok: true, nursing_plan_status: "in_progress", position: body.position };
   });
 
+  app.post("/api/patients/:patientId/visits/:visitId/nursing-plan/cancel", { preHandler: authenticate }, async (request) => {
+    const { patientId, visitId } = request.params as { patientId: string; visitId: string };
+    const visit = await findVisit(pool, patientId, visitId);
+    await assertNurseUpdate(pool, request, visit, { allowAssignedDoctor: true });
+    const body = parse(cancelPlanSchema, request.body ?? {});
+    const previous = await pool.query<{ status: string }>(
+      body.position === 1
+        ? `SELECT nursing_status AS status FROM patient_visit_encounters WHERE visit_id = $1`
+        : `SELECT status FROM patient_visit_management_plans WHERE visit_id = $1 AND position = $2`,
+      body.position === 1 ? [visitId] : [visitId, body.position],
+    );
+    const previousStatus = previous.rows[0]?.status ?? null;
+    if (!previousStatus || (previousStatus !== "ordered" && previousStatus !== "in_progress")) {
+      throw new ApplicationError(422, "invalid_status", "Only ordered or in-progress management plans can be cancelled");
+    }
+    const cancelled = body.position === 1
+      ? await pool.query(
+        `UPDATE patient_visit_encounters
+         SET nursing_status = 'cancelled',
+             cancellation_reason = $2,
+             updated_at = now()
+         WHERE visit_id = $1 AND nursing_status IN ('ordered', 'in_progress')`,
+        [visitId, body.reason],
+      )
+      : await pool.query(
+        `UPDATE patient_visit_management_plans
+         SET status = 'cancelled',
+             cancellation_reason = $3
+         WHERE visit_id = $1 AND position = $2 AND status IN ('ordered', 'in_progress')`,
+        [visitId, body.position, body.reason],
+      );
+    if ((cancelled.rowCount ?? 0) < 1) {
+      throw new ApplicationError(422, "invalid_status", "Only ordered or in-progress management plans can be cancelled");
+    }
+    await refreshNursingPlanStatus(pool, visitId);
+    noteActivity(request, {
+      entity: "patient",
+      entityId: visit.patient_id,
+      summary: `Cancelled management plan ${body.position} for ${visit.patient_name}`,
+      changes: [
+        changed("Nursing plan", planStatusLabel(previousStatus), "Cancelled"),
+        changed("Cancellation reason", null, body.reason),
+      ].filter((item) => item !== null),
+    });
+    return { ok: true, position: body.position, status: "cancelled" as const, reason: body.reason };
+  });
+
   app.post("/api/patients/:patientId/visits/:visitId/nursing-plan/monitoring", { preHandler: authenticate }, async (request) => {
     const { patientId, visitId } = request.params as { patientId: string; visitId: string };
     const visit = await findVisit(pool, patientId, visitId);
     await assertNurseUpdate(pool, request, visit);
+    const previousMonitoring = visit.monitoring_status === "in_progress" || visit.monitoring_status === "completed"
+      ? visit.monitoring_status
+      : "none";
     await pool.query(
       `UPDATE patient_visits
        SET monitoring_status = 'in_progress',
            monitoring_started_at = CASE WHEN monitoring_status = 'in_progress' THEN monitoring_started_at ELSE now() END,
+           monitoring_completed_at = CASE WHEN monitoring_status = 'in_progress' THEN monitoring_completed_at ELSE NULL END,
            updated_at = now()
        WHERE id = $1`,
       [visitId],
@@ -644,8 +748,10 @@ export function registerNurseCare(app: FastifyInstance, pool: pg.Pool) {
     noteActivity(request, {
       entity: "patient",
       entityId: visit.patient_id,
-      summary: `Sent ${visit.patient_name} to monitoring`,
-      changes: [changed("Monitoring", "None", "In progress")].filter((item) => item !== null),
+      summary: previousMonitoring === "completed"
+        ? `Resumed monitoring for ${visit.patient_name}`
+        : `Sent ${visit.patient_name} to monitoring`,
+      changes: [changed("Monitoring", previousMonitoring === "none" ? "None" : previousMonitoring === "completed" ? "Completed" : "In progress", "In progress")].filter((item) => item !== null),
     });
     return { ok: true, monitoring_status: "in_progress" };
   });
@@ -656,7 +762,8 @@ export function registerNurseCare(app: FastifyInstance, pool: pg.Pool) {
     await assertNurseView(pool, request, visit);
     const result = await pool.query(
       `SELECT o.id, o.temperature_c, o.pulse, o.respiratory_rate, o.spo2, o.blood_pressure, o.notes,
-              o.doctor_assessment, o.clinical_assessment, o.case_priority, o.recorded_by, o.recorded_at, o.sent_to_doctor_at, u.name AS recorded_by_name
+              o.doctor_assessment, o.clinical_assessment, o.case_priority, o.recorded_by, o.recorded_at, o.sent_to_doctor_at,
+              o.doctor_noted_at, o.nurse_viewed_at, u.name AS recorded_by_name
        FROM patient_visit_nurse_observations o
        LEFT JOIN users u ON u.id = o.recorded_by
        WHERE o.visit_id = $1
@@ -666,6 +773,21 @@ export function registerNurseCare(app: FastifyInstance, pool: pg.Pool) {
     return {
       items: result.rows.map((row) => presentObservation(row as Record<string, unknown>)),
     };
+  });
+
+  app.post("/api/patients/:patientId/visits/:visitId/monitoring/doctor-notes/viewed", { preHandler: authenticate }, async (request) => {
+    const { patientId, visitId } = request.params as { patientId: string; visitId: string };
+    const visit = await findVisit(pool, patientId, visitId);
+    await assertNurseView(pool, request, visit);
+    const updated = await pool.query(
+      `UPDATE patient_visit_nurse_observations
+       SET nurse_viewed_at = now(), updated_at = now()
+       WHERE visit_id = $1
+         AND doctor_noted_at IS NOT NULL
+         AND nurse_viewed_at IS NULL`,
+      [visitId],
+    );
+    return { viewed: updated.rowCount ?? 0 };
   });
 
   app.post("/api/patients/:patientId/visits/:visitId/monitoring", { preHandler: authenticate }, async (request) => {
@@ -825,6 +947,8 @@ export function registerNurseCare(app: FastifyInstance, pool: pg.Pool) {
         `UPDATE patient_visit_nurse_observations
          SET doctor_assessment = $2,
              clinical_assessment = $3,
+             doctor_noted_at = now(),
+             nurse_viewed_at = NULL,
              updated_at = now()
          WHERE id = $1`,
         [observationId, body.doctor_assessment, body.clinical_assessment],
@@ -963,6 +1087,159 @@ export function registerNurseCare(app: FastifyInstance, pool: pg.Pool) {
     });
     return { ok: true, status: "encounter_complete" as const };
   });
+
+  app.get("/api/patients/:patientId/visits/:visitId/close-encounter-preview", { preHandler: authenticate }, async (request) => {
+    const { patientId, visitId } = request.params as { patientId: string; visitId: string };
+    const visit = await findVisit(pool, patientId, visitId);
+    await assertNurseView(pool, request, visit);
+    if (!closeEncounterAllowedStatus(visit.status)) {
+      throw new ApplicationError(422, "invalid_status", "This encounter cannot be closed from attention");
+    }
+    return buildCloseEncounterPreview(pool, visit);
+  });
+
+  app.post("/api/patients/:patientId/visits/:visitId/close-encounter", { preHandler: authenticate }, async (request) => {
+    const { patientId, visitId } = request.params as { patientId: string; visitId: string };
+    const visit = await findVisit(pool, patientId, visitId);
+    await assertNurseUpdate(pool, request, visit, { allowAssignedDoctor: true });
+    if (!closeEncounterAllowedStatus(visit.status)) {
+      throw new ApplicationError(422, "invalid_status", "This encounter cannot be closed from attention");
+    }
+    const body = parse(closeEncounterSchema, request.body ?? {});
+    if (body.outcome === "refer" && !body.referral_note.trim()) {
+      throw new ApplicationError(422, "referral_required", "Enter a hospital referral note");
+    }
+    const preview = await buildCloseEncounterPreview(pool, visit);
+    validateCloseEncounterResolutions(preview, body);
+
+    const nextStatus = body.outcome === "refer" ? "referred" : "encounter_complete";
+    const nextLabel = body.outcome === "refer" ? "Referred" : "Encounter Complete";
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+
+      for (const resolution of body.plan_resolutions) {
+        if (resolution.action === "cancel") {
+          if (resolution.position === 1) {
+            await client.query(
+              `UPDATE patient_visit_encounters
+               SET nursing_status = 'cancelled',
+                   cancellation_reason = $2,
+                   updated_at = now()
+               WHERE visit_id = $1 AND nursing_status IN ('ordered', 'in_progress')`,
+              [visitId, resolution.reason],
+            );
+          } else {
+            await client.query(
+              `UPDATE patient_visit_management_plans
+               SET status = 'cancelled',
+                   cancellation_reason = $3
+               WHERE visit_id = $1 AND position = $2 AND status IN ('ordered', 'in_progress')`,
+              [visitId, resolution.position, resolution.reason],
+            );
+          }
+        } else if (resolution.position === 1) {
+          await client.query(
+            `UPDATE patient_visit_encounters
+             SET nursing_status = 'completed', updated_at = now()
+             WHERE visit_id = $1 AND nursing_status IN ('ordered', 'in_progress')`,
+            [visitId],
+          );
+        } else {
+          await client.query(
+            `UPDATE patient_visit_management_plans
+             SET status = 'completed'
+             WHERE visit_id = $1 AND position = $2 AND status IN ('ordered', 'in_progress')`,
+            [visitId, resolution.position],
+          );
+        }
+      }
+
+      if (body.monitoring_resolution?.action === "complete") {
+        await client.query(
+          `UPDATE patient_visits
+           SET monitoring_status = 'completed',
+               monitoring_completed_at = COALESCE(monitoring_completed_at, now()),
+               monitoring_cancellation_reason = '',
+               updated_at = now()
+           WHERE id = $1 AND monitoring_status = 'in_progress'`,
+          [visitId],
+        );
+      } else if (body.monitoring_resolution?.action === "cancel") {
+        await client.query(
+          `UPDATE patient_visits
+           SET monitoring_status = 'cancelled',
+               monitoring_completed_at = COALESCE(monitoring_completed_at, now()),
+               monitoring_cancellation_reason = $2,
+               updated_at = now()
+           WHERE id = $1 AND monitoring_status = 'in_progress'`,
+          [visitId, body.monitoring_resolution.reason],
+        );
+      }
+
+      for (const resolution of body.investigation_resolutions) {
+        if (resolution.action === "cancel") {
+          await client.query(
+            `UPDATE patient_visit_investigations
+             SET status = 'cancelled',
+                 cancellation_reason = $3,
+                 updated_at = now()
+             WHERE id = $1 AND visit_id = $2
+               AND status IN ('ordered', 'collected', 'sent', 'result_uploaded')`,
+            [resolution.id, visitId, body.investigation_cancellation_reason],
+          );
+        } else {
+          await client.query(
+            `UPDATE patient_visit_investigations
+             SET status = 'completed',
+                 completed_at = COALESCE(completed_at, now()),
+                 updated_at = now()
+             WHERE id = $1 AND visit_id = $2 AND status = 'result_uploaded'`,
+            [resolution.id, visitId],
+          );
+        }
+      }
+
+      await refreshNursingPlanStatus(client, visitId);
+      const updated = await client.query<{ id: string }>(
+        `UPDATE patient_visits
+         SET status = $2,
+             referral_note = CASE WHEN $2 = 'referred' THEN $3 ELSE referral_note END,
+             status_changed_at = now(),
+             updated_at = now()
+         WHERE id = $1
+           AND deleted_at IS NULL
+           AND status IN ('to_doctor', 'consultation_in_progress', 'waiting_for_investigation', 'under_nursing_care')
+         RETURNING id`,
+        [visitId, nextStatus, body.referral_note],
+      );
+      if (!updated.rows[0]) throw new ApplicationError(422, "invalid_status", "This encounter can no longer be closed");
+      await client.query(
+        `INSERT INTO patient_visit_status_history (visit_id, from_status, to_status, changed_by, note)
+         VALUES ($1, $2, $3, $4, $5)`,
+        [visitId, visit.status, nextStatus, request.user.sub, nextLabel],
+      );
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+
+    noteActivity(request, {
+      entity: "patient",
+      entityId: visit.patient_id,
+      summary: body.outcome === "refer"
+        ? `Referred ${visit.patient_name} to hospital`
+        : `Completed the encounter for ${visit.patient_name}`,
+      changes: [
+        changed("Status", careStatusLabel(visit.status), nextLabel),
+        body.outcome === "refer" ? changed("Referral note", null, body.referral_note) : null,
+      ].filter((item) => item !== null),
+    });
+    return { ok: true, status: nextStatus as "encounter_complete" | "referred" };
+  });
 }
 
 function visitCanEndEncounter(status: string, monitoringStatus: string, phase: string | null) {
@@ -972,10 +1249,193 @@ function visitCanEndEncounter(status: string, monitoringStatus: string, phase: s
   return monitoringStatus === "none" && phase === "results_ready";
 }
 
+function closeEncounterAllowedStatus(status: string) {
+  return status === "to_doctor"
+    || status === "consultation_in_progress"
+    || status === "waiting_for_investigation"
+    || status === "under_nursing_care";
+}
+
+type CloseEncounterPreview = {
+  visit: {
+    id: string;
+    status: string;
+    monitoring_status: string;
+    investigation_phase: string | null;
+  };
+  plans: Array<{
+    position: number;
+    status: string;
+    medication_count: number;
+    procedure_count: number;
+    cancellation_reason: string;
+    allowed_actions: Array<"complete" | "cancel">;
+  }>;
+  monitoring: { status: string; needs_resolution: boolean; allowed_actions: Array<"complete" | "cancel"> };
+  investigations: Array<{
+    id: string;
+    name: string;
+    status: string;
+    allowed_actions: Array<"complete" | "cancel">;
+  }>;
+};
+
+function investigationCloseActions(status: string): Array<"complete" | "cancel"> {
+  if (status === "result_uploaded") return ["complete", "cancel"];
+  if (status === "ordered" || status === "collected" || status === "sent") return ["cancel"];
+  return [];
+}
+
+async function buildCloseEncounterPreview(
+  pool: pg.Pool,
+  visit: {
+    id: string;
+    status: string;
+    monitoring_status: string;
+    investigation_phase: string | null;
+    nursing_plan_status: string;
+  },
+): Promise<CloseEncounterPreview> {
+  const [encounterResult, extrasResult, investigations] = await Promise.all([
+    pool.query(
+      `SELECT nursing_status, medication_orders, procedure_orders, patient_advices, management_plan, cancellation_reason
+       FROM patient_visit_encounters WHERE visit_id = $1`,
+      [visit.id],
+    ),
+    pool.query(
+      `SELECT position, status, medication_orders, procedure_orders, clinical_assessment, cancellation_reason
+       FROM patient_visit_management_plans
+       WHERE visit_id = $1
+       ORDER BY position`,
+      [visit.id],
+    ),
+    listVisitInvestigations(pool, visit.id),
+  ]);
+  const encounterRow = encounterResult.rows[0] as Record<string, unknown> | undefined;
+  const plans: CloseEncounterPreview["plans"] = [];
+  function pushOpenPlan(plan: ReturnType<typeof presentManagementPlan>) {
+    if (!planHasOrders(plan)) return;
+    const open = plan.status === "ordered" || plan.status === "in_progress";
+    const settled = plan.status === "completed" || plan.status === "cancelled";
+    if (!open && !settled) return;
+    plans.push({
+      position: plan.position,
+      status: plan.status,
+      medication_count: plan.medication_orders.length,
+      procedure_count: plan.procedure_orders.length,
+      cancellation_reason: plan.cancellation_reason,
+      allowed_actions: open ? ["complete", "cancel"] : [],
+    });
+  }
+  // Use encounter nursing_status only — never visit.nursing_plan_status (that aggregates later plans).
+  pushOpenPlan(presentManagementPlan({
+    medication_orders: encounterRow?.medication_orders,
+    procedure_orders: encounterRow?.procedure_orders,
+    patient_advices: encounterRow?.patient_advices,
+    management_plan: encounterRow?.management_plan,
+    status: encounterRow?.nursing_status ?? "none",
+    cancellation_reason: encounterRow?.cancellation_reason,
+  }, 1));
+  for (const row of extrasResult.rows) {
+    pushOpenPlan(presentManagementPlan(row as Record<string, unknown>, Number((row as { position: number }).position)));
+  }
+
+  const monitoringNeedsResolution = visit.monitoring_status === "in_progress";
+  const incompleteInvestigations = investigations
+    .filter((item) => item.status !== "completed" && item.status !== "cancelled")
+    .map((item) => ({
+      id: item.id,
+      name: item.name,
+      status: item.status,
+      allowed_actions: investigationCloseActions(item.status),
+    }))
+    .filter((item) => item.allowed_actions.length > 0);
+
+  return {
+    visit: {
+      id: visit.id,
+      status: visit.status,
+      monitoring_status: visit.monitoring_status,
+      investigation_phase: visit.investigation_phase,
+    },
+    plans,
+    monitoring: {
+      status: visit.monitoring_status,
+      needs_resolution: monitoringNeedsResolution,
+      allowed_actions: monitoringNeedsResolution ? ["complete", "cancel"] : [],
+    },
+    investigations: incompleteInvestigations,
+  };
+}
+
+function validateCloseEncounterResolutions(
+  preview: CloseEncounterPreview,
+  body: {
+    plan_resolutions: Array<{ position: number; action: "complete" | "cancel"; reason: string }>;
+    monitoring_resolution: { action: "complete" | "cancel"; reason: string } | null;
+    investigation_resolutions: Array<{ id: string; action: "complete" | "cancel" }>;
+    investigation_cancellation_reason: string;
+  },
+) {
+  const actionablePlans = preview.plans.filter((plan) => plan.allowed_actions.length > 0);
+  const planByPosition = new Map(body.plan_resolutions.map((item) => [item.position, item]));
+  for (const plan of actionablePlans) {
+    const resolution = planByPosition.get(plan.position);
+    if (!resolution) {
+      throw new ApplicationError(422, "resolution_required", `Resolve management plan ${plan.position}`);
+    }
+    if (!plan.allowed_actions.includes(resolution.action)) {
+      throw new ApplicationError(422, "invalid_resolution", `Invalid action for management plan ${plan.position}`);
+    }
+    if (resolution.action === "cancel" && !resolution.reason.trim()) {
+      throw new ApplicationError(422, "reason_required", `Enter a cancellation reason for management plan ${plan.position}`);
+    }
+  }
+  if (body.plan_resolutions.some((item) => !actionablePlans.some((plan) => plan.position === item.position))) {
+    throw new ApplicationError(422, "invalid_resolution", "A plan resolution does not match an open plan");
+  }
+
+  if (preview.monitoring.needs_resolution) {
+    if (!body.monitoring_resolution) {
+      throw new ApplicationError(422, "resolution_required", "Resolve in-progress monitoring");
+    }
+    if (!preview.monitoring.allowed_actions.includes(body.monitoring_resolution.action)) {
+      throw new ApplicationError(422, "invalid_resolution", "Invalid monitoring resolution");
+    }
+    if (body.monitoring_resolution.action === "cancel" && !body.monitoring_resolution.reason.trim()) {
+      throw new ApplicationError(422, "reason_required", "Enter a cancellation reason for monitoring");
+    }
+  } else if (body.monitoring_resolution) {
+    throw new ApplicationError(422, "invalid_resolution", "Monitoring does not need resolution");
+  }
+
+  const investigationById = new Map(body.investigation_resolutions.map((item) => [item.id, item]));
+  let cancellingInvestigations = false;
+  for (const investigation of preview.investigations) {
+    const resolution = investigationById.get(investigation.id);
+    if (!resolution) {
+      throw new ApplicationError(422, "resolution_required", `Resolve investigation ${investigation.name}`);
+    }
+    if (!investigation.allowed_actions.includes(resolution.action)) {
+      throw new ApplicationError(422, "invalid_resolution", `Cannot ${resolution.action} investigation ${investigation.name}`);
+    }
+    if (resolution.action === "cancel") cancellingInvestigations = true;
+  }
+  if (body.investigation_resolutions.some((item) => !preview.investigations.some((inv) => inv.id === item.id))) {
+    throw new ApplicationError(422, "invalid_resolution", "An investigation resolution does not match an open investigation");
+  }
+  if (cancellingInvestigations && !body.investigation_cancellation_reason.trim()) {
+    throw new ApplicationError(422, "reason_required", "Enter a cancellation reason for investigations");
+  }
+}
+
 function careStatusLabel(status: string) {
   if (status === "under_nursing_care") return "Under Nursing Care";
   if (status === "waiting_for_investigation") return "Waiting for Investigation";
   if (status === "encounter_complete") return "Encounter Complete";
+  if (status === "referred") return "Referred";
+  if (status === "to_doctor") return "To Doctor";
+  if (status === "consultation_in_progress") return "Consultation In Progress";
   return status;
 }
 
@@ -1043,6 +1503,7 @@ function planStatusLabel(value: string) {
   if (value === "ordered") return "Ordered";
   if (value === "in_progress") return "In progress";
   if (value === "completed") return "Completed";
+  if (value === "cancelled") return "Cancelled";
   return "None";
 }
 
@@ -1064,7 +1525,7 @@ function readAssessmentOrders(value: unknown[], kind: "medication" | "procedure"
 }
 
 function presentPlanStatus(value: unknown) {
-  return value === "ordered" || value === "in_progress" || value === "completed" ? value : "none";
+  return value === "ordered" || value === "in_progress" || value === "completed" || value === "cancelled" ? value : "none";
 }
 
 function presentManagementPlan(row: Record<string, unknown>, position: number) {
@@ -1079,6 +1540,7 @@ function presentManagementPlan(row: Record<string, unknown>, position: number) {
     management_plan: typeof row.management_plan === "string" ? row.management_plan : "",
     clinical_assessment: typeof row.clinical_assessment === "string" ? row.clinical_assessment : "",
     assessment_status: status === "stable" || status === "needs_review" || status === "deteriorating" ? status : null,
+    cancellation_reason: typeof row.cancellation_reason === "string" ? row.cancellation_reason.trim() : "",
     created_at: row.created_at ? new Date(String(row.created_at)).toISOString() : null,
   };
 }
@@ -1089,6 +1551,13 @@ function planHasOrders(plan: ReturnType<typeof presentManagementPlan>) {
     || plan.patient_advices.length > 0
     || plan.management_plan.trim().length > 0
     || plan.clinical_assessment.trim().length > 0;
+}
+
+/** Prefer in-progress plans for monitoring service counts; otherwise non-cancelled plans. */
+function monitoringServicePlans(plans: ReturnType<typeof presentManagementPlan>[]) {
+  const active = plans.filter((plan) => plan.status === "in_progress");
+  if (active.length > 0) return active;
+  return plans.filter((plan) => plan.status !== "cancelled" && plan.status !== "none");
 }
 
 function presentCasePriority(value: unknown) {
@@ -1213,6 +1682,8 @@ async function attachDoctorAssessment(
     `UPDATE patient_visit_nurse_observations
      SET doctor_assessment = COALESCE($2, doctor_assessment),
          clinical_assessment = CASE WHEN $3 <> '' THEN $3 ELSE clinical_assessment END,
+         doctor_noted_at = now(),
+         nurse_viewed_at = NULL,
          updated_at = now()
      WHERE id = $1`,
     [observationId, doctorAssessment, text],
@@ -1246,6 +1717,8 @@ function presentObservation(row: Record<string, unknown>) {
     recorded_by_name: typeof row.recorded_by_name === "string" ? row.recorded_by_name : null,
     recorded_at: row.recorded_at ? new Date(String(row.recorded_at)).toISOString() : null,
     sent_to_doctor_at: row.sent_to_doctor_at ? new Date(String(row.sent_to_doctor_at)).toISOString() : null,
+    doctor_noted_at: row.doctor_noted_at ? new Date(String(row.doctor_noted_at)).toISOString() : null,
+    nurse_viewed_at: row.nurse_viewed_at ? new Date(String(row.nurse_viewed_at)).toISOString() : null,
   };
 }
 

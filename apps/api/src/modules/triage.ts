@@ -199,6 +199,11 @@ export function registerTriage(app: FastifyInstance, pool: pg.Pool) {
     }
     const monitoringClauses = [...clauses];
     const monitoringValues = [...values];
+    const attentionClauses = [
+      ...clauses,
+      `v.status IN ('to_doctor', 'consultation_in_progress', 'waiting_for_investigation', 'under_nursing_care')`,
+    ];
+    const attentionValues = [...values];
     const focus = readCaseFocus(request.query);
     const phaseExpr = investigationPhaseSql("v");
     const summaryFrom = `
@@ -216,13 +221,18 @@ export function registerTriage(app: FastifyInstance, pool: pg.Pool) {
       emergency: number;
       urgent: number;
       normal: number;
+      consultation_in_progress: number;
       waiting_for_investigation: number;
       awaiting_collection: number;
       collected: number;
       at_lab: number;
       results_ready: number;
+      under_nursing_care: number;
+      encounter_complete: number;
+      referred: number;
       closed: number;
       average_wait_minutes: number;
+      needs_attention: number;
     }>(
       `SELECT count(*) FILTER (WHERE v.status = 'to_doctor')::int AS waiting,
               count(*) FILTER (WHERE v.status = 'to_doctor' AND t.completed_at >= date_trunc('day', now()))::int AS today,
@@ -230,16 +240,25 @@ export function registerTriage(app: FastifyInstance, pool: pg.Pool) {
               count(*) FILTER (WHERE v.status = 'to_doctor' AND t.triage_category = 'emergency')::int AS emergency,
               count(*) FILTER (WHERE v.status = 'to_doctor' AND t.triage_category = 'urgent')::int AS urgent,
               count(*) FILTER (WHERE v.status = 'to_doctor' AND t.triage_category = 'normal')::int AS normal,
+              count(*) FILTER (WHERE v.status = 'consultation_in_progress')::int AS consultation_in_progress,
               count(*) FILTER (WHERE v.status = 'waiting_for_investigation')::int AS waiting_for_investigation,
               count(*) FILTER (WHERE ${phaseExpr} = 'awaiting_collection')::int AS awaiting_collection,
               count(*) FILTER (WHERE ${phaseExpr} = 'collected')::int AS collected,
               count(*) FILTER (WHERE ${phaseExpr} = 'at_lab')::int AS at_lab,
               count(*) FILTER (WHERE ${phaseExpr} = 'results_ready')::int AS results_ready,
+              count(*) FILTER (WHERE v.status = 'under_nursing_care')::int AS under_nursing_care,
+              count(*) FILTER (WHERE v.status = 'encounter_complete')::int AS encounter_complete,
+              count(*) FILTER (WHERE v.status = 'referred')::int AS referred,
               count(*) FILTER (WHERE v.status IN ('encounter_complete', 'referred', 'under_nursing_care'))::int AS closed,
+              count(*) FILTER (WHERE v.status IN ('to_doctor', 'consultation_in_progress', 'waiting_for_investigation', 'under_nursing_care'))::int AS needs_attention,
               COALESCE(ROUND(AVG(EXTRACT(EPOCH FROM (now() - t.completed_at)) / 60) FILTER (WHERE v.status = 'to_doctor'))::int, 0) AS average_wait_minutes
        ${summaryFrom}`,
       values,
     );
+    if (focus === "waiting") clauses.push("v.status = 'to_doctor'");
+    if (focus === "consultation_in_progress") clauses.push("v.status = 'consultation_in_progress'");
+    if (focus === "under_nursing_care") clauses.push("v.status = 'under_nursing_care'");
+    if (focus === "encounter_complete") clauses.push("v.status = 'encounter_complete'");
     if (focus === "waiting_for_investigation") clauses.push("v.status = 'waiting_for_investigation'");
     if (focus === "awaiting_collection" || focus === "collected" || focus === "at_lab" || focus === "results_ready") {
       clauses.push(`${phaseExpr} = '${focus}'`);
@@ -295,20 +314,26 @@ export function registerTriage(app: FastifyInstance, pool: pg.Pool) {
       emergency: 0,
       urgent: 0,
       normal: 0,
+      consultation_in_progress: 0,
       waiting_for_investigation: 0,
       awaiting_collection: 0,
       collected: 0,
       at_lab: 0,
       results_ready: 0,
+      under_nursing_care: 0,
+      encounter_complete: 0,
+      referred: 0,
       closed: 0,
       average_wait_minutes: 0,
+      needs_attention: 0,
     };
     const monitoring = await pool.query(
       `SELECT o.id, o.visit_id, o.temperature_c, o.pulse, o.respiratory_rate, o.spo2, o.blood_pressure, o.notes,
               o.doctor_assessment, o.clinical_assessment,
               o.case_priority, o.recorded_by, o.recorded_at, o.sent_to_doctor_at, o.doctor_viewed_at, u.name AS recorded_by_name,
-              v.patient_id, v.monitoring_status, v.status AS visit_status, v.hotel_room_no,
-              h.name AS hotel_name, p.name AS patient_name, p.mrn AS patient_mrn
+              v.patient_id, v.monitoring_status, v.monitoring_started_at, v.status AS visit_status, v.hotel_room_no,
+              h.name AS hotel_name, p.name AS patient_name, p.mrn AS patient_mrn,
+              t.chief_complaint
        FROM patient_visit_nurse_observations o
        JOIN patient_visits v ON v.id = o.visit_id
        JOIN patients p ON p.id = v.patient_id
@@ -320,13 +345,39 @@ export function registerTriage(app: FastifyInstance, pool: pg.Pool) {
        ORDER BY o.recorded_at DESC`,
       monitoringValues,
     );
+    const attentionResult = await pool.query(
+      `SELECT v.id, v.visit_number, v.patient_id, v.status, v.visit_type, v.status_changed_at,
+              v.monitoring_status, ${phaseExpr} AS investigation_phase,
+              v.hotel_room_no, v.clinic_id, c.name AS clinic_name,
+              h.name AS hotel_name, p.name AS patient_name, p.mrn AS patient_mrn,
+              t.triage_category, t.chief_complaint, t.completed_at AS triage_completed_at,
+              EXISTS (
+                SELECT 1 FROM patient_visit_nurse_observations o
+                WHERE o.visit_id = v.id
+                  AND o.sent_to_doctor_at IS NOT NULL
+                  AND o.doctor_viewed_at IS NULL
+              ) AS nurse_note_unviewed
+       FROM patient_visits v
+       JOIN clinics c ON c.id = v.clinic_id
+       JOIN hotels h ON h.id = c.hotel_id
+       JOIN patients p ON p.id = v.patient_id
+       JOIN patient_visit_triages t ON t.visit_id = v.id
+       WHERE ${attentionClauses.join(" AND ")}`,
+      attentionValues,
+    );
+    const attentionVisitIds = attentionResult.rows.map((row) => String((row as { id: string }).id));
+    const attentionPlans = await loadAttentionPlans(pool, attentionVisitIds);
+    const attention = attentionResult.rows
+      .map((row) => presentDoctorAttention(row as Record<string, unknown>, attentionPlans.get(String((row as { id: string }).id)) ?? []))
+      .sort(compareDoctorAttention);
     return {
       items: result.rows,
       total,
       page,
       page_size: query.pageSize,
-      summary,
+      summary: { ...summary, needs_attention: attention.length },
       monitoring: monitoring.rows.map((row) => presentDoctorMonitoring(row as Record<string, unknown>)),
+      attention,
     };
   });
 
@@ -651,7 +702,22 @@ export function registerTriage(app: FastifyInstance, pool: pg.Pool) {
   });
 }
 
-const caseFocuses = ["today", "now", "emergency", "urgent", "normal", "waiting_for_investigation", "awaiting_collection", "collected", "at_lab", "results_ready"] as const;
+const caseFocuses = [
+  "today",
+  "now",
+  "waiting",
+  "emergency",
+  "urgent",
+  "normal",
+  "consultation_in_progress",
+  "waiting_for_investigation",
+  "awaiting_collection",
+  "collected",
+  "at_lab",
+  "results_ready",
+  "under_nursing_care",
+  "encounter_complete",
+] as const;
 
 function presentDoctorMonitoring(row: Record<string, unknown>) {
   return {
@@ -663,7 +729,9 @@ function presentDoctorMonitoring(row: Record<string, unknown>) {
     hotel_room_no: typeof row.hotel_room_no === "string" ? row.hotel_room_no : null,
     hotel_name: typeof row.hotel_name === "string" ? row.hotel_name : null,
     monitoring_status: row.monitoring_status === "in_progress" || row.monitoring_status === "completed" ? row.monitoring_status : "none",
+    monitoring_started_at: row.monitoring_started_at ? new Date(String(row.monitoring_started_at)).toISOString() : null,
     visit_status: typeof row.visit_status === "string" ? row.visit_status : "to_doctor",
+    chief_complaint: typeof row.chief_complaint === "string" ? row.chief_complaint : null,
     temperature_c: row.temperature_c == null ? null : Number(row.temperature_c),
     pulse: row.pulse == null ? null : Number(row.pulse),
     respiratory_rate: row.respiratory_rate == null ? null : Number(row.respiratory_rate),
@@ -679,6 +747,196 @@ function presentDoctorMonitoring(row: Record<string, unknown>) {
     sent_to_doctor_at: row.sent_to_doctor_at ? new Date(String(row.sent_to_doctor_at)).toISOString() : null,
     doctor_viewed_at: row.doctor_viewed_at ? new Date(String(row.doctor_viewed_at)).toISOString() : null,
   };
+}
+
+type DoctorAttentionReason =
+  | "waiting_for_doctor"
+  | "consultation_in_progress"
+  | "waiting_for_investigation"
+  | "under_nursing_care"
+  | "results_ready"
+  | "nurse_note_unviewed"
+  | "ready_to_end";
+
+type DoctorAttentionUrgency = "critical" | "action" | "open";
+
+function attentionCanEndEncounter(status: string, monitoringStatus: string, phase: string | null) {
+  if (status !== "under_nursing_care" && status !== "waiting_for_investigation") return false;
+  if (monitoringStatus === "in_progress") return false;
+  if (monitoringStatus === "completed") return true;
+  return (monitoringStatus === "none" || !monitoringStatus) && phase === "results_ready";
+}
+
+function attentionReasons(input: {
+  status: string;
+  monitoringStatus: string;
+  phase: string | null;
+  triageCategory: string | null;
+  nurseNoteUnviewed: boolean;
+}): DoctorAttentionReason[] {
+  const reasons: DoctorAttentionReason[] = [];
+  if (input.status === "to_doctor") reasons.push("waiting_for_doctor");
+  if (input.status === "consultation_in_progress") reasons.push("consultation_in_progress");
+  if (input.status === "waiting_for_investigation") reasons.push("waiting_for_investigation");
+  if (input.status === "under_nursing_care") reasons.push("under_nursing_care");
+  if (input.phase === "results_ready") reasons.push("results_ready");
+  if (input.nurseNoteUnviewed) reasons.push("nurse_note_unviewed");
+  if (attentionCanEndEncounter(input.status, input.monitoringStatus, input.phase)) reasons.push("ready_to_end");
+  return reasons;
+}
+
+function attentionUrgency(reasons: DoctorAttentionReason[], triageCategory: string | null): DoctorAttentionUrgency {
+  if (reasons.includes("nurse_note_unviewed")) return "critical";
+  if (reasons.includes("waiting_for_doctor") && triageCategory === "emergency") return "critical";
+  if (reasons.includes("ready_to_end") || reasons.includes("results_ready")) return "action";
+  if (reasons.includes("waiting_for_doctor") && triageCategory === "urgent") return "action";
+  return "open";
+}
+
+function attentionHeadline(reasons: DoctorAttentionReason[]): DoctorAttentionReason {
+  const order: DoctorAttentionReason[] = [
+    "nurse_note_unviewed",
+    "ready_to_end",
+    "results_ready",
+    "waiting_for_doctor",
+    "consultation_in_progress",
+    "waiting_for_investigation",
+    "under_nursing_care",
+  ];
+  return order.find((reason) => reasons.includes(reason)) ?? reasons[0] ?? "waiting_for_doctor";
+}
+
+type AttentionPlanSummary = {
+  position: number;
+  status: "ordered" | "in_progress" | "completed" | "cancelled";
+  medication_count: number;
+  procedure_count: number;
+  cancellation_reason: string;
+};
+
+function jsonCount(value: unknown) {
+  return Array.isArray(value) ? value.length : 0;
+}
+
+function attentionPlanHasContent(row: Record<string, unknown>) {
+  return jsonCount(row.medication_orders) > 0
+    || jsonCount(row.procedure_orders) > 0
+    || jsonCount(row.patient_advices) > 0
+    || (typeof row.management_plan === "string" && row.management_plan.trim().length > 0)
+    || (typeof row.clinical_assessment === "string" && row.clinical_assessment.trim().length > 0);
+}
+
+async function loadAttentionPlans(pool: pg.Pool, visitIds: string[]) {
+  const plansByVisit = new Map<string, AttentionPlanSummary[]>();
+  if (visitIds.length === 0) return plansByVisit;
+  const [encounters, extras] = await Promise.all([
+    pool.query(
+      `SELECT visit_id, nursing_status, medication_orders, procedure_orders, patient_advices, management_plan, cancellation_reason
+       FROM patient_visit_encounters
+       WHERE visit_id = ANY($1::uuid[])`,
+      [visitIds],
+    ),
+    pool.query(
+      `SELECT visit_id, position, status, medication_orders, procedure_orders, clinical_assessment, cancellation_reason
+       FROM patient_visit_management_plans
+       WHERE visit_id = ANY($1::uuid[])
+       ORDER BY position`,
+      [visitIds],
+    ),
+  ]);
+  function push(visitId: string, position: number, status: unknown, row: Record<string, unknown>) {
+    if (status !== "ordered" && status !== "in_progress" && status !== "completed" && status !== "cancelled") return;
+    if (!attentionPlanHasContent(row)) return;
+    const list = plansByVisit.get(visitId) ?? [];
+    list.push({
+      position,
+      status,
+      medication_count: jsonCount(row.medication_orders),
+      procedure_count: jsonCount(row.procedure_orders),
+      cancellation_reason: typeof row.cancellation_reason === "string" ? row.cancellation_reason.trim() : "",
+    });
+    list.sort((left, right) => left.position - right.position);
+    plansByVisit.set(visitId, list);
+  }
+  for (const row of encounters.rows) {
+    const source = row as Record<string, unknown>;
+    push(String(source.visit_id), 1, source.nursing_status, source);
+  }
+  for (const row of extras.rows) {
+    const source = row as Record<string, unknown>;
+    push(String(source.visit_id), Number(source.position), source.status, source);
+  }
+  return plansByVisit;
+}
+
+function presentDoctorAttention(row: Record<string, unknown>, plans: AttentionPlanSummary[] = []) {
+  const status = typeof row.status === "string" ? row.status : "to_doctor";
+  const monitoringStatus = row.monitoring_status === "in_progress" || row.monitoring_status === "completed"
+    ? row.monitoring_status
+    : "none";
+  const phase = row.investigation_phase === "awaiting_collection"
+    || row.investigation_phase === "collected"
+    || row.investigation_phase === "at_lab"
+    || row.investigation_phase === "results_ready"
+    ? row.investigation_phase
+    : null;
+  const triageCategory = row.triage_category === "emergency" || row.triage_category === "urgent" || row.triage_category === "normal"
+    ? row.triage_category
+    : null;
+  const nurseNoteUnviewed = row.nurse_note_unviewed === true || row.nurse_note_unviewed === "t" || row.nurse_note_unviewed === "true";
+  const reasons = attentionReasons({
+    status,
+    monitoringStatus,
+    phase,
+    triageCategory,
+    nurseNoteUnviewed,
+  });
+  return {
+    id: String(row.id),
+    visit_number: typeof row.visit_number === "string" ? row.visit_number : "",
+    patient_id: String(row.patient_id),
+    patient_name: String(row.patient_name),
+    patient_mrn: String(row.patient_mrn),
+    hotel_room_no: typeof row.hotel_room_no === "string" ? row.hotel_room_no : null,
+    hotel_name: typeof row.hotel_name === "string" ? row.hotel_name : null,
+    clinic_id: String(row.clinic_id),
+    clinic_name: String(row.clinic_name),
+    status,
+    visit_type: typeof row.visit_type === "string" ? row.visit_type : null,
+    monitoring_status: monitoringStatus,
+    investigation_phase: phase,
+    triage_category: triageCategory,
+    chief_complaint: typeof row.chief_complaint === "string" ? row.chief_complaint : null,
+    status_changed_at: row.status_changed_at ? new Date(String(row.status_changed_at)).toISOString() : null,
+    triage_completed_at: row.triage_completed_at ? new Date(String(row.triage_completed_at)).toISOString() : null,
+    reasons,
+    headline_reason: attentionHeadline(reasons),
+    urgency: attentionUrgency(reasons, triageCategory),
+    plans,
+  };
+}
+
+function compareDoctorAttention(
+  left: ReturnType<typeof presentDoctorAttention>,
+  right: ReturnType<typeof presentDoctorAttention>,
+) {
+  const urgencyRank = (value: DoctorAttentionUrgency) => (value === "critical" ? 0 : value === "action" ? 1 : 2);
+  const byUrgency = urgencyRank(left.urgency) - urgencyRank(right.urgency);
+  if (byUrgency !== 0) return byUrgency;
+  const reasonRank = (item: ReturnType<typeof presentDoctorAttention>) => {
+    if (item.reasons.includes("nurse_note_unviewed")) return 0;
+    if (item.reasons.includes("ready_to_end")) return 1;
+    if (item.reasons.includes("waiting_for_doctor") && item.triage_category === "emergency") return 2;
+    if (item.reasons.includes("consultation_in_progress")) return 3;
+    if (item.reasons.includes("results_ready")) return 4;
+    if (item.reasons.includes("waiting_for_doctor")) return 5;
+    return 6;
+  };
+  const byReason = reasonRank(left) - reasonRank(right);
+  if (byReason !== 0) return byReason;
+  const leftTime = new Date(left.status_changed_at ?? left.triage_completed_at ?? 0).getTime();
+  const rightTime = new Date(right.status_changed_at ?? right.triage_completed_at ?? 0).getTime();
+  return rightTime - leftTime;
 }
 
 function readCaseFocus(query: unknown) {

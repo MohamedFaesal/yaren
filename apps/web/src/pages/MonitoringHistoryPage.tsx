@@ -166,7 +166,7 @@ export function MonitoringHistoryPage({ token, actor }: { token: string; actor: 
           <button type="button" className={`${secondary} disabled:opacity-50`} disabled={loading || result.page >= pages} onClick={() => setPage((current) => current + 1)}>Next</button>
         </div>
       </div>
-      {viewing ? <MonitoringRecordsModal item={viewing} now={now} onClose={() => setViewing(null)} /> : null}
+      {viewing ? <MonitoringRecordsModal token={token} item={viewing} now={now} onClose={() => setViewing(null)} /> : null}
     </Page>
   );
 }

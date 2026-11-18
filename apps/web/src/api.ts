@@ -371,7 +371,7 @@ export function casePriorityClass(priority?: CasePriority | "" | null) {
   return "border-line bg-surface text-muted-strong";
 }
 
-export type InvestigationStatus = "ordered" | "collected" | "sent" | "result_uploaded" | "completed";
+export type InvestigationStatus = "ordered" | "collected" | "sent" | "result_uploaded" | "completed" | "cancelled";
 export type InvestigationPriority = "emergency" | "urgent" | "normal";
 
 export type EncounterInvestigation = {
@@ -394,6 +394,7 @@ export type EncounterInvestigation = {
   result_uploaded_at?: string | null;
   result_uploaded_by_name?: string | null;
   completed_at?: string | null;
+  cancellation_reason?: string;
   result_file_url?: string | null;
   result_original_name?: string | null;
 };
@@ -495,6 +496,7 @@ export function investigationStatusLabel(status?: InvestigationStatus | null) {
   if (status === "sent") return "Sent";
   if (status === "result_uploaded") return "Result uploaded";
   if (status === "completed") return "Completed";
+  if (status === "cancelled") return "Cancelled";
   return "—";
 }
 
@@ -504,6 +506,7 @@ export function investigationStatusClass(status?: InvestigationStatus | null) {
   if (status === "sent") return "bg-panel-strong text-blue-strong";
   if (status === "result_uploaded") return "bg-success-soft text-success";
   if (status === "completed") return "bg-success-soft text-success";
+  if (status === "cancelled") return "bg-danger-soft text-danger";
   return "bg-surface-2 text-muted-strong";
 }
 
@@ -529,8 +532,8 @@ export type NurseDashboardSummary = {
   samples_to_collect: number;
 };
 
-export type NursingPlanStatus = "none" | "ordered" | "in_progress" | "completed";
-export type MonitoringStatus = "none" | "in_progress" | "completed";
+export type NursingPlanStatus = "none" | "ordered" | "in_progress" | "completed" | "cancelled";
+export type MonitoringStatus = "none" | "in_progress" | "completed" | "cancelled";
 
 export type NursingCareItem = {
   visit_id: string;
@@ -620,12 +623,15 @@ export type MonitoringObservation = {
   recorded_at: string | null;
   sent_to_doctor_at: string | null;
   doctor_viewed_at: string | null;
+  doctor_noted_at?: string | null;
+  nurse_viewed_at?: string | null;
 };
 
 export function nursingPlanStatusLabel(status?: NursingPlanStatus | null) {
   if (status === "ordered") return "Ordered";
   if (status === "in_progress") return "In Progress";
   if (status === "completed") return "Completed";
+  if (status === "cancelled") return "Cancelled";
   return "—";
 }
 
@@ -633,20 +639,67 @@ export function nursingPlanStatusClass(status?: NursingPlanStatus | null) {
   if (status === "ordered") return "bg-warning-soft text-warning";
   if (status === "in_progress") return "bg-panel text-blue";
   if (status === "completed") return "bg-success-soft text-success";
+  if (status === "cancelled") return "bg-surface-3 text-muted-strong";
   return "bg-surface-2 text-muted-strong";
 }
 
 export function monitoringStatusLabel(status?: MonitoringStatus | null) {
   if (status === "in_progress") return "In Progress";
   if (status === "completed") return "Completed";
+  if (status === "cancelled") return "Cancelled";
   return "—";
 }
 
 export function monitoringStatusClass(status?: MonitoringStatus | null) {
   if (status === "in_progress") return "bg-panel text-blue";
   if (status === "completed") return "bg-success-soft text-success";
+  if (status === "cancelled") return "bg-danger-soft text-danger";
   return "bg-surface-2 text-muted-strong";
 }
+
+export type CloseResolutionAction = "complete" | "cancel";
+
+export type CloseEncounterPreview = {
+  visit: {
+    id: string;
+    status: VisitCareStatus | string;
+    monitoring_status: MonitoringStatus;
+    investigation_phase: InvestigationPhase | null;
+  };
+  plans: Array<{
+    position: number;
+    status: NursingPlanStatus | string;
+    medication_count: number;
+    procedure_count: number;
+    cancellation_reason?: string;
+    allowed_actions: CloseResolutionAction[];
+  }>;
+  monitoring: {
+    status: MonitoringStatus | string;
+    needs_resolution: boolean;
+    allowed_actions: CloseResolutionAction[];
+  };
+  investigations: Array<{
+    id: string;
+    name: string;
+    status: InvestigationStatus | string;
+    allowed_actions: CloseResolutionAction[];
+  }>;
+};
+
+export type CloseEncounterRequest = {
+  outcome: "complete" | "refer";
+  referral_note?: string;
+  plan_resolutions: Array<{ position: number; action: CloseResolutionAction; reason?: string }>;
+  monitoring_resolution?: { action: CloseResolutionAction; reason?: string } | null;
+  investigation_resolutions: Array<{ id: string; action: CloseResolutionAction }>;
+  investigation_cancellation_reason?: string;
+};
+
+export type CloseEncounterResult = {
+  ok: true;
+  status: "encounter_complete" | "referred";
+};
 
 export type CatalogMedication = {
   id: string;
@@ -719,6 +772,7 @@ export type ManagementPlanRecord = {
   management_plan: string;
   clinical_assessment: string;
   assessment_status: "stable" | "needs_review" | "deteriorating" | null;
+  cancellation_reason?: string;
   created_at: string | null;
 };
 
@@ -857,13 +911,59 @@ export type DoctorCaseSummary = {
   emergency: number;
   urgent: number;
   normal: number;
+  consultation_in_progress: number;
   waiting_for_investigation: number;
   awaiting_collection: number;
   collected: number;
   at_lab: number;
   results_ready: number;
+  under_nursing_care: number;
+  encounter_complete: number;
+  referred: number;
   closed: number;
   average_wait_minutes: number;
+  needs_attention: number;
+};
+
+export type DoctorAttentionReason =
+  | "waiting_for_doctor"
+  | "consultation_in_progress"
+  | "waiting_for_investigation"
+  | "under_nursing_care"
+  | "results_ready"
+  | "nurse_note_unviewed"
+  | "ready_to_end";
+
+export type DoctorAttentionUrgency = "critical" | "action" | "open";
+
+export type DoctorAttentionItem = {
+  id: string;
+  visit_number: string;
+  patient_id: string;
+  patient_name: string;
+  patient_mrn: string;
+  hotel_room_no: string | null;
+  hotel_name: string | null;
+  clinic_id: string;
+  clinic_name: string;
+  status: VisitCareStatus;
+  visit_type: string | null;
+  monitoring_status: MonitoringStatus;
+  investigation_phase: InvestigationPhase | null;
+  triage_category: TriageCategory | null;
+  chief_complaint: string | null;
+  status_changed_at: string | null;
+  triage_completed_at: string | null;
+  reasons: DoctorAttentionReason[];
+  headline_reason: DoctorAttentionReason;
+  urgency: DoctorAttentionUrgency;
+  plans?: Array<{
+    position: number;
+    status: NursingPlanStatus | string;
+    medication_count: number;
+    procedure_count: number;
+    cancellation_reason?: string;
+  }>;
 };
 
 export type DoctorMonitoringRecord = MonitoringObservation & {
@@ -874,6 +974,8 @@ export type DoctorMonitoringRecord = MonitoringObservation & {
   hotel_room_no: string | null;
   hotel_name?: string | null;
   monitoring_status: MonitoringStatus;
+  monitoring_started_at?: string | null;
+  chief_complaint?: string | null;
   visit_status: VisitCareStatus;
 };
 
@@ -884,6 +986,7 @@ export type DoctorCasePage = {
   page_size: number;
   summary?: DoctorCaseSummary;
   monitoring?: DoctorMonitoringRecord[];
+  attention?: DoctorAttentionItem[];
 };
 
 export type TriageQueueResult = {
@@ -955,25 +1058,57 @@ export type VisitPageResult = {
   page_size: number;
 };
 
-export type RegistrarLeftVisit = {
-  id: string;
-  visit_number: string;
-  patient_id: string;
-  patient_name: string;
-  patient_mrn: string;
-  status: VisitCareStatus;
-  visit_type: VisitType;
-  hotel_room_no: string | null;
-  clinic_name: string;
-  hotel_name: string;
-  recorded_at: string;
-};
+export type RegistrarFlowStage =
+  | "waiting_for_triage"
+  | "to_doctor"
+  | "with_the_doctor"
+  | "waiting_for_investigations"
+  | "waiting_for_doctor_review"
+  | "under_monitoring"
+  | "pending_payment"
+  | "encounter_complete"
+  | "referred";
 
-export type RegistrarLeftPage = {
-  items: RegistrarLeftVisit[];
-  total: number;
-  page: number;
-  page_size: number;
+export type RegistrarQueueStage = "waiting" | "with_doctor" | "investigations" | "monitoring";
+
+export type RegistrarOutcome = "in_clinic" | "left" | "referred";
+
+export type RegistrarDashboard = {
+  from: string;
+  to: string;
+  kpis: {
+    registered_today: number;
+    active_in_clinic: number;
+    encounter_complete: number;
+    referred: number;
+    left_encounter_complete: number;
+    left_encounter_incomplete: number;
+  };
+  flow: { stage: RegistrarFlowStage | string; count: number }[];
+  queue: {
+    id: string;
+    visit_number: string;
+    patient_id: string;
+    patient_name: string;
+    patient_mrn: string;
+    patient_gender: string;
+    patient_age: number | null;
+    visit_type: VisitType;
+    stage: RegistrarFlowStage | string;
+    created_at: string;
+    assigned_doctor_name: string | null;
+  }[];
+  completed: {
+    id: string;
+    visit_number: string;
+    patient_id: string;
+    patient_name: string;
+    patient_mrn: string;
+    visit_type: VisitType;
+    registered_at: string;
+    completed_at: string | null;
+    outcome: RegistrarOutcome;
+  }[];
 };
 
 export type AppNotification = {

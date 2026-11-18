@@ -451,14 +451,6 @@ export function EncounterPage({ token }: { token: string }) {
             ))}
           </div>
 
-          {locked ? null : (
-            <StepSaveBar
-              label={tabs.find((item) => item.id === tab)?.label ?? "step"}
-              saving={saving}
-              onSave={() => void saveStep()}
-            />
-          )}
-
           {tab === "history" ? (
             <div className="space-y-4">
               <Panel title="This visit">
@@ -1052,7 +1044,7 @@ export function emptyOrder(): MedicationOrder {
     dose: "",
     dose_value: null,
     dose_unit: "",
-    frequency: "Once daily",
+    frequency: "",
     duration: "",
     duration_value: null,
     duration_unit: "days",
@@ -1926,15 +1918,10 @@ function PlanTabButton({ selected, count, onClick, children }: { selected: boole
   );
 }
 
-type OrderProblems = Partial<Record<"medication" | "route" | "dose" | "duration" | "infusion" | "monitoring", string>>;
+type OrderProblems = Partial<Record<"medication" | "route" | "dose" | "infusion" | "monitoring", string>>;
 
 function isHourlyRoute(route: string) {
   return route === "IV Infusion / Drip" || route === "Inhalation / Nebulization";
-}
-
-function durationRequired(row: MedicationOrder) {
-  if (row.route === "IV Infusion / Drip") return false;
-  return row.route === "Inhalation / Nebulization" || row.frequency !== "Once";
 }
 
 function servicesForOrder(catalog: CatalogMedication[], row: MedicationOrder) {
@@ -2022,10 +2009,6 @@ function orderProblems(row: MedicationOrder, strict = false, services: { code: s
     if (row.dose_value == null && !row.dose_unit) problems.dose = "Enter the amount and choose the type.";
     else if (row.dose_value == null) problems.dose = "Enter the amount.";
     else if (!row.dose_unit) problems.dose = "Choose the type.";
-  }
-  const legacyDuration = !strict && row.duration.trim().length > 0;
-  if (durationRequired(row) && row.duration_value == null && !legacyDuration) {
-    problems.duration = row.route === "Inhalation / Nebulization" ? "Enter how long it runs. This sets the charge." : "Enter how long to continue it.";
   }
   if (row.route === "IV Infusion / Drip" && infusionVolume(row) != null && (row.infusion_duration_value == null || row.infusion_duration_value <= 0)) {
     problems.infusion = row.infusion_input === "duration" ? "Enter how long the infusion runs." : "Enter the infusion rate so the duration can be calculated.";
@@ -2508,13 +2491,14 @@ export function MedicationOrderDialog({
                 />
                 <FieldError message={problems.dose} />
               </div>
-              <label className={`${label} mt-4`}>Frequency <span className="text-danger">*</span>
+              <label className={`${label} mt-4`}>Frequency <span className="font-medium text-muted">(Optional)</span>
                 <select className={field} disabled={locked} value={draft.frequency} onChange={(event) => setDraft((current) => ({ ...current, frequency: event.target.value }))}>
+                  <option value="">Not specified</option>
                   {frequencies.map((frequency) => <option key={frequency} value={frequency}>{frequency}</option>)}
                 </select>
               </label>
               <div className="mt-4">
-                <span className={label}>Duration {durationRequired(draft) ? <span className="text-danger">*</span> : <span className="font-medium text-muted">(Optional)</span>}</span>
+                <span className={label}>Duration <span className="font-medium text-muted">(Optional)</span></span>
                 <AmountWithUnit
                   amountLabel="Duration amount"
                   unitLabel="Duration unit"
@@ -2524,7 +2508,7 @@ export function MedicationOrderDialog({
                   placeholder="Amount"
                   step={1}
                   disabled={locked}
-                  invalid={Boolean(problems.duration)}
+                  invalid={false}
                   onAmount={(raw) => {
                     const amount = raw ? Number(raw) : null;
                     const duration_value = amount != null && Number.isInteger(amount) && amount > 0 ? amount : null;
@@ -2538,9 +2522,8 @@ export function MedicationOrderDialog({
                     setDraft((current) => ({ ...current, duration_unit, duration: durationText(current.duration_value, duration_unit) }));
                   }}
                 />
-                <FieldError message={problems.duration} />
-                {!problems.duration && draft.route === "Inhalation / Nebulization" ? <span className="mt-1 block text-xs text-muted">{draft.duration_unit === "days" ? "A duration in days is charged as one session." : "Charged per started hour."}</span> : null}
-                {!problems.duration && infusion ? <span className="mt-1 block text-xs text-muted">This is the course of treatment. Infusion time is set on the right.</span> : null}
+                {draft.route === "Inhalation / Nebulization" ? <span className="mt-1 block text-xs text-muted">{draft.duration_unit === "days" ? "A duration in days is charged as one session." : "Charged per started hour."}</span> : null}
+                {infusion ? <span className="mt-1 block text-xs text-muted">This is the course of treatment. Infusion time is set on the right.</span> : null}
               </div>
               <label className={`${label} mt-4`}>Additional Instructions <span className="font-medium text-muted">(Optional)</span>
                 <textarea className={`${field} min-h-24`} disabled={locked} maxLength={500} value={draft.instructions} placeholder="e.g. Give after meals, or as clinically indicated..." onChange={(event) => setDraft((current) => ({ ...current, instructions: event.target.value }))} />

@@ -273,6 +273,125 @@ h1, h2, h3 {
   animation: care-pulse 1.8s ease-out infinite;
 }
 
+@keyframes care-pulse-danger {
+  0% { box-shadow: 0 0 0 0 rgb(185 28 28 / 0.35); }
+  70% { box-shadow: 0 0 0 10px rgb(185 28 28 / 0); }
+  100% { box-shadow: 0 0 0 0 rgb(185 28 28 / 0); }
+}
+
+.care-pulse-danger {
+  animation: care-pulse-danger 1.8s ease-out infinite;
+}
+
+.attention-meter {
+  display: flex;
+  height: 6px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-surface-3, #e8eef2) 100%, transparent);
+}
+
+.attention-meter-seg {
+  display: block;
+  height: 100%;
+  min-width: 0;
+  transition: width 280ms ease;
+}
+
+.attention-meter-critical { background: var(--color-danger, #b91c1c); }
+.attention-meter-action { background: var(--color-warning, #c47a12); }
+.attention-meter-open { background: var(--color-blue, #0f7f91); }
+
+.attention-row {
+  position: relative;
+  border-left: 4px solid transparent;
+}
+
+.attention-row-critical {
+  border-left-color: var(--color-danger, #b91c1c);
+  background: color-mix(in srgb, var(--color-danger-soft, #fde8e8) 70%, transparent);
+}
+
+.attention-row-action {
+  border-left-color: var(--color-warning, #c47a12);
+  background: color-mix(in srgb, var(--color-warning-soft, #fff4e5) 65%, transparent);
+}
+
+.attention-row-open {
+  border-left-color: var(--color-blue, #0f7f91);
+  background: color-mix(in srgb, var(--color-panel, #e8f4f6) 55%, transparent);
+}
+
+.attention-signal-dot {
+  display: inline-block;
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 999px;
+  background: var(--color-danger, #b91c1c);
+  flex-shrink: 0;
+}
+
+.attention-launcher {
+  position: fixed;
+  top: 50%;
+  right: 1rem;
+  z-index: 55;
+  display: grid;
+  place-items: center;
+  width: 3.25rem;
+  height: 3.25rem;
+  transform: translateY(-50%);
+  border: 1px solid var(--color-line-strong, #c9d5dc);
+  border-radius: 1rem;
+  background: var(--color-surface, #fff);
+  color: var(--color-ink, #123);
+  box-shadow: 0 10px 28px rgb(15 40 60 / 0.14);
+  transition: border-color 160ms ease, color 160ms ease, background 160ms ease, transform 160ms ease;
+}
+
+.attention-launcher:hover {
+  border-color: var(--color-blue, #0f7f91);
+  color: var(--color-blue, #0f7f91);
+  background: var(--color-panel, #e8f4f6);
+}
+
+.attention-launcher-active {
+  border-color: color-mix(in srgb, var(--color-danger, #b91c1c) 45%, white);
+  color: var(--color-danger, #b91c1c);
+  background: var(--color-danger-soft, #fde8e8);
+}
+
+.attention-launcher-badge {
+  position: absolute;
+  top: -0.35rem;
+  right: -0.35rem;
+  min-width: 1.35rem;
+  height: 1.35rem;
+  padding: 0 0.35rem;
+  border-radius: 999px;
+  background: var(--color-danger, #b91c1c);
+  color: #fff;
+  font-size: 0.65rem;
+  font-weight: 800;
+  line-height: 1.35rem;
+  text-align: center;
+}
+
+.attention-launcher-pulse {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+}
+
+@media (max-width: 640px) {
+  .attention-launcher {
+    right: 0.75rem;
+    width: 2.85rem;
+    height: 2.85rem;
+  }
+}
+
 @keyframes ui-rise {
   from {
     opacity: 0;

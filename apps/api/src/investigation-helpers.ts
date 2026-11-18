@@ -1,7 +1,7 @@
 import type pg from "pg";
 import { fileUrl } from "./uploads.js";
 
-export const investigationStatuses = ["ordered", "collected", "sent", "result_uploaded", "completed"] as const;
+export const investigationStatuses = ["ordered", "collected", "sent", "result_uploaded", "completed", "cancelled"] as const;
 export type InvestigationStatus = (typeof investigationStatuses)[number];
 
 export const investigationPriorities = ["emergency", "urgent", "normal"] as const;
@@ -34,6 +34,7 @@ export type PresentedInvestigation = DraftInvestigation & {
   result_uploaded_at: string | null;
   result_uploaded_by_name: string | null;
   completed_at: string | null;
+  cancellation_reason: string;
   result_file_url: string | null;
   result_original_name: string | null;
 };
@@ -135,6 +136,7 @@ export function presentInvestigationRow(row: Record<string, unknown>): Presented
     result_uploaded_at: iso(row.result_uploaded_at),
     result_uploaded_by_name: textOrNull(row.result_uploaded_by_name),
     completed_at: iso(row.completed_at),
+    cancellation_reason: typeof row.cancellation_reason === "string" ? row.cancellation_reason.trim() : "",
     result_file_url: fileUrl(typeof row.result_file_path === "string" ? row.result_file_path : null),
     result_original_name: textOrNull(row.result_original_name),
   };
@@ -169,6 +171,7 @@ export function investigationPhaseSql(alias = "v") {
     WHEN EXISTS (
       SELECT 1 FROM patient_visit_investigations i
       WHERE i.visit_id = ${alias}.id
+        AND i.status IS DISTINCT FROM 'cancelled'
     ) THEN 'results_ready'
     ELSE NULL
   END)`;
@@ -178,7 +181,7 @@ export async function maybeCompleteVisitInvestigations(db: Db, visitId: string, 
   const pending = await db.query<{ remaining: number }>(
     `SELECT count(*)::int AS remaining
      FROM patient_visit_investigations
-     WHERE visit_id = $1 AND status <> 'completed'`,
+     WHERE visit_id = $1 AND status NOT IN ('completed', 'cancelled')`,
     [visitId],
   );
   if ((pending.rows[0]?.remaining ?? 0) > 0) return false;

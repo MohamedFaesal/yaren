@@ -743,7 +743,9 @@ export function TriagePage({ token, actor }: { token: string; actor: User }) {
           items={monitorItems}
           loading={monitorLoading}
           now={now}
+          token={token}
           onRecord={setMonitorModal}
+          onChanged={refreshNursePanels}
         />
       </div>
 

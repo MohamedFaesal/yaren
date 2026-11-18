@@ -1,14 +1,15 @@
 import { useEffect, useRef, useState, type MouseEvent, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { Link } from "react-router";
-import { api, casePriorityClass, casePriorityLabel, investigationPriorityClass, investigationPriorityLabel, investigationStatusClass, investigationStatusLabel, monitoringStatusClass, monitoringStatusLabel, visitStatusChips, visitStatusText, visitTypeLabel, waitMinutes, type CasePriority, type CatalogMedication, type DoctorCase, type DoctorCaseDetail, type DoctorCasePage, type DoctorCaseSummary, type DoctorMonitoringRecord, type GeneralSettings, type InvestigationPhase, type ManagementPlanRecord, type MedicalService, type MedicationOrder, type MonitoringObservation, type MonitoringStatus, type NursingPlanDetail, type ProcedureOrder, type TriageCategory, type User, type VisitCareStatus, type VisitInvestigation } from "../api";
+import { api, investigationStatusLabel, monitoringStatusClass, monitoringStatusLabel, nursingPlanStatusClass, nursingPlanStatusLabel, visitStatusChips, visitStatusText, visitTypeLabel, waitMinutes, type CasePriority, type CatalogMedication, type CloseEncounterPreview, type CloseEncounterRequest, type CloseEncounterResult, type CloseResolutionAction, type DoctorAttentionItem, type DoctorAttentionReason, type DoctorAttentionUrgency, type DoctorCase, type DoctorCaseDetail, type DoctorCasePage, type DoctorCaseSummary, type DoctorMonitoringRecord, type GeneralSettings, type InvestigationPhase, type ManagementPlanRecord, type MedicalService, type MedicationOrder, type MonitoringStatus, type NursingPlanDetail, type ProcedureOrder, type TriageCategory, type User, type VisitCareStatus } from "../api";
 import { canAct } from "../access";
 import { useActiveClinic } from "../ClinicWorkspace";
 import { useToast } from "../toast";
-import { ConfirmDialog, IconAction, Page, field, messageOf, primary, secondary, th } from "./ui";
+import { ConfirmDialog, Page, field, messageOf, primary, secondary, th } from "./ui";
 import { emptyOrder, emptyProcedure, MedicationOrderDialog, ProcedureOrderDialog, reconcileProcedures, standaloneProcedures } from "./EncounterPage";
 import { assessPressure, assessVital, AutomaticAssessment, DoctorReadingAssessment, parsePressure, PriorityChip, ReadingTimeline, trendText, VitalShell, type VitalCheck } from "./NurseDashboardPanels";
 
-const pageSize = 10;
+const pageSize = 5;
 const emptySummary: DoctorCaseSummary = {
   waiting: 0,
   today: 0,
@@ -16,16 +17,36 @@ const emptySummary: DoctorCaseSummary = {
   emergency: 0,
   urgent: 0,
   normal: 0,
+  consultation_in_progress: 0,
   waiting_for_investigation: 0,
   awaiting_collection: 0,
   collected: 0,
   at_lab: 0,
   results_ready: 0,
+  under_nursing_care: 0,
+  encounter_complete: 0,
+  referred: 0,
   closed: 0,
   average_wait_minutes: 0,
+  needs_attention: 0,
 };
 
-type CaseFocus = "" | "today" | "now" | "emergency" | "urgent" | "normal" | "waiting_for_investigation" | "awaiting_collection" | "collected" | "at_lab" | "results_ready";
+type CaseFocus =
+  | ""
+  | "today"
+  | "now"
+  | "waiting"
+  | "emergency"
+  | "urgent"
+  | "normal"
+  | "consultation_in_progress"
+  | "waiting_for_investigation"
+  | "awaiting_collection"
+  | "collected"
+  | "at_lab"
+  | "results_ready"
+  | "under_nursing_care"
+  | "encounter_complete";
 
 const categoryLabel: Record<TriageCategory, string> = {
   emergency: "Emergency",
@@ -58,9 +79,10 @@ export function DoctorCasesPage({ token, actor }: { token: string; actor: User }
   const [detail, setDetail] = useState<DoctorCaseDetail | null>(null);
   const [detailError, setDetailError] = useState<string | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
-  const [investigations, setInvestigations] = useState<VisitInvestigation[]>([]);
-  const [investigationsLoading, setInvestigationsLoading] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
+  const [attentionMonitoring, setAttentionMonitoring] = useState<NursePatientRecord | null>(null);
+  const [attentionOpen, setAttentionOpen] = useState(false);
+  const [closeEncounterItem, setCloseEncounterItem] = useState<DoctorAttentionItem | null>(null);
   const requestId = useRef(0);
   const seesAll = actor.type === "super-admin" || actor.type === "admin";
   const canOpenVisit = canAct(actor, "visit", "view");
@@ -100,13 +122,11 @@ export function DoctorCasesPage({ token, actor }: { token: string; actor: User }
     if (!selectedId) {
       setDetail(null);
       setDetailError(null);
-      setInvestigations([]);
       return;
     }
     let cancelled = false;
     setDetailLoading(true);
     setDetailError(null);
-    setInvestigations([]);
     api<DoctorCaseDetail>(`/api/doctor-cases/${selectedId}`, {}, token)
       .then((data) => {
         if (!cancelled) setDetail(data);
@@ -124,29 +144,6 @@ export function DoctorCasesPage({ token, actor }: { token: string; actor: User }
       cancelled = true;
     };
   }, [selectedId, token]);
-
-  useEffect(() => {
-    if (!detail) return;
-    let cancelled = false;
-    setInvestigationsLoading(true);
-    api<{ items: VisitInvestigation[] }>(
-      `/api/patients/${detail.patient_id}/visits/${detail.id}/investigations`,
-      {},
-      token,
-    )
-      .then((data) => {
-        if (!cancelled) setInvestigations(data.items);
-      })
-      .catch(() => {
-        if (!cancelled) setInvestigations([]);
-      })
-      .finally(() => {
-        if (!cancelled) setInvestigationsLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [detail, token]);
 
   useEffect(() => {
     if (!selectedId) return;
@@ -179,102 +176,169 @@ export function DoctorCasesPage({ token, actor }: { token: string; actor: User }
       });
   }, [token, page, search, focus, clinicId, refreshKey]);
 
-  const averageTarget = clinicId ? waitMinutes(waitSettings, clinicId, "doctor") : waitSettings.doctor_wait_minutes;
-  const clinicHasOwnTarget = Boolean(clinicId && waitSettings.clinics.some((item) => item.clinic_id === clinicId));
-  const averageHint = clinicHasOwnTarget ? "Set for this clinic" : "Set for all clinics";
   const nursePatients = groupNurseRecords(result.monitoring ?? []);
   const underObservation = nursePatients.filter((item) => item.monitoringStatus === "in_progress").length;
+  const attentionItems = result.attention ?? [];
+  const needsAttention = summary.needs_attention || attentionItems.length;
+  const queueTotal = summary.waiting + summary.consultation_in_progress + summary.waiting_for_investigation + summary.closed;
 
   function chooseFocus(next: CaseFocus) {
     setFocus((current) => (current === next ? "" : next));
     setPage(1);
   }
 
+  function openAttentionMonitoring(visitId: string) {
+    const patient = nursePatients.find((item) => item.visitId === visitId) ?? null;
+    if (!patient) {
+      setSelectedId(visitId);
+      return;
+    }
+    setAttentionMonitoring(patient);
+    if (!unviewedSince(patient)) return;
+    void api(`/api/doctor-cases/${patient.visitId}/monitoring/viewed`, { method: "POST" }, token)
+      .then(() => setRefreshKey((value) => value + 1))
+      .catch(() => undefined);
+  }
+
   return (
     <Page
       title="Doctor Dashboard"
-      description="Patients waiting to see the doctor, plus finished encounters and visits handed to nursing."
+      description="Real-time patient flow, today's workload, and clinical activities."
       crumbs={[{ label: "Care" }, { label: "Doctor Dashboard" }]}
     >
       {error ? <p className="mb-4 text-sm text-danger">{error}</p> : null}
-      <div className="mb-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+      <div className="mb-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
         <StatCard label="Patients today" value={summary.today} hint="Sent from triage today" tone="blue" active={focus === "today"} onClick={() => chooseFocus("today")} />
-        <StatCard label="To see now" value={summary.to_see_now} hint="Emergency and urgent" tone="rose" active={focus === "now"} onClick={() => chooseFocus("now")} />
-        <StatCard label="Under observation" value={underObservation} hint="Monitored by nursing team" tone="green" />
-        <StatCard label="Average waiting time" value={waitedLabel(averageTarget)} hint={averageHint} tone="amber" />
+        <StatCard label="To see now" value={summary.to_see_now} hint={`${summary.emergency} Emergency + ${summary.urgent} Urgent`} tone="rose" active={focus === "now"} onClick={() => chooseFocus("now")} />
+        <StatCard
+          label="Needs attention"
+          value={needsAttention}
+          hint={needsAttention > 0 ? "Open encounters needing you" : "No open attention items"}
+          tone="rose"
+          alert={needsAttention > 0}
+          onClick={() => setAttentionOpen(true)}
+        />
+        <StatCard label="Under observation" value={underObservation} hint="Currently monitored by nursing" tone="green" />
+        <StatCard label="Average waiting time" value={waitedLabel(summary.average_wait_minutes)} hint="Live average for waiting patients" tone="amber" />
       </div>
-      <div className="grid items-start gap-4 xl:grid-cols-[minmax(0,1.7fr)_minmax(0,1fr)]">
-      <section className="rounded-2xl border border-line bg-surface shadow-card">
-        <div className="border-b border-line-soft p-4 sm:p-5">
-          <h2 className="text-base font-semibold text-ink">Patient queue</h2>
-          <p className="mt-0.5 text-sm text-muted">Waiting to see the doctor, plus investigation and nursing-care visits.</p>
-          <div className="mt-4 flex flex-wrap gap-2">
-            <QueueChip label="All" count={summary.waiting + summary.waiting_for_investigation + summary.closed} active={focus === ""} onClick={() => chooseFocus("")} />
-            <QueueChip label="To see now" count={summary.to_see_now} active={focus === "now"} onClick={() => chooseFocus("now")} dot="bg-danger" />
-            <QueueChip label="Emergency" count={summary.emergency} active={focus === "emergency"} onClick={() => chooseFocus("emergency")} dot="bg-danger" />
-            <QueueChip label="Urgent" count={summary.urgent} active={focus === "urgent"} onClick={() => chooseFocus("urgent")} dot="bg-warning" />
-            <QueueChip label="Stable" count={summary.normal} active={focus === "normal"} onClick={() => chooseFocus("normal")} dot="bg-success" />
-            <QueueChip label="Waiting for Sample Collection" count={summary.awaiting_collection} active={focus === "awaiting_collection"} onClick={() => chooseFocus("awaiting_collection")} dot="bg-warning" />
-            <QueueChip label="Sample Collected" count={summary.collected} active={focus === "collected"} onClick={() => chooseFocus("collected")} dot="bg-blue" />
-            <QueueChip label="Sent to Lab" count={summary.at_lab} active={focus === "at_lab"} onClick={() => chooseFocus("at_lab")} dot="bg-blue" />
-            <QueueChip label="Results Ready" count={summary.results_ready} active={focus === "results_ready"} onClick={() => chooseFocus("results_ready")} dot="bg-success" />
-          </div>
-          <label className="relative mt-4 block max-w-xl">
-            <span className="sr-only">Search queue</span>
-            <input className={field} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search by name, MRN, or hotel" />
-          </label>
-        </div>
-        <div className="max-h-[calc(100vh-16rem)] overflow-auto">
-            {result.items.length === 0 ? (
-              <p className="px-4 py-10 text-center text-sm text-muted">
-                {loading ? "Loading queue…" : search || focus ? "No patients match this queue." : seesAll ? "No visits have been sent to a doctor." : "No visits have been assigned to you."}
-              </p>
-            ) : (
-              <table className="w-full min-w-[40rem] text-sm">
-                <thead className="sticky top-0 z-10 bg-surface-2">
-                  <tr>
-                    <th className={`${th} sticky top-0 bg-surface-2`}>#</th>
-                    <th className={`${th} sticky top-0 bg-surface-2`}>Patient</th>
-                    <th className={`${th} sticky top-0 bg-surface-2`}>Triage</th>
-                    <th className={`${th} sticky top-0 bg-surface-2`}>Waiting time</th>
-                    <th className={`${th} sticky top-0 bg-surface-2`}>Visit type</th>
-                    <th className={`${th} sticky top-0 bg-surface-2`}>Actions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {result.items.map((row, index) => {
-                    const timing = waitFor(row, now);
-                    const target = waitMinutes(waitSettings, row.clinic_id, "doctor") * 60_000;
-                    return (
-                      <tr key={row.id} className={`border-t border-line-soft ${selectedId === row.id ? triageWash(row.triage_category) : "hover:bg-surface-2"}`}>
-                        <td className="px-4 py-3 text-xs font-semibold text-muted">{start + index}</td>
-                        <td className="px-4 py-3">
-                          <button type="button" className="block max-w-64 text-left" onClick={() => setSelectedId(row.id)}>
-                            <span className="block truncate font-semibold text-ink">{row.patient_name}</span>
-                            <span className="mt-0.5 block truncate text-xs text-muted">
-                              <span className="font-mono">{row.patient_mrn}</span>
-                              {" · "}
-                              {row.hotel_room_no ? `Room ${row.hotel_room_no}` : "No room"}
-                              {row.hotel_name ? ` · ${row.hotel_name}` : ""}
-                            </span>
-                            <span className="mt-1.5 block"><QueueStatus status={row.status} monitoring={row.monitoring_status} phase={row.investigation_phase} /></span>
-                          </button>
-                        </td>
-                        <td className="px-4 py-3"><CategoryPill category={row.triage_category} /></td>
-                        <td className={`px-4 py-3 font-semibold tabular-nums ${waitTone(timing.elapsed, target)}`}>{waitMinutesLabel(timing.elapsed)}</td>
-                        <td className="px-4 py-3"><VisitTypeBox type={row.visit_type} /></td>
-                        <td className="px-4 py-3">
-                          <div className="flex items-center gap-2">
-                            <IconAction kind="view" onClick={() => setSelectedId(row.id)} />
-                            <StartEncounterLink to={`/patients/to-doctor/${row.visit_number}/encounter`} label={encounterActionLabel(row.status)} />
-                          </div>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            )}
+      <AttentionLauncher count={needsAttention} onOpen={() => setAttentionOpen(true)} />
+      <AttentionDialog
+        open={attentionOpen}
+        items={attentionItems}
+        now={now}
+        onClose={() => setAttentionOpen(false)}
+        onViewDetails={(visitId) => {
+          setAttentionOpen(false);
+          setSelectedId(visitId);
+        }}
+        onOpenMonitoring={(visitId) => {
+          setAttentionOpen(false);
+          openAttentionMonitoring(visitId);
+        }}
+        onCloseEncounter={(item) => setCloseEncounterItem(item)}
+      />
+      {closeEncounterItem ? (
+        <CloseEncounterWizard
+          item={closeEncounterItem}
+          token={token}
+          onClose={() => setCloseEncounterItem(null)}
+          onCompleted={() => {
+            setCloseEncounterItem(null);
+            setRefreshKey((value) => value + 1);
+          }}
+        />
+      ) : null}
+      <div className="grid items-start gap-4 xl:grid-cols-[minmax(0,1fr)_300px]">
+        <div className="grid gap-4">
+          <section className="rounded-2xl border border-line bg-surface shadow-card">
+            <div className="border-b border-line-soft p-4 sm:p-5">
+              <div className="flex flex-wrap items-end justify-between gap-3">
+                <div>
+                  <h2 className="text-base font-semibold text-ink">Patient Queue ({result.total})</h2>
+                  <p className="mt-0.5 text-sm text-muted">Waiting to see the doctor, investigation phases, and nursing-care visits.</p>
+                </div>
+                <label className="relative block w-full max-w-sm">
+                  <span className="sr-only">Search queue</span>
+                  <input className={field} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search by name, MRN, or hotel" />
+                </label>
+              </div>
+              <div className="mt-4 flex flex-wrap gap-2">
+                <QueueChip label="All" count={queueTotal} active={focus === ""} onClick={() => chooseFocus("")} />
+                <QueueChip label="To see now" count={summary.to_see_now} active={focus === "now"} onClick={() => chooseFocus("now")} dot="bg-danger" />
+                <QueueChip label="Emergency" count={summary.emergency} active={focus === "emergency"} onClick={() => chooseFocus("emergency")} dot="bg-danger" />
+                <QueueChip label="Urgent" count={summary.urgent} active={focus === "urgent"} onClick={() => chooseFocus("urgent")} dot="bg-warning" />
+                <QueueChip label="Stable" count={summary.normal} active={focus === "normal"} onClick={() => chooseFocus("normal")} dot="bg-success" />
+                <QueueChip label="Waiting for Doctor" count={summary.waiting} active={focus === "waiting"} onClick={() => chooseFocus("waiting")} dot="bg-blue" />
+                <QueueChip label="Consultation In Progress" count={summary.consultation_in_progress} active={focus === "consultation_in_progress"} onClick={() => chooseFocus("consultation_in_progress")} dot="bg-warning" />
+                <QueueChip label="Waiting for Sample Collection" count={summary.awaiting_collection} active={focus === "awaiting_collection"} onClick={() => chooseFocus("awaiting_collection")} dot="bg-warning" />
+                <QueueChip label="Sample Collected" count={summary.collected} active={focus === "collected"} onClick={() => chooseFocus("collected")} dot="bg-blue" />
+                <QueueChip label="Sent to Lab" count={summary.at_lab} active={focus === "at_lab"} onClick={() => chooseFocus("at_lab")} dot="bg-blue" />
+                <QueueChip label="Results Ready" count={summary.results_ready} active={focus === "results_ready"} onClick={() => chooseFocus("results_ready")} dot="bg-success" />
+                <QueueChip label="Under Nursing Care" count={summary.under_nursing_care} active={focus === "under_nursing_care"} onClick={() => chooseFocus("under_nursing_care")} dot="bg-success" />
+                <QueueChip label="Encounter Complete" count={summary.encounter_complete} active={focus === "encounter_complete"} onClick={() => chooseFocus("encounter_complete")} dot="bg-success" />
+              </div>
+            </div>
+            <div className="max-h-[min(32rem,55vh)] overflow-auto">
+              {result.items.length === 0 ? (
+                <p className="px-4 py-10 text-center text-sm text-muted">
+                  {loading ? "Loading queue…" : search || focus ? "No patients match this queue." : seesAll ? "No visits have been sent to a doctor." : "No visits have been assigned to you."}
+                </p>
+              ) : (
+                <table className="w-full min-w-[52rem] text-sm">
+                  <thead className="sticky top-0 z-10 bg-surface-2">
+                    <tr>
+                      <th className={`${th} sticky top-0 bg-surface-2`}>#</th>
+                      <th className={`${th} sticky top-0 bg-surface-2`}>Patient</th>
+                      <th className={`${th} sticky top-0 bg-surface-2`}>MRN</th>
+                      <th className={`${th} sticky top-0 bg-surface-2`}>Visit type</th>
+                      <th className={`${th} sticky top-0 bg-surface-2`}>Triage</th>
+                      <th className={`${th} sticky top-0 bg-surface-2`}>Status</th>
+                      <th className={`${th} sticky top-0 bg-surface-2`}>Waiting</th>
+                      <th className={`${th} sticky top-0 bg-surface-2 text-right`}>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {result.items.map((row, index) => {
+                      const timing = waitFor(row, now);
+                      const target = waitMinutes(waitSettings, row.clinic_id, "doctor") * 60_000;
+                      return (
+                        <tr key={row.id} className={`border-t border-line-soft ${selectedId === row.id ? triageWash(row.triage_category) : "hover:bg-surface-2"}`}>
+                          <td className="px-4 py-3 text-xs font-semibold text-muted">{start + index}</td>
+                          <td className="px-4 py-3">
+                            <button type="button" className="block max-w-56 text-left" onClick={() => setSelectedId(row.id)}>
+                              <span className="block truncate font-semibold text-ink">{row.patient_name}</span>
+                              <span className="mt-0.5 block truncate text-xs text-muted">
+                                {row.hotel_room_no ? `Room ${row.hotel_room_no}` : "No room"}
+                                {row.hotel_name ? ` · ${row.hotel_name}` : ""}
+                              </span>
+                            </button>
+                          </td>
+                          <td className="px-4 py-3 font-mono text-xs text-muted-strong">{row.patient_mrn}</td>
+                          <td className="px-4 py-3"><VisitTypeBox type={row.visit_type} /></td>
+                          <td className="px-4 py-3"><CategoryPill category={row.triage_category} /></td>
+                          <td className="px-4 py-3"><QueueStatus status={row.status} monitoring={row.monitoring_status} phase={row.investigation_phase} /></td>
+                          <td className={`px-4 py-3 font-semibold tabular-nums ${waitTone(timing.elapsed, target)}`}>{waitMinutesLabel(timing.elapsed)}</td>
+                          <td className="px-4 py-3">
+                            <div className="flex items-center justify-end gap-1.5">
+                              <button
+                                type="button"
+                                className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-line-strong bg-surface text-ink transition hover:border-blue hover:bg-panel hover:text-blue"
+                                aria-label={`View details for ${row.patient_name}`}
+                                title="View details"
+                                onClick={() => setSelectedId(row.id)}
+                              >
+                                <ViewDetailsIcon />
+                              </button>
+                              <StartEncounterLink to={`/patients/to-doctor/${row.visit_number}/encounter`} status={row.status} />
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              )}
+            </div>
             <div className="flex flex-wrap items-center justify-between gap-2 border-t border-line-soft px-3 py-3">
               <p className="text-xs text-muted-strong">{loading ? "Loading" : result.total === 0 ? "0 patients" : `${start}–${end} of ${result.total}`}</p>
               <div className="flex items-center gap-1.5">
@@ -283,10 +347,20 @@ export function DoctorCasesPage({ token, actor }: { token: string; actor: User }
                 <button type="button" className={`${secondary} px-2.5 py-1.5 text-xs disabled:opacity-50`} disabled={loading || result.page >= pages} onClick={() => setPage((current) => current + 1)}>Next</button>
               </div>
             </div>
+          </section>
+          <NurseRecordsPanel patients={nursePatients} now={now} token={token} onChanged={() => setRefreshKey((value) => value + 1)} />
         </div>
-      </section>
-      <NurseRecordsPanel patients={nursePatients} now={now} token={token} onChanged={() => setRefreshKey((value) => value + 1)} />
+        <AnalyticsRail summary={summary} nursePatients={nursePatients} underObservation={underObservation} />
       </div>
+      {attentionMonitoring ? (
+        <MonitoringAssessmentDialog
+          token={token}
+          patient={attentionMonitoring}
+          now={now}
+          onClose={() => setAttentionMonitoring(null)}
+          onChanged={() => setRefreshKey((value) => value + 1)}
+        />
+      ) : null}
       {selected ? (
         <div className="triage-dialog-backdrop fixed inset-0 z-50 grid place-items-center bg-shell/45 p-4" role="presentation" onMouseDown={() => setSelectedId(null)}>
           <section
@@ -301,8 +375,6 @@ export function DoctorCasesPage({ token, actor }: { token: string; actor: User }
               detail={detail}
               loading={detailLoading}
               error={detailError}
-              investigations={investigations}
-              investigationsLoading={investigationsLoading}
               now={now}
               waitMinutesTarget={waitMinutes(waitSettings, selected.clinic_id, "doctor")}
               canOpenVisit={canOpenVisit}
@@ -339,6 +411,22 @@ function encounterActionLabel(status: VisitCareStatus) {
   if (closedCase(status)) return "View encounter";
   if (status === "consultation_in_progress") return "Resume Encounter";
   return "Start encounter";
+}
+
+function encounterActionTone(status: VisitCareStatus): "start" | "resume" | "view" {
+  if (closedCase(status)) return "view";
+  if (status === "consultation_in_progress") return "resume";
+  return "start";
+}
+
+function encounterActionClass(tone: "start" | "resume" | "view") {
+  if (tone === "view") {
+    return "inline-flex h-9 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-lg border border-success/30 bg-success-soft px-3 text-sm font-semibold text-success transition hover:border-success hover:bg-success hover:text-white";
+  }
+  if (tone === "resume") {
+    return "inline-flex h-9 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-lg bg-warning px-3 text-sm font-semibold text-white transition hover:brightness-95";
+  }
+  return "inline-flex h-9 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-lg bg-blue px-3 text-sm font-semibold text-white transition hover:bg-blue-strong";
 }
 
 function VisitTypeBox({ type }: { type?: DoctorCase["visit_type"] }) {
@@ -382,16 +470,36 @@ function QueueStatus({ status, monitoring, phase }: { status: VisitCareStatus; m
   );
 }
 
-function StartEncounterLink({ to, label = "Start encounter", onClick }: { to: string; label?: string; onClick?: (event: MouseEvent<HTMLAnchorElement>) => void }) {
+function StartEncounterLink({
+  to,
+  status,
+  label,
+  onClick,
+}: {
+  to: string;
+  status: VisitCareStatus;
+  label?: string;
+  onClick?: (event: MouseEvent<HTMLAnchorElement>) => void;
+}) {
+  const tone = encounterActionTone(status);
   return (
     <Link
       to={to}
       onClick={onClick}
-      className="inline-flex h-9 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-lg bg-blue px-3 text-sm font-semibold text-white hover:bg-blue-strong"
+      className={encounterActionClass(tone)}
     >
-      {label}
+      {label ?? encounterActionLabel(status)}
       <ArrowIcon />
     </Link>
+  );
+}
+
+function ViewDetailsIcon() {
+  return (
+    <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M2.5 12s3.5-6.5 9.5-6.5S21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Z" />
+      <circle cx="12" cy="12" r="2.5" />
+    </svg>
   );
 }
 
@@ -410,8 +518,6 @@ function CasePanel({
   detail,
   loading,
   error,
-  investigations,
-  investigationsLoading,
   now,
   waitMinutesTarget,
   canOpenVisit,
@@ -424,8 +530,6 @@ function CasePanel({
   detail: DoctorCaseDetail | null;
   loading: boolean;
   error: string | null;
-  investigations: VisitInvestigation[];
-  investigationsLoading: boolean;
   now: number;
   waitMinutesTarget: number;
   canOpenVisit: boolean;
@@ -517,7 +621,7 @@ function CasePanel({
             {canOpenVisit ? (
               <Link className={`${secondary} h-9 px-3 py-0 text-sm`} to={`/visits/${chart.visit_number}`}>Open visit</Link>
             ) : null}
-            <StartEncounterLink to={`/patients/to-doctor/${chart.visit_number}/encounter`} label={encounterActionLabel(chart.status)} />
+            <StartEncounterLink to={`/patients/to-doctor/${chart.visit_number}/encounter`} status={chart.status} />
             {onClose ? (
               <button type="button" className="grid h-9 w-9 place-items-center rounded-lg text-xl leading-none text-muted hover:bg-surface hover:text-ink" aria-label="Close" onClick={onClose}>×</button>
             ) : null}
@@ -552,7 +656,6 @@ function CasePanel({
             </div>
           </>
         ) : null}
-        <Investigations items={investigations} loading={investigationsLoading && investigations.length === 0} />
         {canEndFromResults ? (
           <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-success/30 bg-success-soft/40 px-4 py-3">
             <div>
@@ -578,6 +681,8 @@ type NursePatientRecord = {
   hotelRoomNo: string | null;
   hotelName: string | null;
   monitoringStatus: MonitoringStatus;
+  monitoringStartedAt: string | null;
+  chiefComplaint: string | null;
   latest: DoctorMonitoringRecord;
   records: DoctorMonitoringRecord[];
 };
@@ -600,6 +705,8 @@ function groupNurseRecords(records: DoctorMonitoringRecord[]): NursePatientRecor
       hotelRoomNo: latest.hotel_room_no,
       hotelName: latest.hotel_name ?? null,
       monitoringStatus: latest.monitoring_status,
+      monitoringStartedAt: latest.monitoring_started_at ?? null,
+      chiefComplaint: latest.chief_complaint ?? null,
       latest,
       records: sorted,
     };
@@ -613,17 +720,782 @@ function groupNurseRecords(records: DoctorMonitoringRecord[]): NursePatientRecor
   });
 }
 
+const monitoringPageSize = 5;
+const attentionPageSize = 5;
+
+const attentionReasonLabel: Record<DoctorAttentionReason, string> = {
+  waiting_for_doctor: "Waiting for doctor",
+  consultation_in_progress: "Consultation in progress",
+  waiting_for_investigation: "Waiting for investigation",
+  under_nursing_care: "Under nursing care",
+  results_ready: "Results ready",
+  nurse_note_unviewed: "Nurse note waiting",
+  ready_to_end: "Ready to end encounter",
+};
+
+function AttentionLauncher({ count, onOpen }: { count: number; onOpen: () => void }) {
+  return createPortal(
+    <button
+      type="button"
+      className={`attention-launcher ${count > 0 ? "attention-launcher-active" : ""}`}
+      onClick={onOpen}
+      aria-label={count > 0 ? `Needs doctor attention, ${count} patients` : "Needs doctor attention"}
+      title="Needs Doctor Attention"
+    >
+      <AttentionFocusIcon active={count > 0} />
+      {count > 0 ? (
+        <span className="attention-launcher-badge">{count > 99 ? "99+" : count}</span>
+      ) : null}
+      {count > 0 ? <span className="attention-launcher-pulse care-pulse-danger" aria-hidden="true" /> : null}
+    </button>,
+    document.body,
+  );
+}
+
+function AttentionDialog({
+  open,
+  items,
+  now,
+  onClose,
+  onViewDetails,
+  onOpenMonitoring,
+  onCloseEncounter,
+}: {
+  open: boolean;
+  items: DoctorAttentionItem[];
+  now: number;
+  onClose: () => void;
+  onViewDetails: (visitId: string) => void;
+  onOpenMonitoring: (visitId: string) => void;
+  onCloseEncounter: (item: DoctorAttentionItem) => void;
+}) {
+  const [page, setPage] = useState(1);
+  const pages = Math.max(1, Math.ceil(items.length / attentionPageSize));
+  const safePage = Math.min(page, pages);
+  const start = items.length === 0 ? 0 : (safePage - 1) * attentionPageSize + 1;
+  const end = Math.min(safePage * attentionPageSize, items.length);
+  const paged = items.slice((safePage - 1) * attentionPageSize, safePage * attentionPageSize);
+  const meter = {
+    critical: items.filter((item) => item.urgency === "critical").length,
+    action: items.filter((item) => item.urgency === "action").length,
+    open: items.filter((item) => item.urgency === "open").length,
+  };
+  const meterTotal = Math.max(1, items.length);
+
+  useEffect(() => {
+    setPage(1);
+  }, [items.length, open]);
+
+  useEffect(() => {
+    if (!open) return;
+    function onKey(event: KeyboardEvent) {
+      if (event.key === "Escape") onClose();
+    }
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [open, onClose]);
+
+  if (!open) return null;
+
+  return createPortal(
+    <div
+      className="triage-dialog-backdrop fixed inset-0 z-[70] grid place-items-center bg-shell/50 px-4 py-6 backdrop-blur-[2px]"
+      role="presentation"
+      onMouseDown={onClose}
+    >
+      <section
+        className="attention-panel triage-dialog-panel flex max-h-[min(40rem,90vh)] w-full max-w-2xl flex-col overflow-hidden rounded-2xl bg-surface shadow-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="attention-dialog-title"
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <div className="border-b border-line-soft p-4 sm:p-5">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="min-w-0">
+              <h2 id="attention-dialog-title" className="text-base font-semibold text-ink">Needs Doctor Attention</h2>
+              <p className="mt-0.5 text-sm text-muted">
+                {items.length === 0
+                  ? "No open encounters need attention right now."
+                  : `${items.length} open encounter${items.length === 1 ? "" : "s"} still need your attention.`}
+              </p>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className={`inline-flex items-center rounded-lg px-2.5 py-1 text-xs font-bold tabular-nums ${items.length > 0 ? "bg-danger-soft text-danger" : "bg-surface-3 text-muted"}`}>
+                {items.length}
+              </span>
+              <button type="button" className="grid h-9 w-9 place-items-center rounded-lg text-xl leading-none text-muted hover:bg-surface-2 hover:text-ink" aria-label="Close" onClick={onClose}>×</button>
+            </div>
+          </div>
+          <div className="attention-meter mt-4" aria-hidden="true">
+            <span className="attention-meter-seg attention-meter-critical" style={{ width: `${(meter.critical / meterTotal) * 100}%` }} />
+            <span className="attention-meter-seg attention-meter-action" style={{ width: `${(meter.action / meterTotal) * 100}%` }} />
+            <span className="attention-meter-seg attention-meter-open" style={{ width: `${(meter.open / meterTotal) * 100}%` }} />
+          </div>
+          <div className="mt-2 flex flex-wrap gap-3 text-[11px] font-semibold text-muted-strong">
+            <span className="inline-flex items-center gap-1.5"><span className="h-2 w-2 rounded-sm bg-danger" /> Critical {meter.critical}</span>
+            <span className="inline-flex items-center gap-1.5"><span className="h-2 w-2 rounded-sm bg-warning" /> Action {meter.action}</span>
+            <span className="inline-flex items-center gap-1.5"><span className="h-2 w-2 rounded-sm bg-blue" /> Open {meter.open}</span>
+          </div>
+        </div>
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          {items.length === 0 ? (
+            <p className="px-4 py-10 text-center text-sm text-muted">All caught up — no incomplete encounters need attention.</p>
+          ) : (
+            <ul className="divide-y divide-line-soft">
+              {paged.map((item, index) => {
+                const timing = attentionWaitMs(item, now);
+                const secondaryReasons = item.reasons
+                  .filter((reason) => reason !== item.headline_reason)
+                  .map((reason) => attentionReasonLabel[reason])
+                  .slice(0, 2);
+                const showEncounter = item.status === "to_doctor" || item.status === "consultation_in_progress";
+                const showMonitoring = item.reasons.includes("nurse_note_unviewed") || item.reasons.includes("ready_to_end");
+                return (
+                  <li
+                    key={item.id}
+                    className={`attention-row attention-row-${item.urgency} ui-rise px-4 py-3.5`}
+                    style={{ animationDelay: `${index * 40}ms` }}
+                  >
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div className="min-w-0 flex-1">
+                        <div className="flex flex-wrap items-center gap-2">
+                          {item.urgency === "critical" ? <span className="attention-signal-dot care-pulse-danger" aria-hidden="true" /> : null}
+                          <p className="truncate font-semibold text-ink">{item.patient_name}</p>
+                          {item.triage_category ? <CategoryPill category={item.triage_category} /> : null}
+                        </div>
+                        <p className="mt-0.5 truncate text-xs text-muted">
+                          <span className="font-mono">{item.patient_mrn}</span>
+                          {" · "}
+                          {item.hotel_room_no ? `Room ${item.hotel_room_no}` : "No room"}
+                          {item.hotel_name ? ` · ${item.hotel_name}` : ""}
+                        </p>
+                        <p className={`mt-2 text-sm font-bold ${attentionHeadlineTone(item.urgency)}`}>
+                          {attentionReasonLabel[item.headline_reason]}
+                        </p>
+                        {secondaryReasons.length > 0 ? (
+                          <p className="mt-0.5 text-xs text-muted-strong">{secondaryReasons.join(" · ")}</p>
+                        ) : null}
+                        {(item.plans ?? []).length > 0 ? (
+                          <ul className="mt-2 grid gap-1">
+                            {(item.plans ?? []).map((plan) => {
+                              const settled = plan.status === "completed" || plan.status === "cancelled";
+                              return (
+                                <li key={plan.position} className={`text-xs font-semibold ${settled ? "text-muted-strong" : "text-ink"}`}>
+                                  Plan {plan.position}
+                                  <span className={`ml-1.5 inline-flex rounded-full px-2 py-0.5 text-[11px] font-semibold ${nursingPlanStatusClass(plan.status as never)}`}>
+                                    {nursingPlanStatusLabel(plan.status as never)}
+                                  </span>
+                                  <span className="font-medium text-muted-strong">
+                                    {" · "}
+                                    {plan.medication_count} meds · {plan.procedure_count} procedures
+                                  </span>
+                                  {plan.status === "cancelled" && plan.cancellation_reason?.trim() ? (
+                                    <span className="mt-0.5 block font-medium text-muted">{plan.cancellation_reason.trim()}</span>
+                                  ) : null}
+                                </li>
+                              );
+                            })}
+                          </ul>
+                        ) : null}
+                        <p className="mt-1.5 text-xs font-semibold tabular-nums text-ink">
+                          {timing == null ? "—" : waitMinutesLabel(timing)}
+                        </p>
+                      </div>
+                      <div className="flex shrink-0 flex-wrap items-center gap-1.5">
+                        <button
+                          type="button"
+                          className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-line-strong bg-surface text-ink transition hover:border-blue hover:bg-panel hover:text-blue"
+                          aria-label={`View details for ${item.patient_name}`}
+                          title="View details"
+                          onClick={() => onViewDetails(item.id)}
+                        >
+                          <ViewDetailsIcon />
+                        </button>
+                        {showMonitoring ? (
+                          <button type="button" className={`${item.urgency === "critical" ? primary : secondary} h-9 px-3 text-xs`} onClick={() => onOpenMonitoring(item.id)}>
+                            {item.reasons.includes("nurse_note_unviewed") ? "Review note" : "Open monitoring"}
+                          </button>
+                        ) : null}
+                        {showEncounter ? (
+                          <StartEncounterLink
+                            to={`/patients/to-doctor/${item.visit_number}/encounter`}
+                            status={item.status}
+                          />
+                        ) : null}
+                        <button
+                          type="button"
+                          className={`${secondary} h-9 px-3 text-xs`}
+                          onClick={() => onCloseEncounter(item)}
+                        >
+                          Close encounter
+                        </button>
+                      </div>
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
+        <div className="flex flex-wrap items-center justify-between gap-2 border-t border-line-soft px-3 py-3">
+          <p className="text-xs text-muted-strong">{items.length === 0 ? "0 patients" : `${start}–${end} of ${items.length}`}</p>
+          <div className="flex items-center gap-1.5">
+            <button type="button" className={`${secondary} px-2.5 py-1.5 text-xs disabled:opacity-50`} disabled={safePage <= 1} onClick={() => setPage((current) => Math.max(1, current - 1))}>Previous</button>
+            <span className="grid h-8 min-w-8 place-items-center rounded-lg bg-blue px-1.5 text-xs font-semibold text-white">{items.length === 0 ? 0 : safePage}</span>
+            <button type="button" className={`${secondary} px-2.5 py-1.5 text-xs disabled:opacity-50`} disabled={safePage >= pages} onClick={() => setPage((current) => Math.min(pages, current + 1))}>Next</button>
+          </div>
+        </div>
+      </section>
+    </div>,
+    document.body,
+  );
+}
+
+function AttentionFocusIcon({ active }: { active?: boolean }) {
+  return (
+    <svg viewBox="0 0 24 24" className="h-6 w-6" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      {/* Earpieces + tubing */}
+      <path d="M7.25 3.75v5.9a3.75 3.75 0 0 0 7.5 0V7.5" />
+      <path d="M7.25 3.75H5.9a1.35 1.35 0 0 0 0 2.7h1.35" />
+      <path d="M14.75 3.75h1.35a1.35 1.35 0 0 1 0 2.7h-1.35" />
+      {/* Tube to chest piece */}
+      <path d="M14.75 7.5c2.85 0 4.85 2 4.85 4.75a3.35 3.35 0 0 1-3.35 3.35" />
+      <circle cx="14.7" cy="18.05" r="2.45" />
+      <circle cx="14.7" cy="18.05" r="0.85" fill="currentColor" stroke="none" />
+      {/* Priority flare */}
+      <path d="M4.6 13.4 7.7 19H1.5Z" fill={active ? "currentColor" : "none"} />
+      <path d="M4.6 13.4 7.7 19H1.5Z" />
+      <path d="M4.6 15.35v1.7" stroke={active ? "#fff" : "currentColor"} strokeWidth="1.55" />
+      <circle cx="4.6" cy="18.05" r="0.4" fill={active ? "#fff" : "currentColor"} stroke="none" />
+    </svg>
+  );
+}
+
+function attentionWaitMs(item: DoctorAttentionItem, now: number) {
+  const start = item.status === "to_doctor" || item.status === "consultation_in_progress"
+    ? item.triage_completed_at
+    : item.status_changed_at;
+  if (!start) return null;
+  const at = new Date(start).getTime();
+  if (!Number.isFinite(at)) return null;
+  return Math.max(0, now - at);
+}
+
+function attentionHeadlineTone(urgency: DoctorAttentionUrgency) {
+  if (urgency === "critical") return "text-danger";
+  if (urgency === "action") return "text-warning";
+  return "text-blue";
+}
+
+type CloseWizardStep = "outcome" | "referral" | "blockers" | "confirm";
+type ResolutionChoice = { action: CloseResolutionAction; reason: string };
+
+function CloseEncounterWizard({
+  item,
+  token,
+  onClose,
+  onCompleted,
+}: {
+  item: DoctorAttentionItem;
+  token: string;
+  onClose: () => void;
+  onCompleted: () => void;
+}) {
+  const toast = useToast();
+  const [step, setStep] = useState<CloseWizardStep>("outcome");
+  const [outcome, setOutcome] = useState<"complete" | "refer" | null>(null);
+  const [referralNote, setReferralNote] = useState("");
+  const [preview, setPreview] = useState<CloseEncounterPreview | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [planResolutions, setPlanResolutions] = useState<Record<number, ResolutionChoice>>({});
+  const [investigationResolutions, setInvestigationResolutions] = useState<Record<string, CloseResolutionAction>>({});
+  const [investigationCancellationReason, setInvestigationCancellationReason] = useState("");
+  const [submitError, setSubmitError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setLoadError(null);
+    void api<CloseEncounterPreview>(
+      `/api/patients/${item.patient_id}/visits/${item.id}/close-encounter-preview`,
+      {},
+      token,
+    )
+      .then((data) => {
+        if (cancelled) return;
+        setPreview(data);
+        const plans: Record<number, ResolutionChoice> = {};
+        for (const plan of data.plans) {
+          if (plan.allowed_actions.length === 0) continue;
+          plans[plan.position] = {
+            action: plan.allowed_actions.includes("complete") ? "complete" : "cancel",
+            reason: "",
+          };
+        }
+        setPlanResolutions(plans);
+        const investigations: Record<string, CloseResolutionAction> = {};
+        for (const investigation of data.investigations) {
+          investigations[investigation.id] = investigation.allowed_actions.includes("complete") ? "complete" : "cancel";
+        }
+        setInvestigationResolutions(investigations);
+        setInvestigationCancellationReason("");
+      })
+      .catch((caught) => {
+        if (!cancelled) setLoadError(messageOf(caught));
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [item.id, item.patient_id, token]);
+
+  useEffect(() => {
+    function onKey(event: KeyboardEvent) {
+      if (event.key === "Escape" && !submitting) onClose();
+    }
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onClose, submitting]);
+
+  const hasBlockers = Boolean(
+    preview
+    && (preview.plans.length > 0 || preview.investigations.length > 0),
+  );
+
+  function blockersValid() {
+    if (!preview) return false;
+    for (const plan of preview.plans) {
+      if (plan.allowed_actions.length === 0) continue;
+      const resolution = planResolutions[plan.position];
+      if (!resolution || !plan.allowed_actions.includes(resolution.action)) return false;
+      if (resolution.action === "cancel" && !resolution.reason.trim()) return false;
+    }
+    let cancellingInvestigations = false;
+    for (const investigation of preview.investigations) {
+      const action = investigationResolutions[investigation.id];
+      if (!action || !investigation.allowed_actions.includes(action)) return false;
+      if (action === "cancel") cancellingInvestigations = true;
+    }
+    if (cancellingInvestigations && !investigationCancellationReason.trim()) return false;
+    return true;
+  }
+
+  function goNextFromOutcome(next: "complete" | "refer") {
+    setOutcome(next);
+    setSubmitError(null);
+    if (next === "refer") {
+      setStep("referral");
+      return;
+    }
+    setStep(hasBlockers ? "blockers" : "confirm");
+  }
+
+  function goNextFromReferral() {
+    if (!referralNote.trim()) {
+      setSubmitError("Enter a hospital referral note");
+      return;
+    }
+    setSubmitError(null);
+    setStep(hasBlockers ? "blockers" : "confirm");
+  }
+
+  function goNextFromBlockers() {
+    if (!blockersValid()) {
+      setSubmitError("Resolve every open plan, monitoring, and investigation before continuing");
+      return;
+    }
+    setSubmitError(null);
+    setStep("confirm");
+  }
+
+  async function submitClose() {
+    if (!outcome || !preview) return;
+    if (outcome === "refer" && !referralNote.trim()) {
+      setSubmitError("Enter a hospital referral note");
+      return;
+    }
+    if (hasBlockers && !blockersValid()) {
+      setSubmitError("Resolve every open plan, monitoring, and investigation before continuing");
+      return;
+    }
+    const body: CloseEncounterRequest = {
+      outcome,
+      referral_note: outcome === "refer" ? referralNote.trim() : "",
+      plan_resolutions: preview.plans.flatMap((plan) => {
+        if (plan.allowed_actions.length === 0) return [];
+        const resolution = planResolutions[plan.position];
+        if (!resolution) return [];
+        return [{
+          position: plan.position,
+          action: resolution.action,
+          reason: resolution.action === "cancel" ? resolution.reason.trim() : undefined,
+        }];
+      }),
+      monitoring_resolution: preview.monitoring.needs_resolution
+        ? { action: "complete" }
+        : null,
+      investigation_resolutions: preview.investigations.map((investigation) => ({
+        id: investigation.id,
+        action: investigationResolutions[investigation.id]!,
+      })),
+      investigation_cancellation_reason: preview.investigations.some((investigation) => investigationResolutions[investigation.id] === "cancel")
+        ? investigationCancellationReason.trim()
+        : "",
+    };
+    setSubmitting(true);
+    setSubmitError(null);
+    try {
+      const result = await api<CloseEncounterResult>(
+        `/api/patients/${item.patient_id}/visits/${item.id}/close-encounter`,
+        { method: "POST", body: JSON.stringify(body) },
+        token,
+      );
+      toast.success(
+        result.status === "referred" ? "Referred to hospital" : "Encounter completed",
+        result.status === "referred"
+          ? `${item.patient_name} was referred.`
+          : `${item.patient_name} is now Encounter Complete.`,
+      );
+      onCompleted();
+    } catch (caught) {
+      setSubmitError(messageOf(caught));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  const stepTitle = step === "outcome"
+    ? "Choose outcome"
+    : step === "referral"
+      ? "Referral note"
+      : step === "blockers"
+        ? "Resolve open items"
+        : "Confirm close";
+
+  return createPortal(
+    <div
+      className="triage-dialog-backdrop fixed inset-0 z-[90] grid place-items-center bg-shell/55 px-4 py-6 backdrop-blur-[2px]"
+      role="presentation"
+      onMouseDown={() => {
+        if (!submitting) onClose();
+      }}
+    >
+      <section
+        className="triage-dialog-panel flex max-h-[min(44rem,92vh)] w-full max-w-xl flex-col overflow-hidden rounded-2xl bg-surface shadow-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="close-encounter-title"
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <div className="border-b border-line-soft p-4 sm:p-5">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <p className="text-xs font-semibold uppercase tracking-wide text-muted-strong">Close encounter</p>
+              <h2 id="close-encounter-title" className="mt-1 text-base font-semibold text-ink">{item.patient_name}</h2>
+              <p className="mt-0.5 truncate text-sm text-muted">
+                <span className="font-mono">{item.patient_mrn}</span>
+                {" · "}
+                {stepTitle}
+              </p>
+            </div>
+            <button type="button" className="grid h-9 w-9 place-items-center rounded-lg text-xl leading-none text-muted hover:bg-surface-2 hover:text-ink disabled:opacity-50" aria-label="Close" disabled={submitting} onClick={onClose}>×</button>
+          </div>
+        </div>
+
+        <div className="min-h-0 flex-1 overflow-y-auto p-4 sm:p-5">
+          {loading ? (
+            <p className="py-8 text-center text-sm text-muted">Loading open items…</p>
+          ) : loadError ? (
+            <p className="rounded-xl border border-danger/30 bg-danger-soft px-3 py-3 text-sm text-danger">{loadError}</p>
+          ) : step === "outcome" ? (
+            <div className="grid gap-3">
+              <p className="text-sm text-muted-strong">How should this encounter end?</p>
+              <button
+                type="button"
+                className="rounded-xl border border-line bg-surface-2 px-4 py-4 text-left transition hover:border-success hover:bg-success-soft/40"
+                onClick={() => goNextFromOutcome("complete")}
+              >
+                <span className="block text-sm font-semibold text-ink">Complete Encounter</span>
+                <span className="mt-1 block text-xs text-muted">Mark the visit as Encounter Complete after resolving open items.</span>
+              </button>
+              <button
+                type="button"
+                className="rounded-xl border border-line bg-surface-2 px-4 py-4 text-left transition hover:border-warning hover:bg-warning-soft/40"
+                onClick={() => goNextFromOutcome("refer")}
+              >
+                <span className="block text-sm font-semibold text-ink">Refer to a hospital</span>
+                <span className="mt-1 block text-xs text-muted">Close the visit as Referred with a hospital / reason note.</span>
+              </button>
+            </div>
+          ) : step === "referral" ? (
+            <div className="grid gap-3">
+              <label className="grid gap-1.5">
+                <span className="text-sm font-semibold text-ink">Hospital / referral reason</span>
+                <textarea
+                  className={`${field} min-h-[7rem]`}
+                  value={referralNote}
+                  onChange={(event) => setReferralNote(event.target.value)}
+                  placeholder="Hospital name and reason for referral"
+                  maxLength={1000}
+                />
+              </label>
+            </div>
+          ) : step === "blockers" && preview ? (
+            <div className="grid gap-5">
+              {preview.plans.length > 0 ? (
+                <section className="grid gap-2">
+                  <h3 className="text-sm font-semibold text-ink">Management plans</h3>
+                  {preview.plans.map((plan) => {
+                    const viewOnly = plan.allowed_actions.length === 0;
+                    const resolution = planResolutions[plan.position] ?? { action: "cancel" as const, reason: "" };
+                    const reason = plan.status === "cancelled" && plan.cancellation_reason?.trim()
+                      ? plan.cancellation_reason.trim()
+                      : "";
+                    return (
+                      <CloseResolutionCard
+                        key={plan.position}
+                        title={`Plan ${plan.position}`}
+                        detail={`${plan.medication_count} meds · ${plan.procedure_count} procedures · ${nursingPlanStatusLabel(plan.status as never)}${viewOnly ? " · View only" : ""}${reason ? ` · ${reason}` : ""}`}
+                        allowed={plan.allowed_actions}
+                        value={resolution}
+                        showReason={!viewOnly}
+                        onChange={(next) => setPlanResolutions((current) => ({ ...current, [plan.position]: next }))}
+                      />
+                    );
+                  })}
+                </section>
+              ) : null}
+              {preview.investigations.length > 0 ? (
+                <section className="grid gap-2">
+                  <h3 className="text-sm font-semibold text-ink">Investigations</h3>
+                  {preview.investigations.map((investigation) => {
+                    const action = investigationResolutions[investigation.id] ?? "cancel";
+                    return (
+                      <CloseResolutionCard
+                        key={investigation.id}
+                        title={investigation.name}
+                        detail={investigationStatusLabel(investigation.status as never)}
+                        allowed={investigation.allowed_actions}
+                        value={{ action, reason: "" }}
+                        showReason={false}
+                        onChange={(next) => setInvestigationResolutions((current) => ({ ...current, [investigation.id]: next.action }))}
+                      />
+                    );
+                  })}
+                  {preview.investigations.some((investigation) => investigationResolutions[investigation.id] === "cancel") ? (
+                    <label className="rounded-xl border border-line bg-surface-2 px-3 py-3 grid gap-1.5">
+                      <span className="text-xs font-semibold text-muted-strong">Cancellation reason for investigations</span>
+                      <textarea
+                        className={`${field} min-h-[4.5rem]`}
+                        value={investigationCancellationReason}
+                        onChange={(event) => setInvestigationCancellationReason(event.target.value)}
+                        placeholder="One reason applies to all cancelled investigations"
+                        maxLength={500}
+                      />
+                    </label>
+                  ) : null}
+                </section>
+              ) : null}
+            </div>
+          ) : step === "confirm" && preview ? (
+            <div className="grid gap-3 text-sm">
+              <div className="rounded-xl border border-line bg-surface-2 px-3 py-3">
+                <p className="text-xs font-semibold uppercase tracking-wide text-muted-strong">Outcome</p>
+                <p className="mt-1 font-semibold text-ink">
+                  {outcome === "refer" ? "Refer to a hospital" : "Complete Encounter"}
+                </p>
+                {outcome === "refer" ? (
+                  <p className="mt-1 whitespace-pre-wrap text-muted-strong">{referralNote.trim()}</p>
+                ) : null}
+              </div>
+              {preview.plans.map((plan) => {
+                const resolution = planResolutions[plan.position];
+                if (plan.allowed_actions.length === 0 || !resolution) {
+                  return (
+                    <div key={`plan-${plan.position}`} className="rounded-xl border border-line px-3 py-2.5">
+                      <p className="font-semibold text-ink">Plan {plan.position}</p>
+                      <p className="mt-0.5 text-xs text-muted-strong">
+                        {nursingPlanStatusLabel(plan.status as never)} · View only
+                        {plan.status === "cancelled" && plan.cancellation_reason?.trim() ? ` · ${plan.cancellation_reason.trim()}` : ""}
+                      </p>
+                    </div>
+                  );
+                }
+                return (
+                  <CloseSummaryLine
+                    key={`plan-${plan.position}`}
+                    label={`Plan ${plan.position}`}
+                    action={resolution.action}
+                    reason={resolution.reason}
+                  />
+                );
+              })}
+              {preview.investigations.map((investigation) => {
+                const action = investigationResolutions[investigation.id];
+                if (!action) return null;
+                return (
+                  <CloseSummaryLine
+                    key={investigation.id}
+                    label={investigation.name}
+                    action={action}
+                    reason=""
+                  />
+                );
+              })}
+              {preview.investigations.some((investigation) => investigationResolutions[investigation.id] === "cancel") ? (
+                <div className="rounded-xl border border-line px-3 py-2.5">
+                  <p className="font-semibold text-ink">Investigation cancellation reason</p>
+                  <p className="mt-0.5 whitespace-pre-wrap text-xs text-muted-strong">{investigationCancellationReason.trim()}</p>
+                </div>
+              ) : null}
+              {!hasBlockers ? (
+                <p className="text-muted-strong">No open plans, monitoring, or investigations need resolution.</p>
+              ) : null}
+            </div>
+          ) : null}
+          {submitError ? (
+            <p className="mt-4 rounded-xl border border-danger/30 bg-danger-soft px-3 py-2 text-sm text-danger">{submitError}</p>
+          ) : null}
+        </div>
+
+        <div className="flex flex-wrap items-center justify-between gap-2 border-t border-line-soft px-4 py-3">
+          <button
+            type="button"
+            className={`${secondary} h-9 px-3 text-xs`}
+            disabled={submitting || step === "outcome"}
+            onClick={() => {
+              setSubmitError(null);
+              if (step === "confirm") setStep(hasBlockers ? "blockers" : outcome === "refer" ? "referral" : "outcome");
+              else if (step === "blockers") setStep(outcome === "refer" ? "referral" : "outcome");
+              else if (step === "referral") setStep("outcome");
+            }}
+          >
+            Back
+          </button>
+          <div className="flex items-center gap-2">
+            <button type="button" className={`${secondary} h-9 px-3 text-xs`} disabled={submitting} onClick={onClose}>
+              Cancel
+            </button>
+            {step === "referral" ? (
+              <button type="button" className={`${primary} h-9 px-3 text-xs`} onClick={goNextFromReferral}>Continue</button>
+            ) : null}
+            {step === "blockers" ? (
+              <button type="button" className={`${primary} h-9 px-3 text-xs`} onClick={goNextFromBlockers}>Continue</button>
+            ) : null}
+            {step === "confirm" ? (
+              <button type="button" className={`${primary} h-9 px-3 text-xs`} disabled={submitting || loading || Boolean(loadError)} onClick={() => void submitClose()}>
+                {submitting ? "Closing…" : outcome === "refer" ? "Confirm referral" : "Confirm complete"}
+              </button>
+            ) : null}
+          </div>
+        </div>
+      </section>
+    </div>,
+    document.body,
+  );
+}
+
+function CloseResolutionCard({
+  title,
+  detail,
+  allowed,
+  value,
+  onChange,
+  showReason = true,
+}: {
+  title: string;
+  detail: string;
+  allowed: CloseResolutionAction[];
+  value: ResolutionChoice;
+  onChange: (next: ResolutionChoice) => void;
+  showReason?: boolean;
+}) {
+  return (
+    <div className="rounded-xl border border-line bg-surface-2 px-3 py-3">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div className="min-w-0">
+          <p className="font-semibold text-ink">{title}</p>
+          <p className="mt-0.5 text-xs text-muted">{detail}</p>
+        </div>
+        <div className="flex flex-wrap gap-1.5">
+          {allowed.includes("complete") ? (
+            <button
+              type="button"
+              className={`h-8 rounded-lg px-2.5 text-xs font-semibold ${value.action === "complete" ? "bg-success text-white" : "border border-line bg-surface text-ink"}`}
+              onClick={() => onChange({ action: "complete", reason: "" })}
+            >
+              Complete
+            </button>
+          ) : null}
+          {allowed.includes("cancel") ? (
+            <button
+              type="button"
+              className={`h-8 rounded-lg px-2.5 text-xs font-semibold ${value.action === "cancel" ? "bg-danger text-white" : "border border-line bg-surface text-ink"}`}
+              onClick={() => onChange({ ...value, action: "cancel" })}
+            >
+              Cancel
+            </button>
+          ) : null}
+        </div>
+      </div>
+      {showReason && allowed.includes("cancel") && value.action === "cancel" ? (
+        <label className="mt-3 grid gap-1">
+          <span className="text-xs font-semibold text-muted-strong">Cancellation reason</span>
+          <textarea
+            className={`${field} min-h-[4.5rem]`}
+            value={value.reason}
+            onChange={(event) => onChange({ ...value, reason: event.target.value })}
+            placeholder="Required reason"
+            maxLength={500}
+          />
+        </label>
+      ) : null}
+    </div>
+  );
+}
+
+function CloseSummaryLine({
+  label,
+  action,
+  reason,
+}: {
+  label: string;
+  action: CloseResolutionAction;
+  reason: string;
+}) {
+  return (
+    <div className="rounded-xl border border-line px-3 py-2.5">
+      <p className="font-semibold text-ink">{label}</p>
+      <p className="mt-0.5 text-xs text-muted-strong">
+        {action === "complete" ? "Complete" : "Cancel"}
+        {action === "cancel" && reason.trim() ? ` · ${reason.trim()}` : ""}
+      </p>
+    </div>
+  );
+}
+
 function NurseRecordsPanel({ patients, now, token, onChanged }: { patients: NursePatientRecord[]; now: number; token: string; onChanged: () => void }) {
   const [query, setQuery] = useState("");
   const [focus, setFocus] = useState<"" | CasePriority>("");
+  const [page, setPage] = useState(1);
   const [viewing, setViewing] = useState<NursePatientRecord | null>(null);
   const needle = query.trim().toLowerCase();
   const visible = patients.filter((item) => {
     if (focus && item.latest.case_priority !== focus) return false;
     if (!needle) return true;
-    const place = [item.patientName, item.patientMrn, item.hotelRoomNo, item.hotelName].filter(Boolean).join(" ").toLowerCase();
+    const place = [item.patientName, item.patientMrn, item.hotelRoomNo, item.hotelName, item.chiefComplaint].filter(Boolean).join(" ").toLowerCase();
     return place.includes(needle);
   });
+  const pages = Math.max(1, Math.ceil(visible.length / monitoringPageSize));
+  const safePage = Math.min(page, pages);
+  const start = visible.length === 0 ? 0 : (safePage - 1) * monitoringPageSize + 1;
+  const end = Math.min(safePage * monitoringPageSize, visible.length);
+  const paged = visible.slice((safePage - 1) * monitoringPageSize, safePage * monitoringPageSize);
   const counts = {
     all: patients.length,
     stable: patients.filter((item) => item.latest.case_priority === "stable").length,
@@ -640,73 +1512,218 @@ function NurseRecordsPanel({ patients, now, token, onChanged }: { patients: Nurs
   }
 
   return (
-    <section className="rounded-2xl border border-panel-strong bg-surface shadow-card">
+    <section className="rounded-2xl border border-line bg-surface shadow-card">
       <div className="border-b border-line-soft p-4 sm:p-5">
-        <h2 className="text-base font-semibold text-ink">Nurse Patient Records</h2>
-        <p className="mt-0.5 text-sm text-muted">Readings recorded while a patient is under nursing observation.</p>
-        <div className="mt-4 flex flex-wrap gap-2">
-          <QueueChip label="All" count={counts.all} active={focus === ""} onClick={() => setFocus("")} />
-          <QueueChip label="Stable" count={counts.stable} active={focus === "stable"} onClick={() => setFocus("stable")} dot="bg-success" />
-          <QueueChip label="Urgent" count={counts.urgent} active={focus === "urgent"} onClick={() => setFocus("urgent")} dot="bg-warning" />
-          <QueueChip label="Emergency" count={counts.emergency} active={focus === "emergency"} onClick={() => setFocus("emergency")} dot="bg-danger" />
+        <div className="flex flex-wrap items-end justify-between gap-3">
+          <div>
+            <h2 className="text-base font-semibold text-ink">Patients Under Monitoring & Nursing Care</h2>
+            <p className="mt-0.5 text-sm text-muted">Active nursing observations for your assigned patients.</p>
+          </div>
+          <label className="relative block w-full max-w-sm">
+            <span className="sr-only">Search monitoring</span>
+            <input
+              className={field}
+              value={query}
+              onChange={(event) => {
+                setQuery(event.target.value);
+                setPage(1);
+              }}
+              placeholder="Search by name, MRN, or hotel"
+            />
+          </label>
         </div>
-        <label className="relative mt-4 block">
-          <span className="sr-only">Search nurse records</span>
-          <input className={field} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search by name, MRN, or hotel" />
-        </label>
+        <div className="mt-4 flex flex-wrap gap-2">
+          <QueueChip label="All" count={counts.all} active={focus === ""} onClick={() => { setFocus(""); setPage(1); }} />
+          <QueueChip label="Stable" count={counts.stable} active={focus === "stable"} onClick={() => { setFocus("stable"); setPage(1); }} dot="bg-success" />
+          <QueueChip label="Urgent" count={counts.urgent} active={focus === "urgent"} onClick={() => { setFocus("urgent"); setPage(1); }} dot="bg-warning" />
+          <QueueChip label="Emergency" count={counts.emergency} active={focus === "emergency"} onClick={() => { setFocus("emergency"); setPage(1); }} dot="bg-danger" />
+        </div>
       </div>
-      <div className="max-h-[calc(100vh-16rem)] overflow-auto">
+      <div className="overflow-auto">
         {visible.length === 0 ? (
-          <p className="px-4 py-10 text-center text-sm text-muted">{patients.length === 0 ? "No nursing records yet." : "No records match this search."}</p>
+          <p className="px-4 py-10 text-center text-sm text-muted">{patients.length === 0 ? "No patients under monitoring." : "No records match this search."}</p>
         ) : (
-          <table className="w-full text-sm">
+          <table className="w-full min-w-[40rem] text-sm">
             <thead className="sticky top-0 z-10 bg-surface-2">
               <tr>
                 <th className={`${th} sticky top-0 bg-surface-2`}>Patient</th>
-                <th className={`${th} sticky top-0 bg-surface-2`}>Status</th>
+                <th className={`${th} sticky top-0 bg-surface-2`}>Reason</th>
+                <th className={`${th} sticky top-0 bg-surface-2`}>Start</th>
+                <th className={`${th} sticky top-0 bg-surface-2`}>Duration</th>
+                <th className={`${th} sticky top-0 bg-surface-2`}>Nursing status</th>
                 <th className={`${th} sticky top-0 bg-surface-2`}>Actions</th>
               </tr>
             </thead>
             <tbody>
-              {visible.map((item) => {
+              {paged.map((item) => {
                 const waitingSince = unviewedSince(item);
-                const age = waitingSince ? Math.max(0, now - new Date(waitingSince).getTime()) : 0;
+                const startAt = item.monitoringStartedAt ?? item.latest.recorded_at;
+                const durationMs = startAt ? Math.max(0, now - new Date(startAt).getTime()) : null;
                 return (
-                <tr key={item.visitId} className={waitingSince ? "border-t border-warning-line bg-warning-soft" : "border-t border-line-soft"}>
-                  <td className="px-4 py-3">
-                    <p className="truncate font-semibold text-ink">{item.patientName}</p>
-                    <p className="mt-0.5 truncate text-xs text-muted">
-                      <span className="font-mono">{item.patientMrn}</span>
-                      {" · "}
-                      {item.hotelRoomNo ? `Room ${item.hotelRoomNo}` : "No room"}
-                      {item.hotelName ? ` · ${item.hotelName}` : ""}
-                    </p>
-                    <p className="mt-0.5 text-xs text-muted">{agoLabel(item.latest.recorded_at, now)} · {item.records.length} reading{item.records.length === 1 ? "" : "s"}</p>
-                    {waitingSince ? (
-                      <p className="mt-1.5 inline-flex items-center gap-1.5 rounded-full bg-warning px-2.5 py-1 text-xs font-semibold text-white">
-                        <span className="h-1.5 w-1.5 rounded-full bg-white" aria-hidden="true" />
-                        Unviewed · {clockLabel(age)}
+                  <tr key={item.visitId} className={waitingSince ? "border-t border-warning-line bg-warning-soft" : "border-t border-line-soft"}>
+                    <td className="px-4 py-3">
+                      <p className="truncate font-semibold text-ink">{item.patientName}</p>
+                      <p className="mt-0.5 truncate text-xs text-muted">
+                        <span className="font-mono">{item.patientMrn}</span>
+                        {" · "}
+                        {item.hotelRoomNo ? `Room ${item.hotelRoomNo}` : "No room"}
+                        {item.hotelName ? ` · ${item.hotelName}` : ""}
                       </p>
-                    ) : null}
-                  </td>
-                  <td className="px-4 py-3">
-                    <div className="flex flex-col items-start gap-1.5">
-                      <span className={`inline-flex whitespace-nowrap rounded-full px-2.5 py-1 text-xs font-semibold ${monitoringStatusClass(item.monitoringStatus)}`}>{monitoringStatusLabel(item.monitoringStatus)}</span>
-                      <PriorityChip priority={item.latest.case_priority} />
-                    </div>
-                  </td>
-                  <td className="px-4 py-3">
-                    <button type="button" className={`${waitingSince ? primary : secondary} h-8 px-3 py-0 text-xs`} onClick={() => openNurseRecord(item)}>View</button>
-                  </td>
-                </tr>
+                      {waitingSince ? (
+                        <p className="mt-1 inline-flex items-center gap-1.5 rounded-full bg-warning px-2 py-0.5 text-[11px] font-semibold text-white">
+                          Unviewed
+                        </p>
+                      ) : null}
+                    </td>
+                    <td className="px-4 py-3 text-sm text-ink">
+                      <span className="line-clamp-2">{item.chiefComplaint?.trim() || item.latest.notes.trim() || "—"}</span>
+                    </td>
+                    <td className="px-4 py-3 text-xs text-muted-strong">{startAt ? formatWhen(startAt) : "—"}</td>
+                    <td className="px-4 py-3 font-semibold tabular-nums text-ink">{durationMs == null ? "—" : waitMinutesLabel(durationMs)}</td>
+                    <td className="px-4 py-3">
+                      <div className="flex flex-col items-start gap-1.5">
+                        <span className={`inline-flex whitespace-nowrap rounded-full px-2.5 py-1 text-xs font-semibold ${monitoringStatusClass(item.monitoringStatus)}`}>{monitoringStatusLabel(item.monitoringStatus)}</span>
+                        <PriorityChip priority={item.latest.case_priority} />
+                      </div>
+                    </td>
+                    <td className="px-4 py-3">
+                      <button type="button" className={`${waitingSince ? primary : secondary} h-8 px-3 py-0 text-xs`} onClick={() => openNurseRecord(item)}>
+                        {waitingSince ? "Update" : "View"}
+                      </button>
+                    </td>
+                  </tr>
                 );
               })}
             </tbody>
           </table>
         )}
       </div>
+      <div className="flex flex-wrap items-center justify-between gap-2 border-t border-line-soft px-3 py-3">
+        <p className="text-xs text-muted-strong">{visible.length === 0 ? "0 patients" : `${start}–${end} of ${visible.length}`}</p>
+        <div className="flex items-center gap-1.5">
+          <button type="button" className={`${secondary} px-2.5 py-1.5 text-xs disabled:opacity-50`} disabled={safePage <= 1} onClick={() => setPage((current) => Math.max(1, current - 1))}>Previous</button>
+          <span className="grid h-8 min-w-8 place-items-center rounded-lg bg-blue px-1.5 text-xs font-semibold text-white">{visible.length === 0 ? 0 : safePage}</span>
+          <button type="button" className={`${secondary} px-2.5 py-1.5 text-xs disabled:opacity-50`} disabled={safePage >= pages} onClick={() => setPage((current) => Math.min(pages, current + 1))}>Next</button>
+        </div>
+      </div>
       {viewing ? <MonitoringAssessmentDialog token={token} patient={viewing} now={now} onClose={() => setViewing(null)} onChanged={onChanged} /> : null}
     </section>
+  );
+}
+
+function AnalyticsRail({
+  summary,
+  nursePatients,
+  underObservation,
+}: {
+  summary: DoctorCaseSummary;
+  nursePatients: NursePatientRecord[];
+  underObservation: number;
+}) {
+  const triageTotal = Math.max(1, summary.emergency + summary.urgent + summary.normal);
+  const triageSlices = [
+    { label: "Emergency", count: summary.emergency, tone: "bg-danger" },
+    { label: "Urgent", count: summary.urgent, tone: "bg-warning" },
+    { label: "Stable", count: summary.normal, tone: "bg-success" },
+  ];
+  const workflow = [
+    { label: "Waiting for Doctor", count: summary.waiting },
+    { label: "Consultation In Progress", count: summary.consultation_in_progress },
+    { label: "Waiting for Investigation", count: summary.waiting_for_investigation },
+    { label: "Under Nursing Care", count: summary.under_nursing_care },
+    { label: "Encounter Complete", count: summary.encounter_complete },
+    { label: "Referred", count: summary.referred },
+  ];
+  const workflowMax = Math.max(1, ...workflow.map((item) => item.count));
+  const nursing = {
+    stable: nursePatients.filter((item) => item.latest.case_priority === "stable").length,
+    urgent: nursePatients.filter((item) => item.latest.case_priority === "urgent").length,
+    emergency: nursePatients.filter((item) => item.latest.case_priority === "emergency").length,
+  };
+  const overview = [
+    { label: "Patients today", count: summary.today },
+    { label: "Waiting for doctor", count: summary.waiting },
+    { label: "To see now", count: summary.to_see_now },
+    { label: "Waiting for investigation", count: summary.waiting_for_investigation },
+    { label: "Results ready", count: summary.results_ready },
+    { label: "Under observation", count: underObservation },
+  ];
+
+  return (
+    <aside className="grid gap-4">
+      <section className="rounded-2xl border border-line bg-surface p-4 shadow-card">
+        <h3 className="text-sm font-semibold text-ink">Today&apos;s Overview</h3>
+        <p className="mt-0.5 text-xs text-muted">Visit counts from your assigned cases.</p>
+        <ul className="mt-3 grid gap-2">
+          {overview.map((item) => (
+            <li key={item.label} className="flex items-center justify-between gap-3 text-sm">
+              <span className="text-muted-strong">{item.label}</span>
+              <span className="font-semibold tabular-nums text-ink">{item.count}</span>
+            </li>
+          ))}
+        </ul>
+      </section>
+
+      <section className="rounded-2xl border border-line bg-surface p-4 shadow-card">
+        <h3 className="text-sm font-semibold text-ink">Triage Priority</h3>
+        <p className="mt-0.5 text-xs text-muted">Patients waiting to see the doctor.</p>
+        <div className="mt-4 flex items-center gap-4">
+          <div
+            className="h-24 w-24 shrink-0 rounded-full"
+            style={{
+              background: `conic-gradient(#c23b3b 0 ${(summary.emergency / triageTotal) * 100}%, #d97706 ${(summary.emergency / triageTotal) * 100}% ${((summary.emergency + summary.urgent) / triageTotal) * 100}%, #1f8a5b ${((summary.emergency + summary.urgent) / triageTotal) * 100}% 100%)`,
+            }}
+            aria-hidden="true"
+          />
+          <ul className="grid gap-1.5 text-sm">
+            {triageSlices.map((item) => (
+              <li key={item.label} className="flex items-center gap-2">
+                <span className={`h-2.5 w-2.5 rounded-full ${item.tone}`} aria-hidden="true" />
+                <span className="text-muted-strong">{item.label}</span>
+                <span className="font-semibold tabular-nums text-ink">{item.count}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      </section>
+
+      <section className="rounded-2xl border border-line bg-surface p-4 shadow-card">
+        <h3 className="text-sm font-semibold text-ink">Clinical Workflow</h3>
+        <p className="mt-0.5 text-xs text-muted">Where assigned visits sit right now.</p>
+        <ul className="mt-3 grid gap-2.5">
+          {workflow.map((item) => (
+            <li key={item.label}>
+              <div className="mb-1 flex items-center justify-between gap-2 text-xs">
+                <span className="text-muted-strong">{item.label}</span>
+                <span className="font-semibold tabular-nums text-ink">{item.count}</span>
+              </div>
+              <div className="h-2 overflow-hidden rounded-full bg-surface-3">
+                <div className="h-full rounded-full bg-blue" style={{ width: `${Math.max(item.count === 0 ? 0 : 8, (item.count / workflowMax) * 100)}%` }} />
+              </div>
+            </li>
+          ))}
+        </ul>
+      </section>
+
+      <section className="rounded-2xl border border-line bg-surface p-4 shadow-card">
+        <h3 className="text-sm font-semibold text-ink">Nursing Observation</h3>
+        <p className="mt-0.5 text-xs text-muted">Priority of monitored patients.</p>
+        <div className="mt-3 grid grid-cols-3 gap-2">
+          <div className="rounded-xl bg-success-soft px-2 py-3 text-center">
+            <p className="text-lg font-bold text-success">{nursing.stable}</p>
+            <p className="text-[11px] font-semibold text-success">Stable</p>
+          </div>
+          <div className="rounded-xl bg-warning-soft px-2 py-3 text-center">
+            <p className="text-lg font-bold text-warning">{nursing.urgent}</p>
+            <p className="text-[11px] font-semibold text-warning">Urgent</p>
+          </div>
+          <div className="rounded-xl bg-danger-soft px-2 py-3 text-center">
+            <p className="text-lg font-bold text-danger">{nursing.emergency}</p>
+            <p className="text-[11px] font-semibold text-danger">Emergency</p>
+          </div>
+        </div>
+      </section>
+    </aside>
   );
 }
 
@@ -751,10 +1768,12 @@ function MonitoringAssessmentDialog({
   const [clinical, setClinical] = useState("");
   const [tab, setTab] = useState<"assessment" | "history">("assessment");
   const [editor, setEditor] = useState<OrderEditor | null>(null);
-  const [pending, setPending] = useState<"send" | "note" | "complete" | "end" | null>(null);
+  const [pending, setPending] = useState<"send" | "note" | "complete" | "end" | "cancel" | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
   const [offerEnd, setOfferEnd] = useState(false);
   const [confirmComplete, setConfirmComplete] = useState(false);
+  const [confirmCancelPosition, setConfirmCancelPosition] = useState<number | null>(null);
+  const [cancelReason, setCancelReason] = useState("");
   const nationality = plan?.visit.patient_nationality;
   const monitoringStatus = plan?.visit.monitoring_status ?? patient.monitoringStatus;
   const listedProcedures = standaloneProcedures(procedures);
@@ -782,13 +1801,13 @@ function MonitoringAssessmentDialog({
     .map(([key, check]) => ({ name: vitalNames[key], check }));
 
   useEffect(() => {
-    if (editor || confirmComplete) return;
+    if (editor || confirmComplete || confirmCancelPosition != null) return;
     function onKey(event: KeyboardEvent) {
       if (event.key === "Escape") onClose();
     }
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [editor, confirmComplete, onClose]);
+  }, [editor, confirmComplete, confirmCancelPosition, onClose]);
 
   useEffect(() => {
     let cancelled = false;
@@ -902,6 +1921,36 @@ function MonitoringAssessmentDialog({
       onClose();
     } catch (caught) {
       setFormError(messageOf(caught));
+    } finally {
+      setPending(null);
+    }
+  }
+
+  async function cancelManagementPlan(position: number) {
+    if (pending) return;
+    const reason = cancelReason.trim();
+    if (!reason) {
+      setFormError("Enter a cancellation reason.");
+      return;
+    }
+    setPending("cancel");
+    setFormError(null);
+    try {
+      await api(`/api/patients/${patient.patientId}/visits/${patient.visitId}/nursing-plan/cancel`, {
+        method: "POST",
+        body: JSON.stringify({ position, reason }),
+      }, token);
+      toast.success("Management plan cancelled", `Management plan ${position} was cancelled.`);
+      setConfirmCancelPosition(null);
+      setCancelReason("");
+      const detail = await api<NursingPlanDetail>(`/api/patients/${patient.patientId}/visits/${patient.visitId}/nursing-plan`, {}, token);
+      setPlan(detail);
+      setSavedPlans(detail.plans ?? []);
+      onChanged();
+    } catch (caught) {
+      setFormError(messageOf(caught));
+      setConfirmCancelPosition(null);
+      setCancelReason("");
     } finally {
       setPending(null);
     }
@@ -1026,7 +2075,14 @@ function MonitoringAssessmentDialog({
 
   return (
     <>
-      <div className="triage-dialog-backdrop fixed inset-0 z-50 grid place-items-center bg-shell/45 p-4" role="presentation" onMouseDown={onClose}>
+      <div
+        className="triage-dialog-backdrop fixed inset-0 z-50 grid place-items-center bg-shell/45 p-4"
+        role="presentation"
+        onMouseDown={() => {
+          if (confirmComplete || confirmCancelPosition != null || pending) return;
+          onClose();
+        }}
+      >
         <section
           className="flex max-h-[92vh] w-full max-w-5xl flex-col overflow-hidden rounded-2xl bg-surface shadow-dialog"
           role="dialog"
@@ -1182,42 +2238,72 @@ function MonitoringAssessmentDialog({
               </div>
             </section>
             ) : null}
-            {savedPlans.filter(planHasOrders).map((entry) => (
-              <section key={entry.position} className="mt-5 rounded-xl border border-line bg-surface-2 px-4 py-3">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <h3 className="text-sm font-semibold text-ink">Management plan {entry.position}</h3>
-                  {entry.assessment_status ? <AssessmentStatus status={entry.assessment_status} /> : null}
-                </div>
-                {entry.clinical_assessment.trim() ? <p className="mt-2 whitespace-pre-wrap text-sm text-ink">{entry.clinical_assessment}</p> : null}
-                <h4 className="mt-3 text-xs font-semibold uppercase tracking-wide text-muted">Medication orders</h4>
-                <OrderTable
-                  empty="No medication orders."
-                  headers={["#", "Medication", "Dose", "Route", "Frequency", "Duration", "Notes"]}
-                  rows={entry.medication_orders.map((item, index) => ({
-                    id: item.id,
-                    cells: [String(index + 1), item.medication || "—", doseLabel(item), item.route || "—", item.frequency || "—", item.duration || "—", item.instructions.trim() || "—"],
-                    onOpen: () => setEditor({ kind: "medication", order: item, existing: true, locked: true, planOrders: entry.medication_orders }),
-                  }))}
-                />
-                <h4 className="mt-3 text-xs font-semibold uppercase tracking-wide text-muted">Procedures & interventions</h4>
-                <OrderTable
-                  empty="No procedures."
-                  headers={["#", "Procedure", "Notes"]}
-                  rows={standaloneProcedures(entry.procedure_orders).map((item, index) => ({
-                    id: item.id,
-                    cells: [String(index + 1), item.name || "—", item.notes.trim() || "—"],
-                    onOpen: () => setEditor({
-                      kind: "procedure",
-                      order: item,
-                      existing: true,
-                      locked: true,
-                      medications: entry.medication_orders,
-                      procedures: entry.procedure_orders,
-                    }),
-                  }))}
-                />
-              </section>
-            ))}
+            {savedPlans.filter(planHasOrders).map((entry) => {
+              const canCancel = entry.status === "ordered" || entry.status === "in_progress";
+              return (
+                <section
+                  key={entry.position}
+                  className={`mt-5 rounded-xl border px-4 py-3 ${entry.status === "cancelled" ? "border-line bg-surface-3/40 opacity-80" : "border-line bg-surface-2"}`}
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <h3 className="text-sm font-semibold text-ink">Management plan {entry.position}</h3>
+                      <span className={`inline-flex rounded-full px-2.5 py-0.5 text-xs font-semibold ${nursingPlanStatusClass(entry.status)}`}>
+                        {nursingPlanStatusLabel(entry.status)}
+                      </span>
+                      {entry.assessment_status ? <AssessmentStatus status={entry.assessment_status} /> : null}
+                    </div>
+                    {canCancel ? (
+                      <button
+                        type="button"
+                        className={`${secondary} h-8 px-3 py-0 text-xs text-danger`}
+                        disabled={pending !== null}
+                        onClick={() => {
+                          setCancelReason("");
+                          setConfirmCancelPosition(entry.position);
+                        }}
+                      >
+                        Cancel plan
+                      </button>
+                    ) : null}
+                  </div>
+                  {entry.status === "cancelled" && entry.cancellation_reason?.trim() ? (
+                    <div className="mt-2 rounded-lg border border-line bg-surface px-3 py-2">
+                      <p className="text-[11px] font-bold uppercase tracking-wide text-muted-strong">Cancellation reason</p>
+                      <p className="mt-1 whitespace-pre-wrap text-sm text-ink">{entry.cancellation_reason}</p>
+                    </div>
+                  ) : null}
+                  {entry.clinical_assessment.trim() ? <p className="mt-2 whitespace-pre-wrap text-sm text-ink">{entry.clinical_assessment}</p> : null}
+                  <h4 className="mt-3 text-xs font-semibold uppercase tracking-wide text-muted">Medication orders</h4>
+                  <OrderTable
+                    empty="No medication orders."
+                    headers={["#", "Medication", "Dose", "Route", "Frequency", "Duration", "Notes"]}
+                    rows={entry.medication_orders.map((item, index) => ({
+                      id: item.id,
+                      cells: [String(index + 1), item.medication || "—", doseLabel(item), item.route || "—", item.frequency || "—", item.duration || "—", item.instructions.trim() || "—"],
+                      onOpen: () => setEditor({ kind: "medication", order: item, existing: true, locked: true, planOrders: entry.medication_orders }),
+                    }))}
+                  />
+                  <h4 className="mt-3 text-xs font-semibold uppercase tracking-wide text-muted">Procedures & interventions</h4>
+                  <OrderTable
+                    empty="No procedures."
+                    headers={["#", "Procedure", "Notes"]}
+                    rows={standaloneProcedures(entry.procedure_orders).map((item, index) => ({
+                      id: item.id,
+                      cells: [String(index + 1), item.name || "—", item.notes.trim() || "—"],
+                      onOpen: () => setEditor({
+                        kind: "procedure",
+                        order: item,
+                        existing: true,
+                        locked: true,
+                        medications: entry.medication_orders,
+                        procedures: entry.procedure_orders,
+                      }),
+                    }))}
+                  />
+                </section>
+              );
+            })}
             {monitoringStatus === "in_progress" && !completeConfirmed ? (
             <section className="mt-5 rounded-xl border border-panel-strong bg-panel/40 px-4 py-3">
               <h3 className="text-sm font-semibold text-ink">Management plan {nextPlanPosition}</h3>
@@ -1358,6 +2444,36 @@ function MonitoringAssessmentDialog({
         onCancel={() => { if (pending !== "complete") setConfirmComplete(false); }}
         onConfirm={() => void completeMonitoring()}
       />
+      <ConfirmDialog
+        open={confirmCancelPosition != null}
+        className="z-[100]"
+        eyebrow="Confirm cancel"
+        title={`Cancel management plan ${confirmCancelPosition ?? ""}?`}
+        body="Enter why this plan should be cancelled. Nurses can still view it as read-only with this reason."
+        confirmLabel="Yes, cancel plan"
+        cancelLabel="Keep plan"
+        pendingLabel="Cancelling…"
+        pending={pending === "cancel"}
+        error={pending === "cancel" ? null : (formError && confirmCancelPosition != null ? formError : null)}
+        reason={{
+          label: "Cancellation reason",
+          value: cancelReason,
+          onChange: setCancelReason,
+          placeholder: "e.g. Patient improved, wrong order, switched to another plan…",
+          required: true,
+          maxLength: 500,
+        }}
+        onCancel={() => {
+          if (pending !== "cancel") {
+            setConfirmCancelPosition(null);
+            setCancelReason("");
+            setFormError(null);
+          }
+        }}
+        onConfirm={() => {
+          if (confirmCancelPosition != null) void cancelManagementPlan(confirmCancelPosition);
+        }}
+      />
     </>
   );
 }
@@ -1497,36 +2613,6 @@ function agoLabel(value: string | null, now: number) {
 
 function initials(name: string) {
   return name.trim().split(/\s+/).slice(0, 2).map((part) => part[0]?.toUpperCase() ?? "").join("") || "?";
-}
-
-function Investigations({ items, loading }: { items: VisitInvestigation[]; loading: boolean }) {
-  return (
-    <section className="rounded-2xl border border-warning-line bg-warning-soft/50 p-3">
-      <h3 className="text-xs font-semibold uppercase tracking-wide text-warning">Investigations</h3>
-      {loading ? <p className="mt-2 text-sm text-muted">Loading investigations…</p> : null}
-      {!loading && items.length === 0 ? <p className="mt-2 text-sm text-muted">No investigations ordered.</p> : null}
-      {items.length > 0 ? (
-        <ul className="mt-2 grid gap-2">
-          {items.map((item) => (
-            <li key={item.id} className={`flex flex-wrap items-center justify-between gap-2 rounded-xl px-3 py-2 ${investigationPriorityClass(item.priority)}`}>
-              <span className="min-w-0">
-                <span className="block text-sm font-semibold text-ink">{item.name}</span>
-                <span className="mt-1 flex flex-wrap items-center gap-1.5">
-                  <span className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${investigationPriorityClass(item.priority)}`}>{investigationPriorityLabel(item.priority)}</span>
-                  <span className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${investigationStatusClass(item.status)}`}>{investigationStatusLabel(item.status)}</span>
-                </span>
-              </span>
-              {item.result_file_url ? (
-                <a className="text-sm font-semibold text-blue hover:underline" href={item.result_file_url} target="_blank" rel="noreferrer">
-                  {item.result_original_name || "Result"}
-                </a>
-              ) : null}
-            </li>
-          ))}
-        </ul>
-      ) : null}
-    </section>
-  );
 }
 
 function Section({
